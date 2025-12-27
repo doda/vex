@@ -1589,7 +1589,7 @@
       "Test 500 for internal server error",
       "Test 503 for object store failures/strong query with disable_backpressure"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "error-response-format",
