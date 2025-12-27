@@ -18,7 +18,7 @@ import (
 func Run(args []string) {
 	fs := flag.NewFlagSet("query", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to config file")
-	addr := fs.String("addr", ":8080", "Listen address")
+	addr := fs.String("addr", "", "Listen address (overrides config)")
 	fs.Parse(args)
 
 	cfg, err := config.Load(*configPath)
