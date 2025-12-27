@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/namespace"
 )
 
 var gzipWriterPool = sync.Pool{
@@ -39,12 +40,12 @@ func NewRouter(cfg *config.Config) *Router {
 
 	r.mux.HandleFunc("GET /health", r.handleHealth)
 	r.mux.HandleFunc("GET /v1/namespaces", r.authMiddleware(r.handleListNamespaces))
-	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/metadata", r.authMiddleware(r.handleGetMetadata))
-	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/hint_cache_warm", r.authMiddleware(r.handleWarmCache))
-	r.mux.HandleFunc("POST /v2/namespaces/{namespace}", r.authMiddleware(r.handleWrite))
-	r.mux.HandleFunc("POST /v2/namespaces/{namespace}/query", r.authMiddleware(r.handleQuery))
-	r.mux.HandleFunc("DELETE /v2/namespaces/{namespace}", r.authMiddleware(r.handleDeleteNamespace))
-	r.mux.HandleFunc("POST /v1/namespaces/{namespace}/_debug/recall", r.authMiddleware(r.handleDebugRecall))
+	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/metadata", r.authMiddleware(r.validateNamespace(r.handleGetMetadata)))
+	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/hint_cache_warm", r.authMiddleware(r.validateNamespace(r.handleWarmCache)))
+	r.mux.HandleFunc("POST /v2/namespaces/{namespace}", r.authMiddleware(r.validateNamespace(r.handleWrite)))
+	r.mux.HandleFunc("POST /v2/namespaces/{namespace}/query", r.authMiddleware(r.validateNamespace(r.handleQuery)))
+	r.mux.HandleFunc("DELETE /v2/namespaces/{namespace}", r.authMiddleware(r.validateNamespace(r.handleDeleteNamespace)))
+	r.mux.HandleFunc("POST /v1/namespaces/{namespace}/_debug/recall", r.authMiddleware(r.validateNamespace(r.handleDebugRecall)))
 
 	return r
 }
@@ -99,6 +100,17 @@ func (r *Router) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		next(w, req)
+	}
+}
+
+func (r *Router) validateNamespace(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		ns := req.PathValue("namespace")
+		if err := namespace.ValidateName(ns); err != nil {
+			r.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		next(w, req)
 	}
 }

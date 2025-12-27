@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/config"
@@ -183,4 +185,105 @@ func TestGzipResponseCompression(t *testing.T) {
 	if result["status"] != "ok" {
 		t.Errorf("expected status ok, got %s", result["status"])
 	}
+}
+
+func TestNamespaceValidation(t *testing.T) {
+	cfg := config.Default()
+	router := NewRouter(cfg)
+
+	t.Run("valid namespace names are accepted", func(t *testing.T) {
+		validNames := []string{
+			"test",
+			"test123",
+			"test-namespace",
+			"test_namespace",
+			"test.namespace",
+			"Test-123_foo.bar",
+			"a",
+		}
+
+		for _, name := range validNames {
+			req := httptest.NewRequest("POST", "/v2/namespaces/"+name, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Result().StatusCode != http.StatusOK {
+				t.Errorf("namespace %q should be valid, got status %d", name, w.Result().StatusCode)
+			}
+		}
+	})
+
+	t.Run("names longer than 128 chars are rejected with 400", func(t *testing.T) {
+		longName := strings.Repeat("a", 129)
+		req := httptest.NewRequest("POST", "/v2/namespaces/"+longName, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Result().StatusCode != http.StatusBadRequest {
+			t.Errorf("expected status 400 for name >128 chars, got %d", w.Result().StatusCode)
+		}
+
+		body, _ := io.ReadAll(w.Result().Body)
+		var result map[string]string
+		json.Unmarshal(body, &result)
+		if result["status"] != "error" {
+			t.Error("expected error status in response")
+		}
+	})
+
+	t.Run("empty names are rejected", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v2/namespaces/", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Result().StatusCode == http.StatusOK {
+			t.Error("empty namespace should not be accepted")
+		}
+	})
+
+	t.Run("names with invalid characters are rejected", func(t *testing.T) {
+		invalidNames := []string{
+			"test namespace",
+			"test/namespace",
+			"test:namespace",
+			"test*namespace",
+			"test@namespace",
+			"test#namespace",
+		}
+
+		for _, name := range invalidNames {
+			req := httptest.NewRequest("POST", "/v2/namespaces/"+url.PathEscape(name), nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Result().StatusCode != http.StatusBadRequest {
+				t.Errorf("namespace %q should be invalid, got status %d", name, w.Result().StatusCode)
+			}
+		}
+	})
+
+	t.Run("validation applies to all namespace endpoints", func(t *testing.T) {
+		invalidName := url.PathEscape("invalid@name")
+		endpoints := []struct {
+			method string
+			path   string
+		}{
+			{"GET", "/v1/namespaces/" + invalidName + "/metadata"},
+			{"GET", "/v1/namespaces/" + invalidName + "/hint_cache_warm"},
+			{"POST", "/v2/namespaces/" + invalidName},
+			{"POST", "/v2/namespaces/" + invalidName + "/query"},
+			{"DELETE", "/v2/namespaces/" + invalidName},
+			{"POST", "/v1/namespaces/" + invalidName + "/_debug/recall"},
+		}
+
+		for _, ep := range endpoints {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Result().StatusCode != http.StatusBadRequest {
+				t.Errorf("%s %s should return 400, got %d", ep.method, ep.path, w.Result().StatusCode)
+			}
+		}
+	})
 }
