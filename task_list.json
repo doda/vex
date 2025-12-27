@@ -1303,7 +1303,7 @@
       "Test shard-aware LRU eviction",
       "Verify per-namespace budget caps for multi-tenancy"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "cache-correctness-invariant",
