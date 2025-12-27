@@ -6,13 +6,29 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/vexsearch/vex/internal/config"
 )
 
+var gzipWriterPool = sync.Pool{
+	New: func() interface{} {
+		return gzip.NewWriter(nil)
+	},
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.gz.Write(b)
+}
+
 type Router struct {
-	cfg    *config.Config
-	mux    *http.ServeMux
+	cfg *config.Config
+	mux *http.ServeMux
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -35,6 +51,21 @@ func NewRouter(cfg *config.Config) *Router {
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	req.Body = r.decompressBody(req)
+
+	if strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
+		gz := gzipWriterPool.Get().(*gzip.Writer)
+		gz.Reset(w)
+		defer func() {
+			gz.Close()
+			gzipWriterPool.Put(gz)
+		}()
+
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Del("Content-Length")
+		r.mux.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, gz: gz}, req)
+		return
+	}
+
 	r.mux.ServeHTTP(w, req)
 }
 

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -122,5 +124,63 @@ func TestErrorResponseFormat(t *testing.T) {
 	}
 	if result["error"] == "" {
 		t.Error("expected error message in response")
+	}
+}
+
+func TestGzipRequestDecompression(t *testing.T) {
+	cfg := config.Default()
+	router := NewRouter(cfg)
+
+	body := []byte(`{"upsert_rows":[{"id":1,"name":"test"}]}`)
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	gz.Write(body)
+	gz.Close()
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Result().StatusCode)
+	}
+}
+
+func TestGzipResponseCompression(t *testing.T) {
+	cfg := config.Default()
+	router := NewRouter(cfg)
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Error("expected Content-Encoding: gzip header")
+	}
+
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to create gzip reader: %v", err)
+	}
+	defer gz.Close()
+
+	body, _ := io.ReadAll(gz)
+	var result map[string]string
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("failed to parse decompressed response: %v", err)
+	}
+
+	if result["status"] != "ok" {
+		t.Errorf("expected status ok, got %s", result["status"])
 	}
 }
