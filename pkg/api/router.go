@@ -3,6 +3,7 @@ package api
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/routing"
+	"github.com/vexsearch/vex/internal/write"
+	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // NamespaceState represents the state of a namespace for testing/simulation purposes.
@@ -68,13 +71,16 @@ func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
 }
 
 type Router struct {
-	cfg        *config.Config
-	mux        *http.ServeMux
-	state      *ServerState
-	router     *routing.Router
-	membership *membership.Manager
-	proxy      *routing.Proxy
-	logger     *logging.Logger
+	cfg          *config.Config
+	mux          *http.ServeMux
+	state        *ServerState
+	router       *routing.Router
+	membership   *membership.Manager
+	proxy        *routing.Proxy
+	logger       *logging.Logger
+	store        objectstore.Store
+	stateManager *namespace.StateManager
+	writeHandler *write.Handler
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -86,6 +92,11 @@ func NewRouterWithMembership(cfg *config.Config, clusterRouter *routing.Router, 
 }
 
 func NewRouterWithLogger(cfg *config.Config, clusterRouter *routing.Router, membershipMgr *membership.Manager, logger *logging.Logger) *Router {
+	return NewRouterWithStore(cfg, clusterRouter, membershipMgr, logger, nil)
+}
+
+// NewRouterWithStore creates a new Router with all dependencies including object store.
+func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membershipMgr *membership.Manager, logger *logging.Logger, store objectstore.Store) *Router {
 	if logger == nil {
 		logger = logging.New()
 	}
@@ -99,6 +110,16 @@ func NewRouterWithLogger(cfg *config.Config, clusterRouter *routing.Router, memb
 		router:     clusterRouter,
 		membership: membershipMgr,
 		logger:     logger,
+		store:      store,
+	}
+
+	// Set up state manager and write handler if store is available
+	if store != nil {
+		r.stateManager = namespace.NewStateManager(store)
+		writeHandler, err := write.NewHandler(store, r.stateManager)
+		if err == nil {
+			r.writeHandler = writeHandler
+		}
 	}
 
 	// Set up proxy if we have a cluster router
@@ -117,6 +138,14 @@ func NewRouterWithLogger(cfg *config.Config, clusterRouter *routing.Router, memb
 	r.mux.HandleFunc("POST /v1/namespaces/{namespace}/_debug/recall", r.authMiddleware(r.validateNamespace(r.handleDebugRecall)))
 
 	return r
+}
+
+// Close releases resources held by the router.
+func (r *Router) Close() error {
+	if r.writeHandler != nil {
+		return r.writeHandler.Close()
+	}
+	return nil
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -338,17 +367,50 @@ func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 	// Check for duplicate IDs in upsert_columns
 	if cols, ok := body["upsert_columns"].(map[string]interface{}); ok {
 		if ids, ok := cols["ids"].([]interface{}); ok {
-			seen := make(map[interface{}]bool)
-			for _, id := range ids {
-				if seen[id] {
+			if err := write.ValidateColumnarIDs(ids); err != nil {
+				if errors.Is(err, write.ErrDuplicateIDColumn) {
 					r.writeAPIError(w, ErrDuplicateIDs())
 					return
 				}
-				seen[id] = true
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
 			}
 		}
 	}
 
+	// If we have a write handler, use it for actual persistence
+	if r.writeHandler != nil {
+		requestID := logging.RequestIDFromContext(req.Context())
+		writeReq, err := write.ParseWriteRequest(requestID, body)
+		if err != nil {
+			r.writeAPIError(w, ErrBadRequest(err.Error()))
+			return
+		}
+
+		resp, err := r.writeHandler.Handle(req.Context(), ns, writeReq)
+		if err != nil {
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			if errors.Is(err, write.ErrInvalidID) || errors.Is(err, write.ErrInvalidAttribute) || errors.Is(err, write.ErrInvalidRequest) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"rows_affected": resp.RowsAffected,
+			"rows_upserted": resp.RowsUpserted,
+			"rows_patched":  resp.RowsPatched,
+			"rows_deleted":  resp.RowsDeleted,
+		})
+		return
+	}
+
+	// Fallback when no write handler configured (test mode)
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"rows_affected": 0,
 		"rows_upserted": 0,
@@ -581,4 +643,29 @@ func (r *Router) ClusterNodes() []routing.Node {
 		return nil
 	}
 	return r.router.Nodes()
+}
+
+// SetStore sets the object store and initializes the write handler.
+// Used for testing.
+func (r *Router) SetStore(store objectstore.Store) error {
+	r.store = store
+	if store != nil {
+		r.stateManager = namespace.NewStateManager(store)
+		writeHandler, err := write.NewHandler(store, r.stateManager)
+		if err != nil {
+			return err
+		}
+		r.writeHandler = writeHandler
+	}
+	return nil
+}
+
+// Store returns the object store.
+func (r *Router) Store() objectstore.Store {
+	return r.store
+}
+
+// StateManager returns the namespace state manager.
+func (r *Router) StateManager() *namespace.StateManager {
+	return r.stateManager
 }
