@@ -1991,7 +1991,7 @@
       "Verify cache size budget config",
       "Test membership/routing config"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "compat-mode-flag",
