@@ -154,7 +154,7 @@
       "Test array variants of all types are supported",
       "Verify changing attribute type returns 400"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "schema-field-options",
