@@ -1,0 +1,23 @@
+# Binary (the built executable at repo root)
+/vex
+
+# Go build cache
+/vendor/
+/.go/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+
+# Test output
+coverage.out
+coverage.html
+
+# MinIO local dev
+/tmp/
