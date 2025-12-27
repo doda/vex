@@ -94,7 +94,7 @@
       "Test empty names are rejected",
       "Test names with invalid characters are rejected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "document-id-validation",

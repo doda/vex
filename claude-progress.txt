@@ -32,3 +32,4 @@ KEY DEPENDENCIES:
 [2025-12-27T16:24:03.250Z] Completed api-scaffolding: Create HTTP API scaffolding with router, auth middleware, and compression support
 [2025-12-27T16:24:34.216Z] Completed single-binary-subcommands: Implement single binary with subcommands (query, indexer, all-in-one)
 [2025-12-27T16:32:09.737Z] Completed document-id-validation: Validate document IDs (u64, UUID, or strings up to 64 bytes)
+[2025-12-27T16:33:32.765Z] Completed namespace-name-validation: Validate namespace names match pattern [A-Za-z0-9-_.]{1,128}
