@@ -1,0 +1,224 @@
+syntax = "proto3";
+
+package wal;
+
+option go_package = "github.com/vexsearch/vex/internal/wal";
+
+// WalEntry is the top-level WAL record stored as a .wal.zst compressed blob.
+// A single WAL entry may contain multiple sub-batches, one per HTTP write request.
+message WalEntry {
+  // Schema format version (for forward compatibility)
+  uint32 format_version = 1;
+
+  // Namespace this WAL entry belongs to
+  string namespace = 2;
+
+  // Monotonically increasing sequence number (strictly increases by 1)
+  uint64 seq = 3;
+
+  // Unix timestamp in milliseconds when this entry was committed
+  int64 committed_unix_ms = 4;
+
+  // Multiple sub-batches (one per HTTP request in the batch window)
+  repeated WriteSubBatch sub_batches = 5;
+
+  // SHA-256 checksum of the uncompressed protobuf payload (before compression)
+  bytes checksum = 6;
+}
+
+// WriteSubBatch represents a single HTTP write request within a WAL entry.
+// Each sub-batch is atomic and serialized (deterministic order).
+message WriteSubBatch {
+  // Unique request ID for idempotency and deduplication
+  string request_id = 1;
+
+  // Unix timestamp in milliseconds when the request was received
+  int64 received_at_ms = 2;
+
+  // Mutations to apply (upserts, patches, deletes)
+  repeated Mutation mutations = 3;
+
+  // Statistics about the batch
+  SubBatchStats stats = 4;
+
+  // Schema delta (new fields or type definitions added by this batch)
+  repeated SchemaDelta schema_deltas = 5;
+
+  // Filter-based operation details (if applicable)
+  FilterOperation filter_op = 6;
+}
+
+// Mutation represents a single document mutation.
+message Mutation {
+  // Type of mutation
+  MutationType type = 1;
+
+  // Document ID
+  DocumentID id = 2;
+
+  // Attributes to set/update (for upserts and patches)
+  // Keys are sorted alphabetically for deterministic encoding
+  map<string, AttributeValue> attributes = 3;
+
+  // Vector data (if present)
+  bytes vector = 4;
+
+  // Vector dimensions (for validation)
+  uint32 vector_dims = 5;
+
+  // Whether this mutation was conditional and the condition result
+  bool conditional = 6;
+  bool condition_met = 7;
+}
+
+enum MutationType {
+  MUTATION_TYPE_UNSPECIFIED = 0;
+  MUTATION_TYPE_UPSERT = 1;
+  MUTATION_TYPE_PATCH = 2;
+  MUTATION_TYPE_DELETE = 3;
+}
+
+// DocumentID represents a normalized document ID.
+message DocumentID {
+  oneof id {
+    uint64 u64 = 1;
+    bytes uuid = 2;  // 16 bytes
+    string str = 3;
+  }
+}
+
+// AttributeValue represents a typed attribute value.
+message AttributeValue {
+  oneof value {
+    // Scalar values
+    string string_val = 1;
+    int64 int_val = 2;
+    uint64 uint_val = 3;
+    double float_val = 4;
+    bytes uuid_val = 5;  // 16 bytes
+    int64 datetime_val = 6;  // Unix ms since epoch
+    bool bool_val = 7;
+
+    // Null value
+    bool null_val = 8;
+
+    // Array values
+    StringArray string_array = 10;
+    IntArray int_array = 11;
+    UintArray uint_array = 12;
+    FloatArray float_array = 13;
+    UuidArray uuid_array = 14;
+    DatetimeArray datetime_array = 15;
+    BoolArray bool_array = 16;
+  }
+}
+
+message StringArray {
+  repeated string values = 1;
+}
+
+message IntArray {
+  repeated int64 values = 1;
+}
+
+message UintArray {
+  repeated uint64 values = 1;
+}
+
+message FloatArray {
+  repeated double values = 1;
+}
+
+message UuidArray {
+  repeated bytes values = 1;  // Each element is 16 bytes
+}
+
+message DatetimeArray {
+  repeated int64 values = 1;  // Unix ms since epoch
+}
+
+message BoolArray {
+  repeated bool values = 1;
+}
+
+// SchemaDelta records a schema change introduced by this batch.
+message SchemaDelta {
+  // Attribute name
+  string name = 1;
+
+  // Attribute type
+  AttributeType type = 2;
+
+  // Field options
+  bool filterable = 3;
+  bool regex = 4;
+  FullTextConfig full_text_search = 5;
+  VectorConfig vector = 6;
+}
+
+enum AttributeType {
+  ATTRIBUTE_TYPE_UNSPECIFIED = 0;
+  ATTRIBUTE_TYPE_STRING = 1;
+  ATTRIBUTE_TYPE_INT = 2;
+  ATTRIBUTE_TYPE_UINT = 3;
+  ATTRIBUTE_TYPE_FLOAT = 4;
+  ATTRIBUTE_TYPE_UUID = 5;
+  ATTRIBUTE_TYPE_DATETIME = 6;
+  ATTRIBUTE_TYPE_BOOL = 7;
+  ATTRIBUTE_TYPE_STRING_ARRAY = 11;
+  ATTRIBUTE_TYPE_INT_ARRAY = 12;
+  ATTRIBUTE_TYPE_UINT_ARRAY = 13;
+  ATTRIBUTE_TYPE_FLOAT_ARRAY = 14;
+  ATTRIBUTE_TYPE_UUID_ARRAY = 15;
+  ATTRIBUTE_TYPE_DATETIME_ARRAY = 16;
+  ATTRIBUTE_TYPE_BOOL_ARRAY = 17;
+}
+
+message FullTextConfig {
+  bool enabled = 1;
+  string tokenizer = 2;
+  string language = 3;
+  bool stemming = 4;
+  repeated string stop_words = 5;
+}
+
+message VectorConfig {
+  string dtype = 1;  // "f16" or "f32"
+  uint32 dimensions = 2;
+  string distance_metric = 3;  // "cosine_distance" or "euclidean_squared"
+}
+
+// SubBatchStats records statistics about the sub-batch.
+message SubBatchStats {
+  int64 rows_affected = 1;
+  int64 rows_upserted = 2;
+  int64 rows_patched = 3;
+  int64 rows_deleted = 4;
+  bool rows_remaining = 5;  // True if filter-based write hit cap
+}
+
+// FilterOperation records details about filter-based operations.
+message FilterOperation {
+  FilterOperationType type = 1;
+
+  // The WAL seq at which phase 1 was evaluated
+  uint64 phase1_snapshot_seq = 2;
+
+  // The IDs selected in phase 1 (bounded by limits)
+  repeated DocumentID candidate_ids = 3;
+
+  // The original filter expression (JSON-encoded)
+  string filter_json = 4;
+
+  // The patch payload for patch_by_filter (JSON-encoded)
+  string patch_json = 5;
+
+  // Whether partial application is allowed
+  bool allow_partial = 6;
+}
+
+enum FilterOperationType {
+  FILTER_OPERATION_TYPE_UNSPECIFIED = 0;
+  FILTER_OPERATION_TYPE_DELETE = 1;
+  FILTER_OPERATION_TYPE_PATCH = 2;
+}
