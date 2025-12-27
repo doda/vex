@@ -45,3 +45,4 @@ KEY DEPENDENCIES:
 [2025-12-27T17:45:06.686Z] Completed logging-structured: Implement structured JSON logging
 [2025-12-27T17:45:53.546Z] Completed namespace-state-management: Implement namespace state.json management with ETag-based CAS
 [2025-12-27T17:51:26.319Z] Completed wal-entry-format: Implement WAL entry format with protobuf encoding and zstd compression
+[2025-12-27T17:57:12.675Z] Completed nvme-cache: Implement NVMe SSD cache for index objects

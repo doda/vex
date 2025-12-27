@@ -1285,7 +1285,7 @@
       "Test LRU eviction by bytes with access-time tracking",
       "Verify pinned set for warming namespaces not evictable"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "ram-cache",
