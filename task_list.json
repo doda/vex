@@ -746,7 +746,7 @@
       "Test [\"attr\", \"NotEq\", value] excludes exact value",
       "Test [\"attr\", \"NotEq\", null] matches attribute present"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "filter-in-notin",
