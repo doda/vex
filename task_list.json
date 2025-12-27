@@ -32,7 +32,7 @@
       "Verify strong read-after-write semantics work",
       "Test checksum/integrity verification with SHA-256"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "api-scaffolding",
