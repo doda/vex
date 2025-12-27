@@ -1605,7 +1605,7 @@
       "Verify all errors return {\"status\":\"error\",\"error\":\"...\"}",
       "Test error messages are descriptive"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "failure-object-store-unavailable",
