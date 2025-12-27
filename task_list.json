@@ -54,7 +54,7 @@
       "Verify gzip response compression when Accept-Encoding: gzip is sent",
       "Test error responses match format: {\"status\":\"error\",\"error\":\"...\"}"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "namespace-state-management",
