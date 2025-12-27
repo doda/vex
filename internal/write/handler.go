@@ -386,6 +386,20 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 		}
 	}
 
+	// Parse patch_columns (columnar format for patches)
+	if cols, ok := body["patch_columns"]; ok {
+		colsMap, ok := cols.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: patch_columns must be an object", ErrInvalidRequest)
+		}
+		columnarRows, err := ParseColumnarToPatchRows(colsMap)
+		if err != nil {
+			return nil, err
+		}
+		// Append columnar rows after patch_rows (same phase in ordering)
+		req.PatchRows = append(req.PatchRows, columnarRows...)
+	}
+
 	// Parse deletes
 	if deletes, ok := body["deletes"]; ok {
 		deletesSlice, ok := deletes.([]any)
@@ -452,6 +466,57 @@ func ParseColumnarToRows(cols map[string]any) ([]map[string]any, error) {
 		}
 		if len(values) != len(ids) {
 			return nil, fmt.Errorf("%w: upsert_columns attribute '%s' has %d elements, expected %d (same as ids)", ErrInvalidRequest, key, len(values), len(ids))
+		}
+		for i, v := range values {
+			rows[i][key] = v
+		}
+	}
+
+	return rows, nil
+}
+
+// ParseColumnarToPatchRows converts columnar format to row format for patches.
+// Like ParseColumnarToRows but rejects vector attributes since they cannot be patched.
+// The columnar format is: {"ids": [id1, id2, ...], "attr1": [val1, val2, ...], ...}
+// All attribute arrays must have the same length as the ids array.
+func ParseColumnarToPatchRows(cols map[string]any) ([]map[string]any, error) {
+	// Extract ids array
+	rawIDs, ok := cols["ids"]
+	if !ok {
+		return nil, fmt.Errorf("%w: patch_columns missing 'ids' field", ErrInvalidRequest)
+	}
+	ids, ok := rawIDs.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: patch_columns 'ids' must be an array", ErrInvalidRequest)
+	}
+
+	// Validate for duplicate IDs (columnar patches reject duplicates with 400)
+	if err := ValidateColumnarIDs(ids); err != nil {
+		return nil, err
+	}
+
+	// Check for vector attribute - patches cannot modify vectors
+	if _, hasVector := cols["vector"]; hasVector {
+		return nil, ErrVectorPatchForbidden
+	}
+
+	// Build rows from columnar data
+	rows := make([]map[string]any, len(ids))
+	for i := range rows {
+		rows[i] = map[string]any{"id": ids[i]}
+	}
+
+	// Process each attribute column
+	for key, rawValues := range cols {
+		if key == "ids" {
+			continue
+		}
+		values, ok := rawValues.([]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: patch_columns attribute '%s' must be an array", ErrInvalidRequest, key)
+		}
+		if len(values) != len(ids) {
+			return nil, fmt.Errorf("%w: patch_columns attribute '%s' has %d elements, expected %d (same as ids)", ErrInvalidRequest, key, len(values), len(ids))
 		}
 		for i, v := range values {
 			rows[i][key] = v

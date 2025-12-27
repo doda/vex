@@ -310,7 +310,7 @@
       "Verify vector attribute cannot be patched in columns",
       "Test duplicate IDs in columnar patch return 400"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-deletes",
