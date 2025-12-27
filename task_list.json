@@ -593,7 +593,7 @@
       "Test NVMe tier for spilled tail blocks",
       "Verify tail supports vector scan and filter evaluation"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-api-basic",
