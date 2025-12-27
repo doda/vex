@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"time"
 )
 
@@ -11,7 +12,73 @@ var (
 	ErrNotFound       = errors.New("object not found")
 	ErrPrecondition   = errors.New("precondition failed")
 	ErrAlreadyExists  = errors.New("object already exists")
+	ErrChecksumFailed = errors.New("checksum verification failed")
 )
+
+func ErrorToHTTPStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	if errors.Is(err, ErrNotFound) {
+		return http.StatusNotFound
+	}
+	if errors.Is(err, ErrPrecondition) {
+		return http.StatusPreconditionFailed
+	}
+	if errors.Is(err, ErrAlreadyExists) {
+		return http.StatusConflict
+	}
+	if errors.Is(err, ErrChecksumFailed) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+func IsConflictError(err error) bool {
+	return errors.Is(err, ErrAlreadyExists)
+}
+
+func IsPreconditionError(err error) bool {
+	return errors.Is(err, ErrPrecondition)
+}
+
+func IsNotFoundError(err error) bool {
+	return errors.Is(err, ErrNotFound)
+}
+
+type Config struct {
+	Type      string
+	Endpoint  string
+	Bucket    string
+	AccessKey string
+	SecretKey string
+	Region    string
+	UseSSL    bool
+	RootPath  string // For filesystem store
+}
+
+func New(cfg Config) (Store, error) {
+	switch cfg.Type {
+	case "s3", "minio":
+		return NewS3Store(S3Config{
+			Endpoint:  cfg.Endpoint,
+			Bucket:    cfg.Bucket,
+			AccessKey: cfg.AccessKey,
+			SecretKey: cfg.SecretKey,
+			Region:    cfg.Region,
+			UseSSL:    cfg.UseSSL,
+		})
+	case "filesystem", "fs":
+		if cfg.RootPath == "" {
+			cfg.RootPath = "/tmp/vex-objectstore"
+		}
+		return NewFSStore(cfg.RootPath)
+	case "memory", "mem":
+		return NewMemoryStore(), nil
+	default:
+		return nil, errors.New("unsupported object store type: " + cfg.Type)
+	}
+}
 
 type ObjectInfo struct {
 	Key          string
