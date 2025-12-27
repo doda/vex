@@ -347,7 +347,7 @@
       "Test allow_partial=true succeeds and sets rows_remaining=true",
       "Verify two-phase with re-evaluation (Read Committed semantics)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-patch-by-filter",

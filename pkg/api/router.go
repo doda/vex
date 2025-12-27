@@ -16,6 +16,7 @@ import (
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/routing"
+	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/write"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -80,6 +81,7 @@ type Router struct {
 	logger       *logging.Logger
 	store        objectstore.Store
 	stateManager *namespace.StateManager
+	tailStore    tail.Store
 	writeHandler *write.Handler
 }
 
@@ -113,10 +115,11 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 		store:      store,
 	}
 
-	// Set up state manager and write handler if store is available
+	// Set up state manager, tail store, and write handler if store is available
 	if store != nil {
 		r.stateManager = namespace.NewStateManager(store)
-		writeHandler, err := write.NewHandler(store, r.stateManager)
+		r.tailStore = tail.New(tail.DefaultConfig(), store, nil, nil)
+		writeHandler, err := write.NewHandlerWithTail(store, r.stateManager, r.tailStore)
 		if err == nil {
 			r.writeHandler = writeHandler
 		}
@@ -142,10 +145,18 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 
 // Close releases resources held by the router.
 func (r *Router) Close() error {
+	var firstErr error
 	if r.writeHandler != nil {
-		return r.writeHandler.Close()
+		if err := r.writeHandler.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	if r.tailStore != nil {
+		if err := r.tailStore.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -393,7 +404,7 @@ func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrNamespaceDeleted(ns))
 				return
 			}
-			if errors.Is(err, write.ErrInvalidID) || errors.Is(err, write.ErrInvalidAttribute) || errors.Is(err, write.ErrInvalidRequest) {
+			if errors.Is(err, write.ErrInvalidID) || errors.Is(err, write.ErrInvalidAttribute) || errors.Is(err, write.ErrInvalidRequest) || errors.Is(err, write.ErrInvalidFilter) || errors.Is(err, write.ErrDeleteByFilterTooMany) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
 				return
 			}
@@ -401,12 +412,16 @@ func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		response := map[string]interface{}{
 			"rows_affected": resp.RowsAffected,
 			"rows_upserted": resp.RowsUpserted,
 			"rows_patched":  resp.RowsPatched,
 			"rows_deleted":  resp.RowsDeleted,
-		})
+		}
+		if resp.RowsRemaining {
+			response["rows_remaining"] = true
+		}
+		r.writeJSON(w, http.StatusOK, response)
 		return
 	}
 
@@ -651,7 +666,8 @@ func (r *Router) SetStore(store objectstore.Store) error {
 	r.store = store
 	if store != nil {
 		r.stateManager = namespace.NewStateManager(store)
-		writeHandler, err := write.NewHandler(store, r.stateManager)
+		r.tailStore = tail.New(tail.DefaultConfig(), store, nil, nil)
+		writeHandler, err := write.NewHandlerWithTail(store, r.stateManager, r.tailStore)
 		if err != nil {
 			return err
 		}
