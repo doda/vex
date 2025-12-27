@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/membership"
+	"github.com/vexsearch/vex/internal/routing"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -285,6 +287,139 @@ func TestNamespaceValidation(t *testing.T) {
 
 			if w.Result().StatusCode != http.StatusBadRequest {
 				t.Errorf("%s %s should return 400, got %d", ep.method, ep.path, w.Result().StatusCode)
+			}
+		}
+	})
+}
+
+func TestMembershipIntegration(t *testing.T) {
+	t.Run("router with static membership from config", func(t *testing.T) {
+		cfg := config.Default()
+		cfg.Membership = config.MembershipConfig{
+			Type:  "static",
+			Nodes: []string{"node1:8080", "node2:8080", "node3:8080"},
+		}
+
+		clusterRouter := routing.New("node1:8080")
+		membershipProvider := membership.NewFromConfig(cfg.Membership)
+		membershipMgr := membership.NewManager(membershipProvider, clusterRouter)
+
+		if err := membershipMgr.Start(); err != nil {
+			t.Fatalf("failed to start membership manager: %v", err)
+		}
+		defer membershipMgr.Stop()
+
+		router := NewRouterWithMembership(cfg, clusterRouter, membershipMgr)
+
+		// Verify membership is used for routing calculations
+		nodes := router.ClusterNodes()
+		if len(nodes) != 3 {
+			t.Errorf("expected 3 cluster nodes, got %d", len(nodes))
+		}
+
+		// Verify home node can be computed
+		home, ok := router.HomeNode("test-namespace")
+		if !ok {
+			t.Error("expected HomeNode to return ok=true")
+		}
+
+		// Home should be one of the configured nodes
+		found := false
+		for _, n := range nodes {
+			if n.Addr == home.Addr {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("home node %s not in cluster nodes", home.Addr)
+		}
+	})
+
+	t.Run("router without membership still works", func(t *testing.T) {
+		cfg := config.Default()
+		router := NewRouter(cfg)
+
+		// Without membership, IsHomeNode returns true (assume local)
+		if !router.IsHomeNode("test-namespace") {
+			t.Error("expected IsHomeNode to return true without membership")
+		}
+
+		// Without membership, HomeNode returns false
+		_, ok := router.HomeNode("test-namespace")
+		if ok {
+			t.Error("expected HomeNode to return ok=false without membership")
+		}
+
+		// Without membership, ClusterNodes returns nil
+		if router.ClusterNodes() != nil {
+			t.Error("expected ClusterNodes to return nil without membership")
+		}
+	})
+
+	t.Run("membership manager accessible from router", func(t *testing.T) {
+		cfg := config.Default()
+		cfg.Membership = config.MembershipConfig{
+			Type:  "static",
+			Nodes: []string{"node1:8080", "node2:8080"},
+		}
+
+		clusterRouter := routing.New("node1:8080")
+		membershipProvider := membership.NewFromConfig(cfg.Membership)
+		membershipMgr := membership.NewManager(membershipProvider, clusterRouter)
+
+		if err := membershipMgr.Start(); err != nil {
+			t.Fatalf("failed to start membership manager: %v", err)
+		}
+		defer membershipMgr.Stop()
+
+		router := NewRouterWithMembership(cfg, clusterRouter, membershipMgr)
+
+		if router.MembershipManager() != membershipMgr {
+			t.Error("MembershipManager() should return the configured manager")
+		}
+
+		if router.ClusterRouter() != clusterRouter {
+			t.Error("ClusterRouter() should return the configured router")
+		}
+	})
+
+	t.Run("routing is consistent across nodes", func(t *testing.T) {
+		cfg := config.Default()
+		cfg.Membership = config.MembershipConfig{
+			Type:  "static",
+			Nodes: []string{"node1:8080", "node2:8080", "node3:8080"},
+		}
+
+		// Create routers for each node
+		routers := make([]*Router, 3)
+		for i, addr := range cfg.Membership.Nodes {
+			clusterRouter := routing.New(addr)
+			membershipProvider := membership.NewFromConfig(cfg.Membership)
+			membershipMgr := membership.NewManager(membershipProvider, clusterRouter)
+			if err := membershipMgr.Start(); err != nil {
+				t.Fatalf("failed to start membership manager for node %d: %v", i, err)
+			}
+			defer membershipMgr.Stop()
+			routers[i] = NewRouterWithMembership(cfg, clusterRouter, membershipMgr)
+		}
+
+		// Verify all routers agree on home node for each namespace
+		namespaces := []string{"users", "products", "orders", "analytics"}
+		for _, ns := range namespaces {
+			var expectedAddr string
+			for i, router := range routers {
+				home, ok := router.HomeNode(ns)
+				if !ok {
+					t.Errorf("router %d: HomeNode(%s) returned not ok", i, ns)
+					continue
+				}
+				if i == 0 {
+					expectedAddr = home.Addr
+				} else if home.Addr != expectedAddr {
+					t.Errorf("namespace %s: router %d returned home %s, expected %s",
+						ns, i, home.Addr, expectedAddr)
+				}
 			}
 		}
 	})

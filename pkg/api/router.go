@@ -9,7 +9,9 @@ import (
 	"sync"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/routing"
 )
 
 // NamespaceState represents the state of a namespace for testing/simulation purposes.
@@ -48,12 +50,19 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 }
 
 type Router struct {
-	cfg   *config.Config
-	mux   *http.ServeMux
-	state *ServerState
+	cfg        *config.Config
+	mux        *http.ServeMux
+	state      *ServerState
+	router     *routing.Router
+	membership *membership.Manager
+	proxy      *routing.Proxy
 }
 
 func NewRouter(cfg *config.Config) *Router {
+	return NewRouterWithMembership(cfg, nil, nil)
+}
+
+func NewRouterWithMembership(cfg *config.Config, clusterRouter *routing.Router, membershipMgr *membership.Manager) *Router {
 	r := &Router{
 		cfg: cfg,
 		mux: http.NewServeMux(),
@@ -61,6 +70,13 @@ func NewRouter(cfg *config.Config) *Router {
 			Namespaces:  make(map[string]*NamespaceState),
 			ObjectStore: ObjectStoreState{Available: true},
 		},
+		router:     clusterRouter,
+		membership: membershipMgr,
+	}
+
+	// Set up proxy if we have a cluster router
+	if clusterRouter != nil {
+		r.proxy = routing.NewProxy(clusterRouter, routing.ProxyConfig{})
 	}
 
 	r.mux.HandleFunc("GET /health", r.handleHealth)
@@ -463,4 +479,38 @@ func (r *Router) checkStrongQueryBackpressure(ns string) *APIError {
 		return ErrStrongQueryBackpressure()
 	}
 	return nil
+}
+
+// ClusterRouter returns the cluster routing.Router for routing calculations.
+func (r *Router) ClusterRouter() *routing.Router {
+	return r.router
+}
+
+// MembershipManager returns the membership manager.
+func (r *Router) MembershipManager() *membership.Manager {
+	return r.membership
+}
+
+// IsHomeNode returns true if this node is the home node for the given namespace.
+func (r *Router) IsHomeNode(namespace string) bool {
+	if r.router == nil {
+		return true // No cluster routing, assume we're the home node
+	}
+	return r.router.IsHomeNode(namespace)
+}
+
+// HomeNode returns the home node for the given namespace.
+func (r *Router) HomeNode(namespace string) (routing.Node, bool) {
+	if r.router == nil {
+		return routing.Node{}, false
+	}
+	return r.router.HomeNode(namespace)
+}
+
+// ClusterNodes returns the list of nodes in the cluster.
+func (r *Router) ClusterNodes() []routing.Node {
+	if r.router == nil {
+		return nil
+	}
+	return r.router.Nodes()
 }

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/membership"
+	"github.com/vexsearch/vex/internal/routing"
 	"github.com/vexsearch/vex/pkg/api"
 )
 
@@ -30,7 +32,16 @@ func Run(args []string) {
 		cfg.ListenAddr = *addr
 	}
 
-	router := api.NewRouter(cfg)
+	// Initialize cluster routing with static membership from config
+	clusterRouter := routing.New(cfg.ListenAddr)
+	membershipProvider := membership.NewFromConfig(cfg.Membership)
+	membershipMgr := membership.NewManager(membershipProvider, clusterRouter)
+
+	if err := membershipMgr.Start(); err != nil {
+		log.Fatalf("Failed to start membership manager: %v", err)
+	}
+
+	router := api.NewRouterWithMembership(cfg, clusterRouter, membershipMgr)
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
@@ -59,6 +70,8 @@ func Run(args []string) {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Shutdown error: %v", err)
 	}
+
+	membershipMgr.Stop()
 
 	fmt.Println("Server stopped")
 }
