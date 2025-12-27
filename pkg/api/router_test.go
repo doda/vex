@@ -203,7 +203,9 @@ func TestNamespaceValidation(t *testing.T) {
 		}
 
 		for _, name := range validNames {
-			req := httptest.NewRequest("POST", "/v2/namespaces/"+name, nil)
+			// Write to non-existent namespace should succeed (implicitly creates)
+			req := httptest.NewRequest("POST", "/v2/namespaces/"+name, strings.NewReader(`{"upsert_rows":[]}`))
+			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 
