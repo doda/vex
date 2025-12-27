@@ -575,7 +575,7 @@
       "Test CAS retry loop on ETag mismatch",
       "Verify WAL key not re-uploaded on state retry"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "tail-materialization",
