@@ -1,0 +1,30 @@
+Vex v1.2 - Object-Storage-First Search Engine
+=============================================
+
+PROJECT SUMMARY:
+Open-source search engine (vector + full-text + hybrid) compatible with turbopuffer's
+published API. Core language: Go. Object storage is the system of record.
+
+IDENTIFIED TASKS: 112 tasks across all categories
+- Infrastructure: 13 tasks (project setup, object store, API scaffolding, config, etc.)
+- Functional: 71 tasks (write path, query path, indexing, caching, routing, etc.)
+- API: 15 tasks (all endpoints matching turbopuffer's HTTP API surface)
+- Testing: 13 tasks (unit, golden, simulation, fault injection, compat suite)
+
+RECOMMENDED APPROACH:
+1. Phase 0: Go module, object store abstraction, API scaffolding
+2. Phase 1: WAL + strong reads (namespace state, write API, tail, query)
+3. Phase 2: Warm routing + cache (rendezvous hashing, NVMe/RAM cache)
+4. Phase 3: ANN indexing (IVF centroid index, indexer process)
+5. Phase 4: Filter indexes (roaring bitmaps, recall-aware filtering)
+6. Phase 5: Full-text + hybrid (BM25, multi-query)
+7. Phase 6: Polish (aggregations, namespace ops, schema rebuilds)
+
+FIRST TASK: project-setup
+Working agent should start with init.sh to scaffold Go project structure.
+
+KEY DEPENDENCIES:
+- Object storage (S3-compatible, MinIO for local dev)
+- Go 1.21+ recommended for modern features
+- Protobuf for WAL encoding, zstd for compression
+- Roaring bitmaps for filter indexes
