@@ -630,6 +630,78 @@ func TestNilFilter(t *testing.T) {
 	}
 }
 
+// TestEqNotEq_TaskVerification tests exactly the verification steps for the filter-eq-noteq task.
+func TestEqNotEq_TaskVerification(t *testing.T) {
+	t.Run("Eq_matches_exact_value", func(t *testing.T) {
+		// Test ["attr", "Eq", value] matches exact value
+		f, err := Parse([]any{"status", "Eq", "active"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !f.Eval(Document{"status": "active"}) {
+			t.Error("Eq should match exact value")
+		}
+		if f.Eval(Document{"status": "inactive"}) {
+			t.Error("Eq should not match different value")
+		}
+	})
+
+	t.Run("Eq_null_matches_missing_attribute", func(t *testing.T) {
+		// Test ["attr", "Eq", null] matches missing attribute
+		f, err := Parse([]any{"optional_field", "Eq", nil})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !f.Eval(Document{"other": "value"}) {
+			t.Error("Eq null should match when attribute is missing")
+		}
+		if !f.Eval(Document{"optional_field": nil}) {
+			t.Error("Eq null should match when attribute is nil")
+		}
+		if f.Eval(Document{"optional_field": "exists"}) {
+			t.Error("Eq null should not match when attribute has a value")
+		}
+	})
+
+	t.Run("NotEq_excludes_exact_value", func(t *testing.T) {
+		// Test ["attr", "NotEq", value] excludes exact value
+		f, err := Parse([]any{"status", "NotEq", "deleted"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !f.Eval(Document{"status": "active"}) {
+			t.Error("NotEq should match when value is different")
+		}
+		if f.Eval(Document{"status": "deleted"}) {
+			t.Error("NotEq should not match when value is the same")
+		}
+		// Missing attribute should also pass NotEq (not equal to "deleted")
+		if !f.Eval(Document{"other": "value"}) {
+			t.Error("NotEq should match when attribute is missing")
+		}
+	})
+
+	t.Run("NotEq_null_matches_attribute_present", func(t *testing.T) {
+		// Test ["attr", "NotEq", null] matches attribute present
+		f, err := Parse([]any{"required_field", "NotEq", nil})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !f.Eval(Document{"required_field": "any_value"}) {
+			t.Error("NotEq null should match when attribute is present with a value")
+		}
+		if !f.Eval(Document{"required_field": float64(123)}) {
+			t.Error("NotEq null should match when attribute is present with a numeric value")
+		}
+		if f.Eval(Document{"other": "value"}) {
+			t.Error("NotEq null should not match when attribute is missing")
+		}
+		if f.Eval(Document{"required_field": nil}) {
+			t.Error("NotEq null should not match when attribute is nil")
+		}
+	})
+}
+
 func TestArrayOperators(t *testing.T) {
 	tests := []struct {
 		name     string
