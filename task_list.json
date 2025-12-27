@@ -258,7 +258,7 @@
       "Verify duplicate IDs use last-write-wins (later in array wins)",
       "Test schema is inferred from first write"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-upsert-columns",
