@@ -15,4 +15,7 @@ var (
 	ErrInvalidType           = errors.New("invalid type")
 	ErrTypeMismatch          = errors.New("type mismatch")
 	ErrTypeChangeNotAllowed  = errors.New("changing attribute type is not allowed")
+
+	// Field option errors
+	ErrVectorConfigChangeNotAllowed = errors.New("changing vector configuration is not allowed")
 )

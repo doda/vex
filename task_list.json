@@ -174,7 +174,7 @@
       "Test vector object with type and ann fields",
       "Verify filterable and full_text_search can be updated online"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "vector-config",
