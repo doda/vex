@@ -76,7 +76,7 @@
       "Test schema type immutability enforcement",
       "Verify pending_rebuilds tracking for index build status"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "namespace-name-validation",
