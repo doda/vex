@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 )
 
 type Mode string
@@ -107,6 +109,59 @@ func Load(path string) (*Config, error) {
 	if env := os.Getenv("VEX_OBJECT_STORE_SECRET_KEY"); env != "" {
 		cfg.ObjectStore.SecretKey = env
 	}
+	if env := os.Getenv("VEX_OBJECT_STORE_REGION"); env != "" {
+		cfg.ObjectStore.Region = env
+	}
+	if env := os.Getenv("VEX_OBJECT_STORE_USE_SSL"); env != "" {
+		cfg.ObjectStore.UseSSL = env == "true" || env == "1"
+	}
+
+	if env := os.Getenv("VEX_CACHE_NVME_PATH"); env != "" {
+		cfg.Cache.NVMePath = env
+	}
+	if env := os.Getenv("VEX_CACHE_NVME_SIZE_GB"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Cache.NVMESizeGB = n
+		}
+	}
+	if env := os.Getenv("VEX_CACHE_RAM_SIZE_MB"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Cache.RAMSizeMB = n
+		}
+	}
+	if env := os.Getenv("VEX_CACHE_BUDGET_PCT"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Cache.BudgetPct = n
+		}
+	}
+
+	if env := os.Getenv("VEX_MEMBERSHIP_TYPE"); env != "" {
+		cfg.Membership.Type = env
+	}
+	if env := os.Getenv("VEX_MEMBERSHIP_NODES"); env != "" {
+		cfg.Membership.Nodes = parseNodeList(env)
+	}
+
+	if env := os.Getenv("VEX_COMPAT_MODE"); env != "" {
+		cfg.CompatMode = env
+	}
 
 	return cfg, nil
+}
+
+func parseIntEnv(s string) (int, error) {
+	var n int
+	_, err := fmt.Sscanf(s, "%d", &n)
+	return n, err
+}
+
+func parseNodeList(s string) []string {
+	var nodes []string
+	for _, node := range strings.Split(s, ",") {
+		node = strings.TrimSpace(node)
+		if node != "" {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
 }
