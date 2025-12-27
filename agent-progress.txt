@@ -56,3 +56,4 @@ KEY DEPENDENCIES:
 [2025-12-27T19:53:37.063Z] Completed filter-eq-noteq: Implement Eq and NotEq filter operators
 [2025-12-27T22:29:26.259Z] Completed write-upsert-columns: Implement upsert_columns with column-oriented document format
 [2025-12-27T22:37:51.508Z] Completed schema-field-options: Implement schema field options (filterable, regex, full_text_search, vector)
+[2025-12-27T22:38:59.341Z] Completed write-patch-rows: Implement patch_rows for partial document updates

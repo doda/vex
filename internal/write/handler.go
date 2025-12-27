@@ -16,16 +16,18 @@ import (
 )
 
 var (
-	ErrInvalidRequest    = errors.New("invalid write request")
-	ErrInvalidID         = errors.New("invalid document ID")
-	ErrInvalidAttribute  = errors.New("invalid attribute")
-	ErrDuplicateIDColumn = errors.New("duplicate IDs in columnar format")
+	ErrInvalidRequest      = errors.New("invalid write request")
+	ErrInvalidID           = errors.New("invalid document ID")
+	ErrInvalidAttribute    = errors.New("invalid attribute")
+	ErrDuplicateIDColumn   = errors.New("duplicate IDs in columnar format")
+	ErrVectorPatchForbidden = errors.New("vector attribute cannot be patched")
 )
 
 // WriteRequest represents a write request from the API.
 type WriteRequest struct {
 	RequestID   string
 	UpsertRows  []map[string]any
+	PatchRows   []map[string]any
 	Deletes     []any
 }
 
@@ -92,17 +94,29 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// Process upsert_rows with last-write-wins deduplication
 	// Later occurrences of the same ID override earlier ones
-	deduped, err := h.deduplicateUpsertRows(req.UpsertRows)
+	dedupedUpserts, err := h.deduplicateUpsertRows(req.UpsertRows)
 	if err != nil {
 		return nil, err
 	}
-	for _, row := range deduped {
+	for _, row := range dedupedUpserts {
 		if err := h.processUpsertRow(row, subBatch); err != nil {
 			return nil, err
 		}
 	}
 
-	// Process deletes
+	// Process patch_rows with last-write-wins deduplication
+	// Patches run after upserts per write ordering spec
+	dedupedPatches, err := h.deduplicatePatchRows(req.PatchRows)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range dedupedPatches {
+		if err := h.processPatchRow(row, subBatch); err != nil {
+			return nil, err
+		}
+	}
+
+	// Process deletes (runs after patches per write ordering spec)
 	for _, id := range req.Deletes {
 		if err := h.processDelete(id, subBatch); err != nil {
 			return nil, err
@@ -196,6 +210,89 @@ func (h *Handler) processDelete(rawID any, batch *wal.WriteSubBatch) error {
 	return nil
 }
 
+// processPatchRow processes a single row for patching.
+// Patches update only specified attributes - they do not include vectors.
+// If the document does not exist, the patch is silently ignored (recorded but no-op at apply time).
+func (h *Handler) processPatchRow(row map[string]any, batch *wal.WriteSubBatch) error {
+	// Extract and validate ID
+	rawID, ok := row["id"]
+	if !ok {
+		return fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
+	}
+
+	docID, err := h.canon.CanonicalizeID(rawID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidID, err)
+	}
+
+	// Vector attribute cannot be patched - return 400
+	if _, hasVector := row["vector"]; hasVector {
+		return ErrVectorPatchForbidden
+	}
+
+	// Process other attributes (excluding id)
+	attrs := make(map[string]any)
+	for k, v := range row {
+		if k == "id" {
+			continue
+		}
+		// Validate attribute name
+		if err := schema.ValidateAttributeName(k); err != nil {
+			return fmt.Errorf("%w: %s: %v", ErrInvalidAttribute, k, err)
+		}
+		attrs[k] = v
+	}
+
+	canonAttrs, err := h.canon.CanonicalizeAttributes(attrs)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidAttribute, err)
+	}
+
+	batch.AddPatch(docID, canonAttrs)
+	return nil
+}
+
+// deduplicatePatchRows removes duplicate IDs from the patch_rows array,
+// keeping only the last occurrence (last-write-wins semantics).
+func (h *Handler) deduplicatePatchRows(rows []map[string]any) ([]map[string]any, error) {
+	if len(rows) == 0 {
+		return rows, nil
+	}
+
+	// Track last occurrence index for each normalized ID
+	idLastIdx := make(map[string]int, len(rows))
+	for i, row := range rows {
+		rawID, ok := row["id"]
+		if !ok {
+			return nil, fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
+		}
+		id, err := document.ParseID(rawID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidID, err)
+		}
+		idLastIdx[id.String()] = i
+	}
+
+	// If no duplicates, return original
+	if len(idLastIdx) == len(rows) {
+		return rows, nil
+	}
+
+	// Build deduplicated list preserving order of last occurrences
+	result := make([]map[string]any, 0, len(idLastIdx))
+	seen := make(map[string]bool, len(idLastIdx))
+	for i, row := range rows {
+		rawID := row["id"]
+		id, _ := document.ParseID(rawID)
+		key := id.String()
+		if idLastIdx[key] == i && !seen[key] {
+			result = append(result, row)
+			seen[key] = true
+		}
+	}
+	return result, nil
+}
+
 // deduplicateUpsertRows removes duplicate IDs from the upsert_rows array,
 // keeping only the last occurrence (last-write-wins semantics).
 func (h *Handler) deduplicateUpsertRows(rows []map[string]any) ([]map[string]any, error) {
@@ -271,6 +368,22 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 		}
 		// Append columnar rows after upsert_rows (same phase in ordering)
 		req.UpsertRows = append(req.UpsertRows, columnarRows...)
+	}
+
+	// Parse patch_rows
+	if rows, ok := body["patch_rows"]; ok {
+		rowsSlice, ok := rows.([]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: patch_rows must be an array", ErrInvalidRequest)
+		}
+		req.PatchRows = make([]map[string]any, 0, len(rowsSlice))
+		for i, r := range rowsSlice {
+			rowMap, ok := r.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("%w: patch_rows[%d] must be an object", ErrInvalidRequest, i)
+			}
+			req.PatchRows = append(req.PatchRows, rowMap)
+		}
 	}
 
 	// Parse deletes

@@ -2,6 +2,7 @@ package write
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/namespace"
@@ -931,5 +932,337 @@ func TestHandler_UpsertColumnsWithVectors(t *testing.T) {
 
 	if resp.RowsUpserted != 2 {
 		t.Errorf("expected 2 rows upserted, got %d", resp.RowsUpserted)
+	}
+}
+
+// --- patch_rows tests ---
+
+func TestHandler_PatchRowsUpdatesOnlySpecifiedAttributes(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-patch-ns"
+
+	// patch_rows should update only specified attributes
+	req := &WriteRequest{
+		RequestID: "test-patch-1",
+		PatchRows: []map[string]any{
+			{"id": 1, "name": "patched-name"},
+			{"id": 2, "value": 999},
+		},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Patches should be recorded
+	if resp.RowsPatched != 2 {
+		t.Errorf("expected 2 rows patched, got %d", resp.RowsPatched)
+	}
+	if resp.RowsAffected != 2 {
+		t.Errorf("expected 2 rows affected, got %d", resp.RowsAffected)
+	}
+	// Patches are not upserts
+	if resp.RowsUpserted != 0 {
+		t.Errorf("expected 0 rows upserted, got %d", resp.RowsUpserted)
+	}
+	if resp.RowsDeleted != 0 {
+		t.Errorf("expected 0 rows deleted, got %d", resp.RowsDeleted)
+	}
+}
+
+func TestHandler_PatchToMissingIDSilentlyIgnored(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-patch-missing-ns"
+
+	// Patch to a document that doesn't exist should be silently ignored at apply time
+	// At write time, the patch is recorded in the WAL (the actual no-op happens during query/apply)
+	req := &WriteRequest{
+		RequestID: "test-patch-missing",
+		PatchRows: []map[string]any{
+			{"id": 999, "name": "patched-nonexistent"},
+		},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("unexpected error (patch to missing ID should not fail): %v", err)
+	}
+
+	// The patch is recorded in the WAL, even if the doc doesn't exist
+	// (at apply/query time it will be a no-op)
+	if resp.RowsPatched != 1 {
+		t.Errorf("expected 1 row patched (recorded), got %d", resp.RowsPatched)
+	}
+	if resp.RowsAffected != 1 {
+		t.Errorf("expected 1 row affected, got %d", resp.RowsAffected)
+	}
+}
+
+func TestHandler_VectorCannotBePatched(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-patch-vector-ns"
+
+	// Attempting to patch a vector attribute should fail with 400
+	req := &WriteRequest{
+		RequestID: "test-patch-vector",
+		PatchRows: []map[string]any{
+			{"id": 1, "vector": []any{0.1, 0.2, 0.3}},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req)
+	if err == nil {
+		t.Fatal("expected error when patching vector, got nil")
+	}
+
+	if !errors.Is(err, ErrVectorPatchForbidden) {
+		t.Errorf("expected ErrVectorPatchForbidden, got: %v", err)
+	}
+}
+
+func TestHandler_PatchRowsDuplicateIDsLastWriteWins(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-patch-dupe-ns"
+
+	// Multiple patches to the same ID - only the last one should be applied
+	req := &WriteRequest{
+		RequestID: "test-patch-dupe",
+		PatchRows: []map[string]any{
+			{"id": 1, "name": "first", "value": 100},
+			{"id": 2, "name": "unique"},
+			{"id": 1, "name": "second", "value": 300}, // Duplicate - should override
+		},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only 2 unique IDs should be patched (last-write-wins deduplication)
+	if resp.RowsPatched != 2 {
+		t.Errorf("expected 2 rows patched (deduplicated), got %d", resp.RowsPatched)
+	}
+	if resp.RowsAffected != 2 {
+		t.Errorf("expected 2 rows affected (deduplicated), got %d", resp.RowsAffected)
+	}
+}
+
+func TestHandler_PatchRowsNormalizedIDDeduplication(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-patch-normalized-ns"
+
+	// Integer 1 and string "1" both normalize to u64(1) - should dedupe
+	req := &WriteRequest{
+		RequestID: "test-patch-normalized",
+		PatchRows: []map[string]any{
+			{"id": 1, "name": "integer-id"},
+			{"id": "1", "name": "string-id"}, // Should override, same normalized ID
+		},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only 1 unique ID (normalized) should be patched
+	if resp.RowsPatched != 1 {
+		t.Errorf("expected 1 row patched (normalized dedup), got %d", resp.RowsPatched)
+	}
+}
+
+func TestHandler_PatchRowsMissingID(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-patch-no-id-ns"
+
+	// Patch without ID should fail
+	req := &WriteRequest{
+		RequestID: "test-patch-no-id",
+		PatchRows: []map[string]any{
+			{"name": "missing-id"}, // No id field
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req)
+	if err == nil {
+		t.Fatal("expected error for missing ID, got nil")
+	}
+
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("expected ErrInvalidRequest, got: %v", err)
+	}
+}
+
+func TestHandler_PatchWithUpsertAndDelete(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-patch-mixed-ns"
+
+	// Combine upsert, patch, and delete in one request
+	// Write ordering: upserts → patches → deletes
+	req := &WriteRequest{
+		RequestID: "test-patch-mixed",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "upserted"},
+		},
+		PatchRows: []map[string]any{
+			{"id": 2, "name": "patched"},
+		},
+		Deletes: []any{3},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.RowsUpserted != 1 {
+		t.Errorf("expected 1 row upserted, got %d", resp.RowsUpserted)
+	}
+	if resp.RowsPatched != 1 {
+		t.Errorf("expected 1 row patched, got %d", resp.RowsPatched)
+	}
+	if resp.RowsDeleted != 1 {
+		t.Errorf("expected 1 row deleted, got %d", resp.RowsDeleted)
+	}
+	if resp.RowsAffected != 3 {
+		t.Errorf("expected 3 rows affected, got %d", resp.RowsAffected)
+	}
+}
+
+func TestParseWriteRequest_PatchRows(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       map[string]any
+		wantErr    bool
+		errContain string
+		check      func(*testing.T, *WriteRequest)
+	}{
+		{
+			name: "patch_rows only",
+			body: map[string]any{
+				"patch_rows": []any{
+					map[string]any{"id": 1, "name": "patched1"},
+					map[string]any{"id": 2, "name": "patched2"},
+				},
+			},
+			check: func(t *testing.T, req *WriteRequest) {
+				if len(req.PatchRows) != 2 {
+					t.Errorf("expected 2 patch rows, got %d", len(req.PatchRows))
+				}
+			},
+		},
+		{
+			name: "patch_rows with upsert_rows",
+			body: map[string]any{
+				"upsert_rows": []any{
+					map[string]any{"id": 1, "name": "upserted"},
+				},
+				"patch_rows": []any{
+					map[string]any{"id": 2, "name": "patched"},
+				},
+			},
+			check: func(t *testing.T, req *WriteRequest) {
+				if len(req.UpsertRows) != 1 {
+					t.Errorf("expected 1 upsert row, got %d", len(req.UpsertRows))
+				}
+				if len(req.PatchRows) != 1 {
+					t.Errorf("expected 1 patch row, got %d", len(req.PatchRows))
+				}
+			},
+		},
+		{
+			name: "patch_rows not an array",
+			body: map[string]any{
+				"patch_rows": "not an array",
+			},
+			wantErr:    true,
+			errContain: "patch_rows must be an array",
+		},
+		{
+			name: "patch_rows element not an object",
+			body: map[string]any{
+				"patch_rows": []any{"not an object"},
+			},
+			wantErr:    true,
+			errContain: "patch_rows[0] must be an object",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := ParseWriteRequest("req-id", tt.body)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				} else if tt.errContain != "" && !contains(err.Error(), tt.errContain) {
+					t.Errorf("expected error containing %q, got %q", tt.errContain, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.check != nil {
+				tt.check(t, req)
+			}
+		})
 	}
 }

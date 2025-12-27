@@ -293,7 +293,7 @@
       "Test vector attribute cannot be patched (returns 400)",
       "Verify duplicate IDs use last-write-wins"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-patch-columns",
