@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/routing"
@@ -49,6 +52,21 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.gz.Write(b)
 }
 
+// loggingResponseWriter captures status code for logging.
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *loggingResponseWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 type Router struct {
 	cfg        *config.Config
 	mux        *http.ServeMux
@@ -56,6 +74,7 @@ type Router struct {
 	router     *routing.Router
 	membership *membership.Manager
 	proxy      *routing.Proxy
+	logger     *logging.Logger
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -63,6 +82,13 @@ func NewRouter(cfg *config.Config) *Router {
 }
 
 func NewRouterWithMembership(cfg *config.Config, clusterRouter *routing.Router, membershipMgr *membership.Manager) *Router {
+	return NewRouterWithLogger(cfg, clusterRouter, membershipMgr, nil)
+}
+
+func NewRouterWithLogger(cfg *config.Config, clusterRouter *routing.Router, membershipMgr *membership.Manager, logger *logging.Logger) *Router {
+	if logger == nil {
+		logger = logging.New()
+	}
 	r := &Router{
 		cfg: cfg,
 		mux: http.NewServeMux(),
@@ -72,6 +98,7 @@ func NewRouterWithMembership(cfg *config.Config, clusterRouter *routing.Router, 
 		},
 		router:     clusterRouter,
 		membership: membershipMgr,
+		logger:     logger,
 	}
 
 	// Set up proxy if we have a cluster router
@@ -93,31 +120,72 @@ func NewRouterWithMembership(cfg *config.Config, clusterRouter *routing.Router, 
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	start := time.Now()
+
+	// Generate or extract request ID
+	requestID := req.Header.Get("X-Request-ID")
+	if requestID == "" {
+		requestID = uuid.New().String()
+	}
+	w.Header().Set("X-Request-ID", requestID)
+
+	// Build context with request info
+	ctx := req.Context()
+	ctx = logging.ContextWithRequestID(ctx, requestID)
+	ctx = logging.ContextWithRequestTime(ctx, start)
+	ctx = logging.ContextWithEndpoint(ctx, req.Method+" "+req.URL.Path)
+	req = req.WithContext(ctx)
+
+	// Wrap response writer to capture status code
+	lw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
 	// Check Content-Length for payload size limit
 	if req.ContentLength > MaxRequestBodySize {
-		r.writeAPIError(w, ErrPayloadTooLarge("request body exceeds 256MB limit"))
+		r.writeAPIError(lw, ErrPayloadTooLarge("request body exceeds 256MB limit"))
+		r.logRequest(req, lw.statusCode, start, "", logging.CacheCold)
 		return
 	}
 
 	// Wrap body with a size limiter
-	req.Body = http.MaxBytesReader(w, req.Body, MaxRequestBodySize)
+	req.Body = http.MaxBytesReader(lw, req.Body, MaxRequestBodySize)
 	req.Body = r.decompressBody(req)
 
 	if strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
 		gz := gzipWriterPool.Get().(*gzip.Writer)
-		gz.Reset(w)
+		gz.Reset(lw)
 		defer func() {
 			gz.Close()
 			gzipWriterPool.Put(gz)
 		}()
 
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Del("Content-Length")
-		r.mux.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, gz: gz}, req)
+		lw.Header().Set("Content-Encoding", "gzip")
+		lw.Header().Del("Content-Length")
+		r.mux.ServeHTTP(&gzipResponseWriter{ResponseWriter: lw, gz: gz}, req)
+		r.logRequest(req, lw.statusCode, start, req.PathValue("namespace"), logging.CacheCold)
 		return
 	}
 
-	r.mux.ServeHTTP(w, req)
+	r.mux.ServeHTTP(lw, req)
+	r.logRequest(req, lw.statusCode, start, req.PathValue("namespace"), logging.CacheCold)
+}
+
+// logRequest logs the completed request with structured JSON logging.
+func (r *Router) logRequest(req *http.Request, status int, start time.Time, namespace string, cacheTemp logging.CacheTemperature) {
+	elapsed := float64(time.Since(start).Microseconds()) / 1000.0
+
+	info := &logging.RequestInfo{
+		RequestID:     logging.RequestIDFromContext(req.Context()),
+		Namespace:     namespace,
+		Endpoint:      req.Method + " " + req.URL.Path,
+		CacheTemp:     cacheTemp,
+		ServerTotalMs: elapsed,
+	}
+
+	r.logger.WithRequestInfo(info).Info("request completed",
+		"status", status,
+		"method", req.Method,
+		"path", req.URL.Path,
+	)
 }
 
 func (r *Router) decompressBody(req *http.Request) io.ReadCloser {

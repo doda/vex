@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/routing"
 )
@@ -421,6 +422,166 @@ func TestMembershipIntegration(t *testing.T) {
 						ns, i, home.Addr, expectedAddr)
 				}
 			}
+		}
+	})
+}
+
+func TestStructuredLogging(t *testing.T) {
+	t.Run("logs are structured JSON", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		logger := logging.NewWithWriter(&logBuf)
+		cfg := config.Default()
+		router := NewRouterWithLogger(cfg, nil, nil, logger)
+
+		req := httptest.NewRequest("GET", "/health", nil)
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		logOutput := logBuf.String()
+		if logOutput == "" {
+			t.Fatal("expected log output, got empty")
+		}
+
+		var logEntry map[string]interface{}
+		if err := json.Unmarshal([]byte(logOutput), &logEntry); err != nil {
+			t.Fatalf("log output is not valid JSON: %v\nOutput: %s", err, logOutput)
+		}
+
+		// Verify required fields are present
+		if _, ok := logEntry["msg"]; !ok {
+			t.Error("expected 'msg' field in log output")
+		}
+		if _, ok := logEntry["time"]; !ok {
+			t.Error("expected 'time' field in log output")
+		}
+		if _, ok := logEntry["level"]; !ok {
+			t.Error("expected 'level' field in log output")
+		}
+	})
+
+	t.Run("request_id namespace endpoint logged", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		logger := logging.NewWithWriter(&logBuf)
+		cfg := config.Default()
+		router := NewRouterWithLogger(cfg, nil, nil, logger)
+
+		// Create namespace state for query to succeed
+		router.SetState(&ServerState{
+			Namespaces: map[string]*NamespaceState{
+				"test-ns": {Exists: true},
+			},
+			ObjectStore: ObjectStoreState{Available: true},
+		})
+
+		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-ID", "test-req-123")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		logOutput := logBuf.String()
+		var logEntry map[string]interface{}
+		if err := json.Unmarshal([]byte(logOutput), &logEntry); err != nil {
+			t.Fatalf("log output is not valid JSON: %v", err)
+		}
+
+		if logEntry["request_id"] != "test-req-123" {
+			t.Errorf("expected request_id='test-req-123', got: %v", logEntry["request_id"])
+		}
+		if logEntry["namespace"] != "test-ns" {
+			t.Errorf("expected namespace='test-ns', got: %v", logEntry["namespace"])
+		}
+		if logEntry["endpoint"] != "POST /v2/namespaces/test-ns/query" {
+			t.Errorf("expected endpoint='POST /v2/namespaces/test-ns/query', got: %v", logEntry["endpoint"])
+		}
+	})
+
+	t.Run("cache temperature logged", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		logger := logging.NewWithWriter(&logBuf)
+		cfg := config.Default()
+		router := NewRouterWithLogger(cfg, nil, nil, logger)
+
+		// Create namespace state
+		router.SetState(&ServerState{
+			Namespaces: map[string]*NamespaceState{
+				"cache-ns": {Exists: true},
+			},
+			ObjectStore: ObjectStoreState{Available: true},
+		})
+
+		req := httptest.NewRequest("POST", "/v2/namespaces/cache-ns/query", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		logOutput := logBuf.String()
+		var logEntry map[string]interface{}
+		if err := json.Unmarshal([]byte(logOutput), &logEntry); err != nil {
+			t.Fatalf("log output is not valid JSON: %v", err)
+		}
+
+		if logEntry["cache_temperature"] != "cold" {
+			t.Errorf("expected cache_temperature to be logged, got: %v", logEntry["cache_temperature"])
+		}
+	})
+
+	t.Run("timings server_total_ms logged", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		logger := logging.NewWithWriter(&logBuf)
+		cfg := config.Default()
+		router := NewRouterWithLogger(cfg, nil, nil, logger)
+
+		req := httptest.NewRequest("GET", "/health", nil)
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		logOutput := logBuf.String()
+		var logEntry map[string]interface{}
+		if err := json.Unmarshal([]byte(logOutput), &logEntry); err != nil {
+			t.Fatalf("log output is not valid JSON: %v", err)
+		}
+
+		serverTotalMs, ok := logEntry["server_total_ms"].(float64)
+		if !ok {
+			t.Error("expected server_total_ms to be a number")
+		}
+		if serverTotalMs < 0 {
+			t.Errorf("expected server_total_ms >= 0, got: %f", serverTotalMs)
+		}
+	})
+
+	t.Run("request_id set in response header", func(t *testing.T) {
+		cfg := config.Default()
+		router := NewRouter(cfg)
+
+		req := httptest.NewRequest("GET", "/health", nil)
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		requestID := w.Header().Get("X-Request-ID")
+		if requestID == "" {
+			t.Error("expected X-Request-ID header to be set in response")
+		}
+	})
+
+	t.Run("provided request_id preserved", func(t *testing.T) {
+		cfg := config.Default()
+		router := NewRouter(cfg)
+
+		req := httptest.NewRequest("GET", "/health", nil)
+		req.Header.Set("X-Request-ID", "custom-request-id")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Header().Get("X-Request-ID") != "custom-request-id" {
+			t.Error("expected provided X-Request-ID to be preserved")
 		}
 	})
 }
