@@ -131,7 +131,7 @@
       "Test attribute names starting with $ are rejected with 400",
       "Test 'vector' is a valid special attribute name"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "schema-type-system",
