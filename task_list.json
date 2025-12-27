@@ -113,7 +113,7 @@
       "Test string IDs over 64 bytes are rejected with 400",
       "Test ID normalization to typed representation"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "attribute-name-validation",
