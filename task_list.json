@@ -195,7 +195,7 @@
       "Test vectors can be encoded as float array",
       "Test vectors can be encoded as base64"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "wal-entry-format",
