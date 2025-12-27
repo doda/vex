@@ -1697,7 +1697,7 @@
       "Test cache temperature logged",
       "Verify timings (server_total_ms, query_execution_ms) logged"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "metrics-prometheus",
