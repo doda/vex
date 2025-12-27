@@ -728,7 +728,7 @@
       "Test Not operator [\"Not\", f]",
       "Verify boolean operators can be nested"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "filter-eq-noteq",
