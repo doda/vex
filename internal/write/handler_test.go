@@ -1614,3 +1614,195 @@ func TestParseWriteRequest_PatchRows(t *testing.T) {
 		})
 	}
 }
+
+// --- Delete-specific tests (write-deletes task) ---
+
+// TestHandler_DeleteNonExistentIDSucceedsSilently verifies that deleting
+// a document ID that doesn't exist succeeds without error (silent no-op).
+func TestHandler_DeleteNonExistentIDSucceedsSilently(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-delete-nonexistent"
+
+	// Delete IDs that have never been created - should succeed silently
+	req := &WriteRequest{
+		RequestID: "test-delete-nonexistent",
+		Deletes:   []any{999, 998, 997},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("deleting non-existent IDs should not fail: %v", err)
+	}
+
+	// The deletes should still be recorded in the WAL
+	if resp.RowsDeleted != 3 {
+		t.Errorf("expected 3 rows deleted, got %d", resp.RowsDeleted)
+	}
+	if resp.RowsAffected != 3 {
+		t.Errorf("expected 3 rows affected, got %d", resp.RowsAffected)
+	}
+}
+
+// TestHandler_DeleteMixedExistentAndNonExistent verifies that a request
+// with both existing and non-existing document IDs succeeds.
+func TestHandler_DeleteMixedExistentAndNonExistent(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-delete-mixed"
+
+	// First, create some documents
+	createReq := &WriteRequest{
+		RequestID: "create-docs",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "doc1"},
+			{"id": 2, "name": "doc2"},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, createReq)
+	if err != nil {
+		t.Fatalf("failed to create initial documents: %v", err)
+	}
+
+	// Now delete a mix of existing (1, 2) and non-existent (999) IDs
+	deleteReq := &WriteRequest{
+		RequestID: "delete-mixed",
+		Deletes:   []any{1, 999, 2},
+	}
+
+	resp, err := handler.Handle(ctx, ns, deleteReq)
+	if err != nil {
+		t.Fatalf("mixed delete should not fail: %v", err)
+	}
+
+	// All 3 deletes should be recorded (even the non-existent one)
+	if resp.RowsDeleted != 3 {
+		t.Errorf("expected 3 rows deleted, got %d", resp.RowsDeleted)
+	}
+	if resp.RowsAffected != 3 {
+		t.Errorf("expected 3 rows affected, got %d", resp.RowsAffected)
+	}
+}
+
+// TestHandler_DeleteWithVariousIDTypes verifies deletes work with different ID types.
+func TestHandler_DeleteWithVariousIDTypes(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	// Delete using various ID types: integer, string, UUID
+	req := &WriteRequest{
+		RequestID: "delete-various-types",
+		Deletes: []any{
+			1,
+			"string-id",
+			"550e8400-e29b-41d4-a716-446655440000",
+		},
+	}
+
+	resp, err := handler.Handle(ctx, "test-delete-types", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.RowsDeleted != 3 {
+		t.Errorf("expected 3 rows deleted, got %d", resp.RowsDeleted)
+	}
+}
+
+// TestHandler_DeleteEmptyArray verifies empty deletes array is allowed.
+func TestHandler_DeleteEmptyArray(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	req := &WriteRequest{
+		RequestID: "delete-empty",
+		Deletes:   []any{},
+	}
+
+	resp, err := handler.Handle(ctx, "test-delete-empty", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.RowsDeleted != 0 {
+		t.Errorf("expected 0 rows deleted, got %d", resp.RowsDeleted)
+	}
+	if resp.RowsAffected != 0 {
+		t.Errorf("expected 0 rows affected, got %d", resp.RowsAffected)
+	}
+}
+
+// TestHandler_DeleteRecordedInWAL verifies that deletes are committed to the WAL.
+func TestHandler_DeleteRecordedInWAL(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-delete-wal"
+
+	req := &WriteRequest{
+		RequestID: "delete-wal-test",
+		Deletes:   []any{1, 2, 3},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.RowsDeleted != 3 {
+		t.Errorf("expected 3 rows deleted, got %d", resp.RowsDeleted)
+	}
+
+	// Verify WAL entry exists in object storage
+	walKey := "wal/1.wal.zst"
+	_, info, err := store.Get(ctx, walKey, nil)
+	if err != nil {
+		t.Fatalf("WAL entry not found in object storage: %v", err)
+	}
+	if info.Size == 0 {
+		t.Error("WAL entry has zero size")
+	}
+
+	// Verify namespace state was updated
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load namespace state: %v", err)
+	}
+
+	if loaded.State.WAL.HeadSeq != 1 {
+		t.Errorf("expected WAL head_seq 1, got %d", loaded.State.WAL.HeadSeq)
+	}
+}

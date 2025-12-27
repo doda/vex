@@ -641,3 +641,182 @@ func TestWriteAPI_UpsertColumnsMissingIds(t *testing.T) {
 		t.Errorf("expected status 400, got %d", resp.StatusCode)
 	}
 }
+
+// --- Delete-specific tests (write-deletes task) ---
+
+// TestWriteAPI_DeleteNonExistentIDSucceedsSilently verifies that deleting
+// a document ID that doesn't exist succeeds without error (silent no-op).
+func TestWriteAPI_DeleteNonExistentIDSucceedsSilently(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	// Delete IDs that have never been created - should succeed silently
+	body := map[string]any{
+		"deletes": []any{999, 998, 997},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200 (silent success for non-existent IDs), got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// The deletes should still be recorded in the WAL
+	if result["rows_deleted"] != float64(3) {
+		t.Errorf("expected rows_deleted 3, got %v", result["rows_deleted"])
+	}
+	if result["rows_affected"] != float64(3) {
+		t.Errorf("expected rows_affected 3, got %v", result["rows_affected"])
+	}
+}
+
+// TestWriteAPI_DeleteMixedExistentAndNonExistent verifies that a request
+// with both existing and non-existing document IDs succeeds.
+func TestWriteAPI_DeleteMixedExistentAndNonExistent(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	ns := "delete-mixed-ns"
+
+	// First, create some documents
+	createBody := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "name": "doc1"},
+			map[string]any{"id": 2, "name": "doc2"},
+		},
+	}
+	createBytes, _ := json.Marshal(createBody)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(createBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("failed to create initial documents: %d", w.Result().StatusCode)
+	}
+
+	// Now delete a mix of existing (1, 2) and non-existent (999) IDs
+	deleteBody := map[string]any{
+		"deletes": []any{1, 999, 2},
+	}
+	deleteBytes, _ := json.Marshal(deleteBody)
+
+	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(deleteBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// All 3 deletes should be recorded (even the non-existent one)
+	if result["rows_deleted"] != float64(3) {
+		t.Errorf("expected rows_deleted 3, got %v", result["rows_deleted"])
+	}
+	if result["rows_affected"] != float64(3) {
+		t.Errorf("expected rows_affected 3, got %v", result["rows_affected"])
+	}
+}
+
+// TestWriteAPI_DeleteWithVariousIDTypes verifies deletes work with different ID types.
+func TestWriteAPI_DeleteWithVariousIDTypes(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	// Delete using various ID types: integer, string, UUID
+	body := map[string]any{
+		"deletes": []any{
+			1,
+			"string-id",
+			"550e8400-e29b-41d4-a716-446655440000",
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if result["rows_deleted"] != float64(3) {
+		t.Errorf("expected rows_deleted 3, got %v", result["rows_deleted"])
+	}
+}
+
+// TestWriteAPI_DeleteEmptyArray verifies empty deletes array is allowed.
+func TestWriteAPI_DeleteEmptyArray(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	body := map[string]any{
+		"deletes": []any{},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if result["rows_deleted"] != float64(0) {
+		t.Errorf("expected rows_deleted 0, got %v", result["rows_deleted"])
+	}
+	if result["rows_affected"] != float64(0) {
+		t.Errorf("expected rows_affected 0, got %v", result["rows_affected"])
+	}
+}

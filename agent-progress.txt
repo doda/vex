@@ -59,3 +59,4 @@ KEY DEPENDENCIES:
 [2025-12-27T22:38:59.341Z] Completed write-patch-rows: Implement patch_rows for partial document updates
 [2025-12-27T22:46:08.925Z] Completed write-patch-columns: Implement patch_columns for columnar partial updates
 [2025-12-27T22:49:24.869Z] Completed tail-materialization: Implement tail materialization for unindexed WAL overlay
+[2025-12-27T22:54:03.092Z] Completed write-deletes: Implement deletes for removing documents by ID

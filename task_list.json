@@ -326,7 +326,7 @@
       "Test deletes array removes documents by ID",
       "Verify deleting non-existent ID succeeds silently"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-delete-by-filter",
