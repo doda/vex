@@ -239,7 +239,7 @@
       "Test deletes removes documents by ID",
       "Verify response includes rows_affected, rows_upserted, rows_patched, rows_deleted"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-upsert-rows",
