@@ -1954,7 +1954,7 @@
       "Test 'vex serve' or default starts all-in-one mode",
       "Verify configuration loading for each mode"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "local-dev-minio",
