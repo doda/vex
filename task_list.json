@@ -217,7 +217,7 @@
       "Verify invalid datetime format returns 400",
       "Verify non-UTF-8 strings return 400"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-api-basic",
