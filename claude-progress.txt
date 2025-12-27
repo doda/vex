@@ -35,3 +35,4 @@ KEY DEPENDENCIES:
 [2025-12-27T16:33:32.765Z] Completed namespace-name-validation: Validate namespace names match pattern [A-Za-z0-9-_.]{1,128}
 [2025-12-27T16:38:15.824Z] Completed routing-rendezvous-hashing: Implement rendezvous hashing for cache-locality routing
 [2025-12-27T16:45:00.064Z] Completed http-status-codes: Implement all required HTTP status codes
+[2025-12-27T16:47:14.376Z] Completed routing-proxy: Implement request proxy to home node with fallback

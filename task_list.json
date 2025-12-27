@@ -1355,7 +1355,7 @@
       "Test fallback to local serve if proxy fails",
       "Verify writes also proxy to home node"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "membership-static",
