@@ -432,3 +432,205 @@ func TestValidateColumnarIDs(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_DuplicateIDsLastWriteWins(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	// Create request with duplicate IDs - the later one should win
+	req := &WriteRequest{
+		RequestID: "test-req-dupe",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "first", "value": 100},
+			{"id": 2, "name": "unique", "value": 200},
+			{"id": 1, "name": "second", "value": 300}, // Duplicate - should override
+		},
+	}
+
+	resp, err := handler.Handle(ctx, "test-ns-dupe", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only 2 unique IDs should be upserted (deduplication happens before WAL commit)
+	if resp.RowsUpserted != 2 {
+		t.Errorf("expected 2 rows upserted (deduplicated), got %d", resp.RowsUpserted)
+	}
+	if resp.RowsAffected != 2 {
+		t.Errorf("expected 2 rows affected (deduplicated), got %d", resp.RowsAffected)
+	}
+}
+
+func TestHandler_DuplicateIDsNormalizedComparison(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	// Create request where numeric ID and string ID normalize to same value
+	// Integer 1 and string "1" both normalize to u64(1)
+	req := &WriteRequest{
+		RequestID: "test-req-normalized",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "integer-id", "value": 100},
+			{"id": "1", "name": "string-id", "value": 200}, // Should override, same normalized ID
+		},
+	}
+
+	resp, err := handler.Handle(ctx, "test-ns-normalized", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only 1 unique ID (normalized) should be upserted
+	if resp.RowsUpserted != 1 {
+		t.Errorf("expected 1 row upserted (normalized dedup), got %d", resp.RowsUpserted)
+	}
+}
+
+func TestHandler_DuplicateIDsWithVector(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	// Create request with duplicate IDs where vectors differ - last one should win
+	req := &WriteRequest{
+		RequestID: "test-req-vector-dupe",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "first", "vector": []any{1.0, 0.0, 0.0}},
+			{"id": 1, "name": "second", "vector": []any{0.0, 1.0, 0.0}}, // Should override
+		},
+	}
+
+	resp, err := handler.Handle(ctx, "test-ns-vector-dupe", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only 1 unique ID should be upserted
+	if resp.RowsUpserted != 1 {
+		t.Errorf("expected 1 row upserted, got %d", resp.RowsUpserted)
+	}
+}
+
+func TestHandler_SchemaInferenceFromFirstWrite(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-ns-schema"
+
+	// First write includes id and various attribute types
+	req := &WriteRequest{
+		RequestID: "test-req-schema",
+		UpsertRows: []map[string]any{
+			{
+				"id":       1,
+				"name":     "test",           // string
+				"count":    100,              // int
+				"price":    19.99,            // float
+				"active":   true,             // bool
+				"tags":     []any{"a", "b"},  // string array
+				"vector":   []any{0.1, 0.2},  // vector
+			},
+		},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+	if resp.RowsUpserted != 1 {
+		t.Errorf("expected 1 row upserted, got %d", resp.RowsUpserted)
+	}
+
+	// Second write with a new document, same attributes
+	req2 := &WriteRequest{
+		RequestID: "test-req-schema-2",
+		UpsertRows: []map[string]any{
+			{
+				"id":       2,
+				"name":     "test2",
+				"count":    200,
+				"price":    29.99,
+				"active":   false,
+				"tags":     []any{"c", "d"},
+				"vector":   []any{0.3, 0.4},
+			},
+		},
+	}
+
+	resp2, err := handler.Handle(ctx, ns, req2)
+	if err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+	if resp2.RowsUpserted != 1 {
+		t.Errorf("expected 1 row upserted, got %d", resp2.RowsUpserted)
+	}
+
+	// Verify namespace was created and state updated
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load namespace state: %v", err)
+	}
+	if loaded.State.WAL.HeadSeq != 2 {
+		t.Errorf("expected WAL head_seq 2, got %d", loaded.State.WAL.HeadSeq)
+	}
+}
+
+func TestHandler_DocumentArbitraryAttributes(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	// Test that documents can have arbitrary attributes
+	req := &WriteRequest{
+		RequestID: "test-req-attrs",
+		UpsertRows: []map[string]any{
+			{
+				"id":           1,
+				"custom_field": "value1",
+				"another_attr": 123,
+				"metadata":     "some info",
+			},
+			{
+				"id":            2,
+				"different_set": "yes", // Different attributes than doc 1
+				"rating":        4.5,
+			},
+		},
+	}
+
+	resp, err := handler.Handle(ctx, "test-ns-attrs", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.RowsUpserted != 2 {
+		t.Errorf("expected 2 rows upserted, got %d", resp.RowsUpserted)
+	}
+}

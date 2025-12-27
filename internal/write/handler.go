@@ -84,8 +84,13 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	// Create sub-batch for this request
 	subBatch := wal.NewWriteSubBatch(req.RequestID)
 
-	// Process upsert_rows
-	for _, row := range req.UpsertRows {
+	// Process upsert_rows with last-write-wins deduplication
+	// Later occurrences of the same ID override earlier ones
+	deduped, err := h.deduplicateUpsertRows(req.UpsertRows)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range deduped {
 		if err := h.processUpsertRow(row, subBatch); err != nil {
 			return nil, err
 		}
@@ -183,6 +188,47 @@ func (h *Handler) processDelete(rawID any, batch *wal.WriteSubBatch) error {
 
 	batch.AddDelete(docID)
 	return nil
+}
+
+// deduplicateUpsertRows removes duplicate IDs from the upsert_rows array,
+// keeping only the last occurrence (last-write-wins semantics).
+func (h *Handler) deduplicateUpsertRows(rows []map[string]any) ([]map[string]any, error) {
+	if len(rows) == 0 {
+		return rows, nil
+	}
+
+	// Track last occurrence index for each normalized ID
+	idLastIdx := make(map[string]int, len(rows))
+	for i, row := range rows {
+		rawID, ok := row["id"]
+		if !ok {
+			return nil, fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
+		}
+		id, err := document.ParseID(rawID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidID, err)
+		}
+		idLastIdx[id.String()] = i
+	}
+
+	// If no duplicates, return original
+	if len(idLastIdx) == len(rows) {
+		return rows, nil
+	}
+
+	// Build deduplicated list preserving order of last occurrences
+	result := make([]map[string]any, 0, len(idLastIdx))
+	seen := make(map[string]bool, len(idLastIdx))
+	for i, row := range rows {
+		rawID := row["id"]
+		id, _ := document.ParseID(rawID)
+		key := id.String()
+		if idLastIdx[key] == i && !seen[key] {
+			result = append(result, row)
+			seen[key] = true
+		}
+	}
+	return result, nil
 }
 
 // ParseWriteRequest parses a write request from a JSON body map.
