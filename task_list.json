@@ -1371,7 +1371,7 @@
       "Test static node list in config",
       "Verify membership used for routing calculations"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "membership-gossip",
