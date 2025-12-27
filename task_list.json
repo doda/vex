@@ -1657,7 +1657,7 @@
       "Verify strong consistency maintained after routing change",
       "Test eventual may be briefly stale until refresh"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "limits-enforcement",

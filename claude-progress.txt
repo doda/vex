@@ -40,3 +40,4 @@ KEY DEPENDENCIES:
 [2025-12-27T17:24:18.367Z] Completed error-response-format: Implement error response format for all endpoints
 [2025-12-27T17:24:47.695Z] Completed attribute-name-validation: Validate attribute names (up to 128 chars, no $ prefix)
 [2025-12-27T17:31:14.035Z] Completed membership-static: Implement static cluster membership from config
+[2025-12-27T17:35:06.395Z] Completed failure-node-churn: Handle node churn and routing changes
