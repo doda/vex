@@ -275,7 +275,7 @@
       "Verify ids array and attribute arrays are properly parsed",
       "Test duplicate IDs in columnar format return 400"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-patch-rows",

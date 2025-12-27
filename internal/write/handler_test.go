@@ -634,3 +634,302 @@ func TestHandler_DocumentArbitraryAttributes(t *testing.T) {
 		t.Errorf("expected 2 rows upserted, got %d", resp.RowsUpserted)
 	}
 }
+
+func TestParseColumnarToRows(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      map[string]any
+		wantCount  int
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name: "basic columnar format",
+			input: map[string]any{
+				"ids":   []any{1, 2, 3},
+				"name":  []any{"a", "b", "c"},
+				"value": []any{100, 200, 300},
+			},
+			wantCount: 3,
+			wantErr:   false,
+		},
+		{
+			name: "columnar with vectors",
+			input: map[string]any{
+				"ids":    []any{1, 2},
+				"name":   []any{"vec1", "vec2"},
+				"vector": []any{[]any{0.1, 0.2}, []any{0.3, 0.4}},
+			},
+			wantCount: 2,
+			wantErr:   false,
+		},
+		{
+			name:       "missing ids field",
+			input:      map[string]any{"name": []any{"a", "b"}},
+			wantErr:    true,
+			errContain: "missing 'ids' field",
+		},
+		{
+			name:       "ids not an array",
+			input:      map[string]any{"ids": "not-an-array"},
+			wantErr:    true,
+			errContain: "'ids' must be an array",
+		},
+		{
+			name: "attribute not an array",
+			input: map[string]any{
+				"ids":  []any{1, 2},
+				"name": "not-an-array",
+			},
+			wantErr:    true,
+			errContain: "must be an array",
+		},
+		{
+			name: "mismatched array lengths",
+			input: map[string]any{
+				"ids":  []any{1, 2, 3},
+				"name": []any{"a", "b"}, // Missing one element
+			},
+			wantErr:    true,
+			errContain: "has 2 elements, expected 3",
+		},
+		{
+			name: "duplicate IDs",
+			input: map[string]any{
+				"ids":  []any{1, 2, 1}, // Duplicate
+				"name": []any{"a", "b", "c"},
+			},
+			wantErr:    true,
+			errContain: "duplicate",
+		},
+		{
+			name: "empty ids array",
+			input: map[string]any{
+				"ids": []any{},
+			},
+			wantCount: 0,
+			wantErr:   false,
+		},
+		{
+			name: "single element",
+			input: map[string]any{
+				"ids":   []any{42},
+				"name":  []any{"single"},
+				"value": []any{999},
+			},
+			wantCount: 1,
+			wantErr:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows, err := ParseColumnarToRows(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				} else if tt.errContain != "" && !contains(err.Error(), tt.errContain) {
+					t.Errorf("expected error containing %q, got %q", tt.errContain, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(rows) != tt.wantCount {
+				t.Errorf("expected %d rows, got %d", tt.wantCount, len(rows))
+			}
+		})
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func TestParseColumnarToRows_ContentVerification(t *testing.T) {
+	input := map[string]any{
+		"ids":   []any{1, 2, 3},
+		"name":  []any{"alice", "bob", "charlie"},
+		"score": []any{100, 200, 300},
+	}
+
+	rows, err := ParseColumnarToRows(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(rows))
+	}
+
+	// Verify first row
+	if rows[0]["id"] != 1 || rows[0]["name"] != "alice" || rows[0]["score"] != 100 {
+		t.Errorf("row 0 mismatch: %v", rows[0])
+	}
+
+	// Verify second row
+	if rows[1]["id"] != 2 || rows[1]["name"] != "bob" || rows[1]["score"] != 200 {
+		t.Errorf("row 1 mismatch: %v", rows[1])
+	}
+
+	// Verify third row
+	if rows[2]["id"] != 3 || rows[2]["name"] != "charlie" || rows[2]["score"] != 300 {
+		t.Errorf("row 2 mismatch: %v", rows[2])
+	}
+}
+
+func TestParseWriteRequest_UpsertColumns(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       map[string]any
+		wantRows   int
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name: "upsert_columns only",
+			body: map[string]any{
+				"upsert_columns": map[string]any{
+					"ids":  []any{1, 2},
+					"name": []any{"a", "b"},
+				},
+			},
+			wantRows: 2,
+			wantErr:  false,
+		},
+		{
+			name: "upsert_columns with upsert_rows",
+			body: map[string]any{
+				"upsert_rows": []any{
+					map[string]any{"id": 1, "name": "row1"},
+				},
+				"upsert_columns": map[string]any{
+					"ids":  []any{2, 3},
+					"name": []any{"col1", "col2"},
+				},
+			},
+			wantRows: 3, // 1 from rows + 2 from columns
+			wantErr:  false,
+		},
+		{
+			name: "upsert_columns not an object",
+			body: map[string]any{
+				"upsert_columns": []any{"not", "an", "object"},
+			},
+			wantErr:    true,
+			errContain: "must be an object",
+		},
+		{
+			name: "upsert_columns with duplicate IDs",
+			body: map[string]any{
+				"upsert_columns": map[string]any{
+					"ids":  []any{1, 1}, // Duplicate
+					"name": []any{"a", "b"},
+				},
+			},
+			wantErr:    true,
+			errContain: "duplicate",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := ParseWriteRequest("test-req", tt.body)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				} else if tt.errContain != "" && !contains(err.Error(), tt.errContain) {
+					t.Errorf("expected error containing %q, got %q", tt.errContain, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(req.UpsertRows) != tt.wantRows {
+				t.Errorf("expected %d rows, got %d", tt.wantRows, len(req.UpsertRows))
+			}
+		})
+	}
+}
+
+func TestHandler_UpsertColumnsIntegration(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	// Parse columnar request
+	body := map[string]any{
+		"upsert_columns": map[string]any{
+			"ids":   []any{1, 2, 3},
+			"name":  []any{"alice", "bob", "charlie"},
+			"value": []any{100, 200, 300},
+		},
+	}
+
+	writeReq, err := ParseWriteRequest("test-columnar", body)
+	if err != nil {
+		t.Fatalf("failed to parse request: %v", err)
+	}
+
+	resp, err := handler.Handle(ctx, "test-ns-columnar", writeReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.RowsUpserted != 3 {
+		t.Errorf("expected 3 rows upserted, got %d", resp.RowsUpserted)
+	}
+	if resp.RowsAffected != 3 {
+		t.Errorf("expected 3 rows affected, got %d", resp.RowsAffected)
+	}
+}
+
+func TestHandler_UpsertColumnsWithVectors(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	body := map[string]any{
+		"upsert_columns": map[string]any{
+			"ids":    []any{1, 2},
+			"name":   []any{"vec1", "vec2"},
+			"vector": []any{[]any{0.1, 0.2, 0.3}, []any{0.4, 0.5, 0.6}},
+		},
+	}
+
+	writeReq, err := ParseWriteRequest("test-columnar-vectors", body)
+	if err != nil {
+		t.Fatalf("failed to parse request: %v", err)
+	}
+
+	resp, err := handler.Handle(ctx, "test-ns-columnar-vectors", writeReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.RowsUpserted != 2 {
+		t.Errorf("expected 2 rows upserted, got %d", resp.RowsUpserted)
+	}
+}

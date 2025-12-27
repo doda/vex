@@ -29,6 +29,12 @@ type WriteRequest struct {
 	Deletes     []any
 }
 
+// ColumnarData represents columnar format data with ids and attribute arrays.
+type ColumnarData struct {
+	IDs        []any
+	Attributes map[string][]any
+}
+
 // WriteResponse contains the result of a write operation.
 type WriteResponse struct {
 	RowsAffected int64 `json:"rows_affected"`
@@ -253,6 +259,20 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 		}
 	}
 
+	// Parse upsert_columns (columnar format)
+	if cols, ok := body["upsert_columns"]; ok {
+		colsMap, ok := cols.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: upsert_columns must be an object", ErrInvalidRequest)
+		}
+		columnarRows, err := ParseColumnarToRows(colsMap)
+		if err != nil {
+			return nil, err
+		}
+		// Append columnar rows after upsert_rows (same phase in ordering)
+		req.UpsertRows = append(req.UpsertRows, columnarRows...)
+	}
+
 	// Parse deletes
 	if deletes, ok := body["deletes"]; ok {
 		deletesSlice, ok := deletes.([]any)
@@ -281,4 +301,49 @@ func ValidateColumnarIDs(ids []any) error {
 		seen[key] = true
 	}
 	return nil
+}
+
+// ParseColumnarToRows converts columnar format to row format.
+// The columnar format is: {"ids": [id1, id2, ...], "attr1": [val1, val2, ...], ...}
+// All attribute arrays must have the same length as the ids array.
+func ParseColumnarToRows(cols map[string]any) ([]map[string]any, error) {
+	// Extract ids array
+	rawIDs, ok := cols["ids"]
+	if !ok {
+		return nil, fmt.Errorf("%w: upsert_columns missing 'ids' field", ErrInvalidRequest)
+	}
+	ids, ok := rawIDs.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: upsert_columns 'ids' must be an array", ErrInvalidRequest)
+	}
+
+	// Validate for duplicate IDs
+	if err := ValidateColumnarIDs(ids); err != nil {
+		return nil, err
+	}
+
+	// Build rows from columnar data
+	rows := make([]map[string]any, len(ids))
+	for i := range rows {
+		rows[i] = map[string]any{"id": ids[i]}
+	}
+
+	// Process each attribute column
+	for key, rawValues := range cols {
+		if key == "ids" {
+			continue
+		}
+		values, ok := rawValues.([]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: upsert_columns attribute '%s' must be an array", ErrInvalidRequest, key)
+		}
+		if len(values) != len(ids) {
+			return nil, fmt.Errorf("%w: upsert_columns attribute '%s' has %d elements, expected %d (same as ids)", ErrInvalidRequest, key, len(values), len(ids))
+		}
+		for i, v := range values {
+			rows[i][key] = v
+		}
+	}
+
+	return rows, nil
 }

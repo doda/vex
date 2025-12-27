@@ -472,3 +472,172 @@ func TestWriteAPI_MultipleIDTypes(t *testing.T) {
 		t.Errorf("expected rows_upserted 3, got %v", result["rows_upserted"])
 	}
 }
+
+func TestWriteAPI_UpsertColumns(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	body := map[string]any{
+		"upsert_columns": map[string]any{
+			"ids":   []any{1, 2, 3},
+			"name":  []any{"alice", "bob", "charlie"},
+			"value": []any{100, 200, 300},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if result["rows_upserted"] != float64(3) {
+		t.Errorf("expected rows_upserted 3, got %v", result["rows_upserted"])
+	}
+	if result["rows_affected"] != float64(3) {
+		t.Errorf("expected rows_affected 3, got %v", result["rows_affected"])
+	}
+}
+
+func TestWriteAPI_UpsertColumnsWithVectors(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	body := map[string]any{
+		"upsert_columns": map[string]any{
+			"ids":    []any{1, 2},
+			"name":   []any{"vec1", "vec2"},
+			"vector": []any{[]any{0.1, 0.2, 0.3}, []any{0.4, 0.5, 0.6}},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if result["rows_upserted"] != float64(2) {
+		t.Errorf("expected rows_upserted 2, got %v", result["rows_upserted"])
+	}
+}
+
+func TestWriteAPI_UpsertColumnsCombinedWithRows(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	body := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "name": "row1"},
+		},
+		"upsert_columns": map[string]any{
+			"ids":  []any{2, 3},
+			"name": []any{"col1", "col2"},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// 1 from rows + 2 from columns = 3
+	if result["rows_upserted"] != float64(3) {
+		t.Errorf("expected rows_upserted 3, got %v", result["rows_upserted"])
+	}
+}
+
+func TestWriteAPI_UpsertColumnsMismatchedLengths(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	body := map[string]any{
+		"upsert_columns": map[string]any{
+			"ids":  []any{1, 2, 3},
+			"name": []any{"a", "b"}, // Only 2 elements, should fail
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestWriteAPI_UpsertColumnsMissingIds(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	body := map[string]any{
+		"upsert_columns": map[string]any{
+			"name":  []any{"a", "b"},
+			"value": []any{1, 2},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", resp.StatusCode)
+	}
+}
