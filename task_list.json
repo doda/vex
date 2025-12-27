@@ -1337,7 +1337,7 @@
       "Verify requests route to home node when possible",
       "Test any node can serve any namespace (fallback)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "routing-proxy",
