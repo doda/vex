@@ -1533,7 +1533,7 @@
       "Test endpoint returns cache status for namespace",
       "Verify gated behind admin auth"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "debug-wal-endpoint",

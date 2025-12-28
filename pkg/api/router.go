@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/logging"
@@ -88,9 +89,11 @@ type Router struct {
 	stateManager *namespace.StateManager
 	tailStore    tail.Store
 	writeHandler *write.Handler
-	writeBatcher *write.Batcher  // batches writes at 1/sec per namespace
-	queryHandler *query.Handler   // handles query execution
-	cacheWarmer  *warmer.Warmer  // background cache warmer
+	writeBatcher *write.Batcher       // batches writes at 1/sec per namespace
+	queryHandler *query.Handler       // handles query execution
+	cacheWarmer  *warmer.Warmer       // background cache warmer
+	diskCache    *cache.DiskCache     // NVMe SSD cache
+	ramCache     *cache.MemoryCache   // RAM cache for hot index structures
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -155,6 +158,7 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 	r.mux.HandleFunc("DELETE /v2/namespaces/{namespace}", r.authMiddleware(r.validateNamespace(r.handleDeleteNamespace)))
 	r.mux.HandleFunc("POST /v1/namespaces/{namespace}/_debug/recall", r.authMiddleware(r.validateNamespace(r.handleDebugRecall)))
 	r.mux.HandleFunc("GET /_debug/state/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugState)))
+	r.mux.HandleFunc("GET /_debug/cache/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugCache)))
 
 	return r
 }
@@ -1169,6 +1173,80 @@ func (r *Router) handleDebugState(w http.ResponseWriter, req *http.Request) {
 	r.writeJSON(w, http.StatusOK, response)
 }
 
+func (r *Router) handleDebugCache(w http.ResponseWriter, req *http.Request) {
+	ns := req.PathValue("namespace")
+
+	// Check object store availability
+	if err := r.checkObjectStore(); err != nil {
+		r.writeAPIError(w, err)
+		return
+	}
+
+	// Check namespace exists
+	if r.stateManager != nil {
+		_, err := r.stateManager.Load(req.Context(), ns)
+		if err != nil {
+			if errors.Is(err, namespace.ErrStateNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+	} else {
+		// Fallback to test-mode state
+		if err := r.checkNamespaceExists(ns, true); err != nil {
+			r.writeAPIError(w, err)
+			return
+		}
+	}
+
+	// Build cache status response
+	response := map[string]interface{}{
+		"namespace": ns,
+	}
+
+	// Add disk cache stats
+	if r.diskCache != nil {
+		diskStats := r.diskCache.Stats()
+		response["disk_cache"] = map[string]interface{}{
+			"used_bytes":   diskStats.UsedBytes,
+			"max_bytes":    diskStats.MaxBytes,
+			"entry_count":  diskStats.EntryCount,
+			"pinned_count": diskStats.PinnedCount,
+			"budget_pct":   diskStats.BudgetPct,
+			"is_pinned":    r.diskCache.IsPinned("vex/namespaces/" + ns + "/"),
+		}
+	}
+
+	// Add RAM cache stats for this namespace
+	if r.ramCache != nil {
+		memStats := r.ramCache.Stats()
+		nsUsage := r.ramCache.GetNamespaceUsage(ns)
+		response["ram_cache"] = map[string]interface{}{
+			"total_used_bytes": memStats.UsedBytes,
+			"total_max_bytes":  memStats.MaxBytes,
+			"namespace_bytes":  nsUsage,
+			"entry_count":      memStats.EntryCount,
+			"shard_count":      memStats.ShardCount,
+			"hits":             memStats.Hits,
+			"misses":           memStats.Misses,
+			"hit_ratio":        memStats.HitRatio,
+		}
+	}
+
+	// Indicate test mode if no caches are configured
+	if r.diskCache == nil && r.ramCache == nil {
+		response["test_mode"] = true
+	}
+
+	r.writeJSON(w, http.StatusOK, response)
+}
+
 func (r *Router) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1350,6 +1428,26 @@ func (r *Router) SetCacheWarmer(w *warmer.Warmer) {
 // CacheWarmer returns the cache warmer.
 func (r *Router) CacheWarmer() *warmer.Warmer {
 	return r.cacheWarmer
+}
+
+// SetDiskCache sets the disk cache for the router.
+func (r *Router) SetDiskCache(dc *cache.DiskCache) {
+	r.diskCache = dc
+}
+
+// DiskCache returns the disk cache.
+func (r *Router) DiskCache() *cache.DiskCache {
+	return r.diskCache
+}
+
+// SetRAMCache sets the RAM cache for the router.
+func (r *Router) SetRAMCache(mc *cache.MemoryCache) {
+	r.ramCache = mc
+}
+
+// RAMCache returns the RAM cache.
+func (r *Router) RAMCache() *cache.MemoryCache {
+	return r.ramCache
 }
 
 // parsePageSize parses and validates the page_size parameter.
