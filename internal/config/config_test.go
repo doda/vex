@@ -547,3 +547,90 @@ func TestConfig_GetCompatMode(t *testing.T) {
 		})
 	}
 }
+
+func TestGuardrailsConfig(t *testing.T) {
+	os.Setenv("VEX_GUARDRAILS_MAX_NAMESPACES", "500")
+	os.Setenv("VEX_GUARDRAILS_MAX_TAIL_BYTES_MB", "128")
+	os.Setenv("VEX_GUARDRAILS_MAX_CONCURRENT_COLD_FILLS", "8")
+	defer os.Unsetenv("VEX_GUARDRAILS_MAX_NAMESPACES")
+	defer os.Unsetenv("VEX_GUARDRAILS_MAX_TAIL_BYTES_MB")
+	defer os.Unsetenv("VEX_GUARDRAILS_MAX_CONCURRENT_COLD_FILLS")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Guardrails.MaxNamespaces != 500 {
+		t.Errorf("expected max namespaces 500, got %d", cfg.Guardrails.MaxNamespaces)
+	}
+	if cfg.Guardrails.MaxTailBytesMB != 128 {
+		t.Errorf("expected max tail bytes MB 128, got %d", cfg.Guardrails.MaxTailBytesMB)
+	}
+	if cfg.Guardrails.MaxConcurrentColdFills != 8 {
+		t.Errorf("expected max concurrent cold fills 8, got %d", cfg.Guardrails.MaxConcurrentColdFills)
+	}
+}
+
+func TestGuardrailsConfigDefaults(t *testing.T) {
+	cfg := GuardrailsConfig{}
+
+	// Test default values
+	if got := cfg.GetMaxNamespaces(); got != 1000 {
+		t.Errorf("expected default max namespaces 1000, got %d", got)
+	}
+	if got := cfg.GetMaxConcurrentColdFills(); got != 4 {
+		t.Errorf("expected default max concurrent cold fills 4, got %d", got)
+	}
+	if got := cfg.MaxTailBytesPerNamespace(); got != 256*1024*1024 {
+		t.Errorf("expected default max tail bytes 256MB, got %d", got)
+	}
+}
+
+func TestGuardrailsConfigCustomValues(t *testing.T) {
+	cfg := GuardrailsConfig{
+		MaxNamespaces:          500,
+		MaxTailBytesMB:         512,
+		MaxConcurrentColdFills: 16,
+	}
+
+	if got := cfg.GetMaxNamespaces(); got != 500 {
+		t.Errorf("expected max namespaces 500, got %d", got)
+	}
+	if got := cfg.GetMaxConcurrentColdFills(); got != 16 {
+		t.Errorf("expected max concurrent cold fills 16, got %d", got)
+	}
+	if got := cfg.MaxTailBytesPerNamespace(); got != 512*1024*1024 {
+		t.Errorf("expected max tail bytes 512MB, got %d", got)
+	}
+}
+
+func TestGuardrailsConfigFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"guardrails": {
+			"max_namespaces": 2000,
+			"max_tail_bytes_mb": 1024,
+			"max_concurrent_cold_fills": 2
+		}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Guardrails.MaxNamespaces != 2000 {
+		t.Errorf("expected max namespaces 2000, got %d", cfg.Guardrails.MaxNamespaces)
+	}
+	if cfg.Guardrails.MaxTailBytesMB != 1024 {
+		t.Errorf("expected max tail bytes MB 1024, got %d", cfg.Guardrails.MaxTailBytesMB)
+	}
+	if cfg.Guardrails.MaxConcurrentColdFills != 2 {
+		t.Errorf("expected max concurrent cold fills 2, got %d", cfg.Guardrails.MaxConcurrentColdFills)
+	}
+}

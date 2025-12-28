@@ -2025,7 +2025,7 @@
       "Test tail materialization memory caps per namespace",
       "Verify concurrent cold cache fills limited"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "request-timeout",

@@ -63,6 +63,7 @@ type Config struct {
 	Cache       CacheConfig       `json:"cache"`
 	Membership  MembershipConfig  `json:"membership"`
 	Indexer     IndexerConfig     `json:"indexer"`
+	Guardrails  GuardrailsConfig  `json:"guardrails"`
 }
 
 // GetCompatMode returns the compatibility mode as a typed CompatMode.
@@ -123,6 +124,43 @@ type GossipConfig struct {
 	AdvertisePort int `json:"advertise_port"`
 	// SeedNodes is a list of seed nodes to bootstrap gossip membership
 	SeedNodes []string `json:"seed_nodes"`
+}
+
+// GuardrailsConfig holds per-namespace guardrails configuration.
+type GuardrailsConfig struct {
+	// MaxNamespaces is the maximum number of namespaces to keep in memory.
+	// Default: 1000
+	MaxNamespaces int `json:"max_namespaces"`
+	// MaxTailBytesMB is the maximum tail bytes per namespace in MB.
+	// Default: 256
+	MaxTailBytesMB int `json:"max_tail_bytes_mb"`
+	// MaxConcurrentColdFills limits parallel cold cache fills.
+	// Default: 4
+	MaxConcurrentColdFills int `json:"max_concurrent_cold_fills"`
+}
+
+// MaxTailBytesPerNamespace returns the max tail bytes (converted from MB to bytes).
+func (c GuardrailsConfig) MaxTailBytesPerNamespace() int64 {
+	if c.MaxTailBytesMB <= 0 {
+		return 256 * 1024 * 1024 // 256 MB default
+	}
+	return int64(c.MaxTailBytesMB) * 1024 * 1024
+}
+
+// GetMaxNamespaces returns MaxNamespaces with default fallback.
+func (c GuardrailsConfig) GetMaxNamespaces() int {
+	if c.MaxNamespaces <= 0 {
+		return 1000
+	}
+	return c.MaxNamespaces
+}
+
+// GetMaxConcurrentColdFills returns MaxConcurrentColdFills with default fallback.
+func (c GuardrailsConfig) GetMaxConcurrentColdFills() int {
+	if c.MaxConcurrentColdFills <= 0 {
+		return 4
+	}
+	return c.MaxConcurrentColdFills
 }
 
 func Default() *Config {
@@ -255,6 +293,23 @@ func Load(path string) (*Config, error) {
 	if env := os.Getenv("VEX_INDEXER_WRITE_MANIFEST_VERSION"); env != "" {
 		if n, err := parseIntEnv(env); err == nil {
 			cfg.Indexer.WriteManifestVersion = n
+		}
+	}
+
+	// Guardrails configuration
+	if env := os.Getenv("VEX_GUARDRAILS_MAX_NAMESPACES"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Guardrails.MaxNamespaces = n
+		}
+	}
+	if env := os.Getenv("VEX_GUARDRAILS_MAX_TAIL_BYTES_MB"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Guardrails.MaxTailBytesMB = n
+		}
+	}
+	if env := os.Getenv("VEX_GUARDRAILS_MAX_CONCURRENT_COLD_FILLS"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Guardrails.MaxConcurrentColdFills = n
 		}
 	}
 
