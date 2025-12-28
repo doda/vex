@@ -446,7 +446,7 @@
       "Verify doc missing = skip (no doc created)",
       "Test $ref_new references inside conditions"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-conditional-delete",

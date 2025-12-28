@@ -103,3 +103,11 @@ KEY DEPENDENCIES:
 - No other correctness issues found in conditional upsert flow.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T00:45:33.114Z] Completed write-conditional-patch: Review patch_condition implementation
+- Reviewed staged changes in `internal/write/handler.go` and new tests in `internal/write/conditional_patch_test.go`.
+- Verified patch_condition parsing, conditional evaluation against existing docs, and $ref_new resolution.
+- Verified missing or deleted docs skip patches, and conditional patches only apply when filter matches.
+- Confirmed conditional patch handling is atomic with the WAL batch (no separate writes).
+- No correctness issues found in the implementation.
+- Tests not re-run (per instruction to trust prior runs).
+- Marked task as passing in `task_list.json`.
