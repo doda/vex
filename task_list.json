@@ -1427,7 +1427,7 @@
       "Test cache warm task is enqueued",
       "Verify prefetch: centroids, cluster offsets, filter bitmaps, doc column headers"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "list-namespaces-endpoint",

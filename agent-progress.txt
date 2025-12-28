@@ -498,3 +498,13 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T15:18:00.000Z] Completed warm-cache-endpoint: Review GET /v1/namespaces/:namespace/hint_cache_warm
+- Reviewed new cache warmer implementation in `internal/warmer/warmer.go` and tests in `internal/warmer/warmer_test.go`.
+- Reviewed endpoint handling in `pkg/api/router.go` and API tests in `pkg/api/warm_cache_test.go`.
+- Verified routing to home node with proxy fallback, namespace existence/tombstone errors, and immediate 200 response.
+- Verified background warm task enqueues and prefetch coverage for IVF metadata, filter bitmaps, and doc column headers.
+- Fixed manifest key selection to use `state.Index.ManifestKey` or `ManifestSeq` before loading manifest.
+- Simplicity check: non-blocking enqueue and worker model remain straightforward.
+- Issues found: manifest key derived from indexed WAL seq (resolved).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

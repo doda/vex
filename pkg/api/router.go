@@ -20,6 +20,7 @@ import (
 	"github.com/vexsearch/vex/internal/query"
 	"github.com/vexsearch/vex/internal/routing"
 	"github.com/vexsearch/vex/internal/tail"
+	"github.com/vexsearch/vex/internal/warmer"
 	"github.com/vexsearch/vex/internal/write"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -87,7 +88,8 @@ type Router struct {
 	tailStore    tail.Store
 	writeHandler *write.Handler
 	writeBatcher *write.Batcher  // batches writes at 1/sec per namespace
-	queryHandler *query.Handler  // handles query execution
+	queryHandler *query.Handler   // handles query execution
+	cacheWarmer  *warmer.Warmer  // background cache warmer
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -158,7 +160,13 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 // Close releases resources held by the router.
 func (r *Router) Close() error {
 	var firstErr error
-	// Close batcher first to flush pending writes
+	// Close cache warmer first to stop background tasks
+	if r.cacheWarmer != nil {
+		if err := r.cacheWarmer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Close batcher next to flush pending writes
 	if r.writeBatcher != nil {
 		if err := r.writeBatcher.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -411,12 +419,60 @@ func (r *Router) handleGetMetadata(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleWarmCache(w http.ResponseWriter, req *http.Request) {
 	ns := req.PathValue("namespace")
 
-	// Check if namespace exists
-	if err := r.checkNamespaceExists(ns, true); err != nil {
+	// Check object store availability
+	if err := r.checkObjectStore(); err != nil {
 		r.writeAPIError(w, err)
 		return
 	}
 
+	// Try to proxy to home node if we're not the home node
+	// The warm cache hint should go to the home node for best cache locality
+	if r.proxy != nil && r.proxy.ShouldProxy(ns, req) {
+		resp, err := r.proxy.ProxyRequest(req.Context(), ns, req)
+		if err == nil {
+			// Proxy succeeded, copy response
+			defer resp.Body.Close()
+			for key, values := range resp.Header {
+				for _, value := range values {
+					w.Header().Add(key, value)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			io.Copy(w, resp.Body)
+			return
+		}
+		// Proxy failed, fall back to local handling
+	}
+
+	// Check if namespace exists using real state manager first
+	if r.stateManager != nil {
+		_, err := r.stateManager.Load(req.Context(), ns)
+		if err != nil {
+			if errors.Is(err, namespace.ErrStateNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+	} else {
+		// Fallback to test state
+		if err := r.checkNamespaceExists(ns, true); err != nil {
+			r.writeAPIError(w, err)
+			return
+		}
+	}
+
+	// Enqueue cache warming task (non-blocking)
+	if r.cacheWarmer != nil {
+		r.cacheWarmer.Enqueue(ns)
+	}
+
+	// Return 200 immediately - cache warming happens in background
 	r.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -1094,4 +1150,14 @@ func (r *Router) Store() objectstore.Store {
 // StateManager returns the namespace state manager.
 func (r *Router) StateManager() *namespace.StateManager {
 	return r.stateManager
+}
+
+// SetCacheWarmer sets the cache warmer for the router.
+func (r *Router) SetCacheWarmer(w *warmer.Warmer) {
+	r.cacheWarmer = w
+}
+
+// CacheWarmer returns the cache warmer.
+func (r *Router) CacheWarmer() *warmer.Warmer {
+	return r.cacheWarmer
 }
