@@ -504,7 +504,7 @@
       "Verify batch window or size threshold triggers commit",
       "Test commit latency up to 1 second for window alignment"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-idempotency",

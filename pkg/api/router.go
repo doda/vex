@@ -83,6 +83,7 @@ type Router struct {
 	stateManager *namespace.StateManager
 	tailStore    tail.Store
 	writeHandler *write.Handler
+	writeBatcher *write.Batcher // batches writes at 1/sec per namespace
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -115,13 +116,18 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 		store:      store,
 	}
 
-	// Set up state manager, tail store, and write handler if store is available
+	// Set up state manager, tail store, write handler, and batcher if store is available
 	if store != nil {
 		r.stateManager = namespace.NewStateManager(store)
 		r.tailStore = tail.New(tail.DefaultConfig(), store, nil, nil)
 		writeHandler, err := write.NewHandlerWithTail(store, r.stateManager, r.tailStore)
 		if err == nil {
 			r.writeHandler = writeHandler
+		}
+		// Create write batcher for 1/sec batching per namespace
+		writeBatcher, err := write.NewBatcher(store, r.stateManager, r.tailStore)
+		if err == nil {
+			r.writeBatcher = writeBatcher
 		}
 	}
 
@@ -146,6 +152,12 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 // Close releases resources held by the router.
 func (r *Router) Close() error {
 	var firstErr error
+	// Close batcher first to flush pending writes
+	if r.writeBatcher != nil {
+		if err := r.writeBatcher.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if r.writeHandler != nil {
 		if err := r.writeHandler.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -389,49 +401,55 @@ func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// If we have a write handler, use it for actual persistence
-	if r.writeHandler != nil {
-		requestID := logging.RequestIDFromContext(req.Context())
-		writeReq, err := write.ParseWriteRequest(requestID, body)
-		if err != nil {
-			r.writeAPIError(w, ErrBadRequest(err.Error()))
-			return
-		}
-
-		resp, err := r.writeHandler.Handle(req.Context(), ns, writeReq)
-		if err != nil {
-			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
-				r.writeAPIError(w, ErrNamespaceDeleted(ns))
-				return
-			}
-			if errors.Is(err, write.ErrInvalidID) || errors.Is(err, write.ErrInvalidAttribute) || errors.Is(err, write.ErrInvalidRequest) || errors.Is(err, write.ErrInvalidFilter) || errors.Is(err, write.ErrDeleteByFilterTooMany) || errors.Is(err, write.ErrPatchByFilterTooMany) || errors.Is(err, write.ErrVectorPatchForbidden) || errors.Is(err, write.ErrSchemaTypeChange) || errors.Is(err, write.ErrInvalidSchema) {
-				r.writeAPIError(w, ErrBadRequest(err.Error()))
-				return
-			}
-			r.writeAPIError(w, ErrInternalServer(err.Error()))
-			return
-		}
-
-		response := map[string]interface{}{
-			"rows_affected": resp.RowsAffected,
-			"rows_upserted": resp.RowsUpserted,
-			"rows_patched":  resp.RowsPatched,
-			"rows_deleted":  resp.RowsDeleted,
-		}
-		if resp.RowsRemaining {
-			response["rows_remaining"] = true
-		}
-		r.writeJSON(w, http.StatusOK, response)
+	// Parse the write request
+	requestID := logging.RequestIDFromContext(req.Context())
+	writeReq, err := write.ParseWriteRequest(requestID, body)
+	if err != nil {
+		r.writeAPIError(w, ErrBadRequest(err.Error()))
 		return
 	}
 
-	// Fallback when no write handler configured (test mode)
-	r.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"rows_affected": 0,
-		"rows_upserted": 0,
-		"rows_patched":  0,
-		"rows_deleted":  0,
-	})
+	// Prefer the batcher for batched writes (1/sec per namespace)
+	// Fall back to direct handler if batcher is not available
+	var resp *write.WriteResponse
+	if r.writeBatcher != nil {
+		resp, err = r.writeBatcher.Submit(req.Context(), ns, writeReq)
+	} else if r.writeHandler != nil {
+		resp, err = r.writeHandler.Handle(req.Context(), ns, writeReq)
+	} else {
+		// Fallback when no write handler configured (test mode)
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"rows_affected": 0,
+			"rows_upserted": 0,
+			"rows_patched":  0,
+			"rows_deleted":  0,
+		})
+		return
+	}
+
+	if err != nil {
+		if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+			r.writeAPIError(w, ErrNamespaceDeleted(ns))
+			return
+		}
+		if errors.Is(err, write.ErrInvalidID) || errors.Is(err, write.ErrInvalidAttribute) || errors.Is(err, write.ErrInvalidRequest) || errors.Is(err, write.ErrInvalidFilter) || errors.Is(err, write.ErrDeleteByFilterTooMany) || errors.Is(err, write.ErrPatchByFilterTooMany) || errors.Is(err, write.ErrVectorPatchForbidden) || errors.Is(err, write.ErrSchemaTypeChange) || errors.Is(err, write.ErrInvalidSchema) {
+			r.writeAPIError(w, ErrBadRequest(err.Error()))
+			return
+		}
+		r.writeAPIError(w, ErrInternalServer(err.Error()))
+		return
+	}
+
+	response := map[string]interface{}{
+		"rows_affected": resp.RowsAffected,
+		"rows_upserted": resp.RowsUpserted,
+		"rows_patched":  resp.RowsPatched,
+		"rows_deleted":  resp.RowsDeleted,
+	}
+	if resp.RowsRemaining {
+		response["rows_remaining"] = true
+	}
+	r.writeJSON(w, http.StatusOK, response)
 }
 
 func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
@@ -660,7 +678,7 @@ func (r *Router) ClusterNodes() []routing.Node {
 	return r.router.Nodes()
 }
 
-// SetStore sets the object store and initializes the write handler.
+// SetStore sets the object store and initializes the write handler and batcher.
 // Used for testing.
 func (r *Router) SetStore(store objectstore.Store) error {
 	r.store = store
@@ -672,6 +690,12 @@ func (r *Router) SetStore(store objectstore.Store) error {
 			return err
 		}
 		r.writeHandler = writeHandler
+		// Initialize the batcher for 1/sec batching
+		writeBatcher, err := write.NewBatcher(store, r.stateManager, r.tailStore)
+		if err != nil {
+			return err
+		}
+		r.writeBatcher = writeBatcher
 	}
 	return nil
 }

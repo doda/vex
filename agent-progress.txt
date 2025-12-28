@@ -128,3 +128,11 @@ KEY DEPENDENCIES:
 - Verified tests cover resurrection, ordering interactions, and atomic WAL entry behavior.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T01:32:10.000Z] Completed write-batching: Re-verify batching fixes
+- Reviewed staged changes in `internal/write/batcher.go`, `internal/write/batcher_test.go`, `internal/write/batcher_verification_test.go`, and `pkg/api/router.go`.
+- Verified batcher batches per-namespace writes with timer/size thresholds and flushes on close.
+- Verified router now routes writes through the batcher with proper error handling and fallback.
+- Checked context cancellation handling and race prevention between timer and size flush.
+- No new correctness issues found in the fixes.
+- Tests not re-run (per instruction to trust prior runs).
+- Marked task as passing in `task_list.json`.
