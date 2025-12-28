@@ -555,7 +555,7 @@
       "Test requests under 256MB are accepted",
       "Verify requests over 256MB return 413"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "wal-commit-protocol",
