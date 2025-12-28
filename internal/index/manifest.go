@@ -62,7 +62,11 @@ type Segment struct {
 	DocsKey string `json:"docs_key,omitempty"`
 
 	// VectorsKey is the object storage key for vector data (IVF index).
+	// Deprecated: Use IVFKeys for the new IVF format.
 	VectorsKey string `json:"vectors_key,omitempty"`
+
+	// IVFKeys contains the IVF index object keys.
+	IVFKeys *IVFKeys `json:"ivf_keys,omitempty"`
 
 	// FilterKeys is a list of object storage keys for filter indexes (roaring bitmaps).
 	FilterKeys []string `json:"filter_keys,omitempty"`
@@ -75,6 +79,51 @@ type Segment struct {
 
 	// CreatedAt is when this segment was created.
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// IVFKeys contains the object storage keys for IVF index components.
+// These follow the file format defined in the spec:
+// - centroids: small file containing cluster centroids (cacheable in RAM)
+// - cluster_offsets: small file mapping clusters to offset/length in cluster data
+// - cluster_data: large file with packed cluster vectors
+type IVFKeys struct {
+	// CentroidsKey is the object key for vectors.centroids.bin
+	CentroidsKey string `json:"centroids_key,omitempty"`
+
+	// ClusterOffsetsKey is the object key for vectors.cluster_offsets.bin
+	ClusterOffsetsKey string `json:"cluster_offsets_key,omitempty"`
+
+	// ClusterDataKey is the object key for vectors.clusters.pack
+	ClusterDataKey string `json:"cluster_data_key,omitempty"`
+
+	// NClusters is the number of clusters in the index.
+	NClusters int `json:"n_clusters,omitempty"`
+
+	// VectorCount is the total number of vectors indexed.
+	VectorCount int `json:"vector_count,omitempty"`
+}
+
+// HasIVF returns true if IVF keys are present and valid.
+func (k *IVFKeys) HasIVF() bool {
+	return k != nil && k.CentroidsKey != "" && k.ClusterOffsetsKey != "" && k.ClusterDataKey != ""
+}
+
+// AllKeys returns all object storage keys in the IVF structure.
+func (k *IVFKeys) AllKeys() []string {
+	if k == nil {
+		return nil
+	}
+	var keys []string
+	if k.CentroidsKey != "" {
+		keys = append(keys, k.CentroidsKey)
+	}
+	if k.ClusterOffsetsKey != "" {
+		keys = append(keys, k.ClusterOffsetsKey)
+	}
+	if k.ClusterDataKey != "" {
+		keys = append(keys, k.ClusterDataKey)
+	}
+	return keys
 }
 
 // SegmentStats contains statistics for a single segment.
@@ -280,6 +329,8 @@ func (m *Manifest) AllObjectKeys() []string {
 		if seg.VectorsKey != "" {
 			keys = append(keys, seg.VectorsKey)
 		}
+		// Include IVF keys if present
+		keys = append(keys, seg.IVFKeys.AllKeys()...)
 		keys = append(keys, seg.FilterKeys...)
 		keys = append(keys, seg.FTSKeys...)
 	}

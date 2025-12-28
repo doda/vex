@@ -366,3 +366,11 @@ KEY DEPENDENCIES:
 - No correctness issues found in recovery flow or tests.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T06:26:00.000Z] Completed vector-ivf-index: Review IVF ANN index implementation
+- Reviewed new IVF index builder/reader, serialization, and k-means clustering in `internal/vector/ivf.go` and `internal/vector/kmeans.go`.
+- Reviewed cold-query reader flow and range merging in `internal/vector/ivf_reader.go`.
+- Verified manifest/segment keys include new IVF component keys in `internal/index/manifest.go` and `internal/index/segment.go`.
+- Fixed input validation to reject non-positive topK in IVF search APIs.
+- No other correctness issues found in IVF search/format logic or tests.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

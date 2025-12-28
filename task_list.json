@@ -1084,7 +1084,7 @@
       "Test vectors.cluster_offsets.bin maps cluster to offset/length",
       "Verify cold query flow: load centroids, find nearest clusters, fetch cluster data"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "vector-query-ann-path",

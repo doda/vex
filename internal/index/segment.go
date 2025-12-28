@@ -86,6 +86,7 @@ func (b *SegmentBuilder) SetDocsKey(key string) error {
 }
 
 // SetVectorsKey sets the object storage key for vector data.
+// Deprecated: Use SetIVFKeys for the new IVF format.
 func (b *SegmentBuilder) SetVectorsKey(key string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -94,6 +95,29 @@ func (b *SegmentBuilder) SetVectorsKey(key string) error {
 		return ErrSegmentSealed
 	}
 	b.segment.VectorsKey = key
+	return nil
+}
+
+// SetIVFKeys sets the IVF index keys for this segment.
+func (b *SegmentBuilder) SetIVFKeys(keys *IVFKeys) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.sealed {
+		return ErrSegmentSealed
+	}
+	// Make a copy to prevent external mutation
+	if keys != nil {
+		b.segment.IVFKeys = &IVFKeys{
+			CentroidsKey:      keys.CentroidsKey,
+			ClusterOffsetsKey: keys.ClusterOffsetsKey,
+			ClusterDataKey:    keys.ClusterDataKey,
+			NClusters:         keys.NClusters,
+			VectorCount:       keys.VectorCount,
+		}
+	} else {
+		b.segment.IVFKeys = nil
+	}
 	return nil
 }
 
@@ -286,6 +310,25 @@ func (s *ImmutableSegment) FTSKeys() []string {
 	return result
 }
 
+// IVFKeys returns a copy of the IVF index keys.
+func (s *ImmutableSegment) IVFKeys() *IVFKeys {
+	if s.segment.IVFKeys == nil {
+		return nil
+	}
+	return &IVFKeys{
+		CentroidsKey:      s.segment.IVFKeys.CentroidsKey,
+		ClusterOffsetsKey: s.segment.IVFKeys.ClusterOffsetsKey,
+		ClusterDataKey:    s.segment.IVFKeys.ClusterDataKey,
+		NClusters:         s.segment.IVFKeys.NClusters,
+		VectorCount:       s.segment.IVFKeys.VectorCount,
+	}
+}
+
+// HasIVF returns true if this segment has IVF index data.
+func (s *ImmutableSegment) HasIVF() bool {
+	return s.segment.IVFKeys.HasIVF()
+}
+
 // Stats returns the segment statistics.
 func (s *ImmutableSegment) Stats() SegmentStats {
 	return s.segment.Stats
@@ -305,6 +348,8 @@ func (s *ImmutableSegment) AllObjectKeys() []string {
 	if s.segment.VectorsKey != "" {
 		keys = append(keys, s.segment.VectorsKey)
 	}
+	// Include IVF keys if present
+	keys = append(keys, s.segment.IVFKeys.AllKeys()...)
 	keys = append(keys, s.segment.FilterKeys...)
 	keys = append(keys, s.segment.FTSKeys...)
 	return keys
@@ -375,6 +420,7 @@ func (w *SegmentWriter) WriteDocsData(ctx context.Context, data []byte) (string,
 }
 
 // WriteVectorsData writes vector index data and returns the object key.
+// Deprecated: Use WriteIVFCentroids, WriteIVFClusterOffsets, and WriteIVFClusterData instead.
 func (w *SegmentWriter) WriteVectorsData(ctx context.Context, data []byte) (string, error) {
 	w.mu.Lock()
 	if w.sealed {
@@ -384,6 +430,75 @@ func (w *SegmentWriter) WriteVectorsData(ctx context.Context, data []byte) (stri
 	w.mu.Unlock()
 
 	key := fmt.Sprintf("%s/vectors.ivf.zst", SegmentKey(w.namespace, w.segmentID))
+	etag, err := w.writeObject(ctx, key, data)
+	if err != nil {
+		return "", err
+	}
+
+	w.mu.Lock()
+	w.written[key] = etag
+	w.mu.Unlock()
+
+	return key, nil
+}
+
+// WriteIVFCentroids writes the IVF centroids file (small, cacheable in RAM).
+// Returns the object key for vectors.centroids.bin.
+func (w *SegmentWriter) WriteIVFCentroids(ctx context.Context, data []byte) (string, error) {
+	w.mu.Lock()
+	if w.sealed {
+		w.mu.Unlock()
+		return "", ErrSegmentSealed
+	}
+	w.mu.Unlock()
+
+	key := fmt.Sprintf("%s/vectors.centroids.bin", SegmentKey(w.namespace, w.segmentID))
+	etag, err := w.writeObject(ctx, key, data)
+	if err != nil {
+		return "", err
+	}
+
+	w.mu.Lock()
+	w.written[key] = etag
+	w.mu.Unlock()
+
+	return key, nil
+}
+
+// WriteIVFClusterOffsets writes the IVF cluster offsets file (small, cacheable).
+// Returns the object key for vectors.cluster_offsets.bin.
+func (w *SegmentWriter) WriteIVFClusterOffsets(ctx context.Context, data []byte) (string, error) {
+	w.mu.Lock()
+	if w.sealed {
+		w.mu.Unlock()
+		return "", ErrSegmentSealed
+	}
+	w.mu.Unlock()
+
+	key := fmt.Sprintf("%s/vectors.cluster_offsets.bin", SegmentKey(w.namespace, w.segmentID))
+	etag, err := w.writeObject(ctx, key, data)
+	if err != nil {
+		return "", err
+	}
+
+	w.mu.Lock()
+	w.written[key] = etag
+	w.mu.Unlock()
+
+	return key, nil
+}
+
+// WriteIVFClusterData writes the IVF packed cluster data file (large).
+// Returns the object key for vectors.clusters.pack.
+func (w *SegmentWriter) WriteIVFClusterData(ctx context.Context, data []byte) (string, error) {
+	w.mu.Lock()
+	if w.sealed {
+		w.mu.Unlock()
+		return "", ErrSegmentSealed
+	}
+	w.mu.Unlock()
+
+	key := fmt.Sprintf("%s/vectors.clusters.pack", SegmentKey(w.namespace, w.segmentID))
 	etag, err := w.writeObject(ctx, key, data)
 	if err != nil {
 		return "", err
