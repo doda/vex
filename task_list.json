@@ -521,7 +521,7 @@
       "Verify duplicate request_id returns original response",
       "Test de-duplication works within bounded time window"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-backpressure",

@@ -98,11 +98,12 @@ type WriteResponse struct {
 
 // Handler handles write operations for a namespace.
 type Handler struct {
-	store     objectstore.Store
-	stateMan  *namespace.StateManager
-	encoder   *wal.Encoder
-	canon     *wal.Canonicalizer
-	tailStore tail.Store // Optional tail store for filter evaluation
+	store       objectstore.Store
+	stateMan    *namespace.StateManager
+	encoder     *wal.Encoder
+	canon       *wal.Canonicalizer
+	tailStore   tail.Store         // Optional tail store for filter evaluation
+	idempotency *IdempotencyStore  // Optional idempotency store for de-duplication
 }
 
 // NewHandler creates a new write handler.
@@ -118,21 +119,26 @@ func NewHandlerWithTail(store objectstore.Store, stateMan *namespace.StateManage
 	}
 
 	return &Handler{
-		store:     store,
-		stateMan:  stateMan,
-		encoder:   encoder,
-		canon:     wal.NewCanonicalizer(),
-		tailStore: tailStore,
+		store:       store,
+		stateMan:    stateMan,
+		encoder:     encoder,
+		canon:       wal.NewCanonicalizer(),
+		tailStore:   tailStore,
+		idempotency: NewIdempotencyStore(),
 	}, nil
 }
 
 // Close releases resources held by the handler.
 func (h *Handler) Close() error {
+	if h.idempotency != nil {
+		h.idempotency.Close()
+	}
 	return h.encoder.Close()
 }
 
 // Handle processes a write request for the given namespace.
 // It returns only after the WAL entry is committed to object storage.
+// If a duplicate request_id is detected (cached or in-flight), returns the original response.
 //
 // Write operation ordering (per spec):
 //  1. delete_by_filter - before all other operations
@@ -142,9 +148,41 @@ func (h *Handler) Close() error {
 //  5. patches (patch_rows/patch_columns)
 //  6. deletes
 func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*WriteResponse, error) {
+	// Check for duplicate request_id and reserve if not
+	reserved := false
+	if h.idempotency != nil && req.RequestID != "" {
+		result, cached, inflight := h.idempotency.Reserve(ns, req.RequestID)
+		switch result {
+		case ReserveCached:
+			return cached, nil
+		case ReserveInFlight:
+			// Wait for the in-flight request to complete (respects ctx cancellation)
+			resp, err := h.idempotency.WaitForInFlight(ctx, inflight)
+			if resp != nil {
+				return resp, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			// Original request failed with no error, retry by reserving again
+			return h.Handle(ctx, ns, req)
+		case ReserveOK:
+			// We have the reservation, proceed with processing
+			reserved = true
+		}
+	}
+
+	// Helper to release reservation on error
+	releaseOnError := func(err error) {
+		if reserved && h.idempotency != nil {
+			h.idempotency.Release(ns, req.RequestID, err)
+		}
+	}
+
 	// Load or create namespace state
 	loaded, err := h.stateMan.LoadOrCreate(ctx, ns)
 	if err != nil {
+		releaseOnError(err)
 		if errors.Is(err, namespace.ErrNamespaceTombstoned) {
 			return nil, err
 		}
@@ -156,6 +194,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	if req.Schema != nil {
 		schemaDelta, err = ValidateAndConvertSchemaUpdate(req.Schema, loaded.State.Schema)
 		if err != nil {
+			releaseOnError(err)
 			return nil, err
 		}
 	}
@@ -174,6 +213,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	if req.DeleteByFilter != nil {
 		remaining, err := h.processDeleteByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.DeleteByFilter, subBatch)
 		if err != nil {
+			releaseOnError(err)
 			return nil, err
 		}
 		rowsRemaining = remaining
@@ -183,6 +223,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	if req.PatchByFilter != nil {
 		remaining, err := h.processPatchByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.PatchByFilter, subBatch)
 		if err != nil {
+			releaseOnError(err)
 			return nil, err
 		}
 		// Only update rowsRemaining if we haven't already set it
@@ -194,6 +235,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	// PHASE 3: copy_from_namespace runs AFTER patch_by_filter, BEFORE explicit upserts/patches/deletes
 	if req.CopyFromNamespace != "" {
 		if err := h.processCopyFromNamespace(ctx, req.CopyFromNamespace, subBatch); err != nil {
+			releaseOnError(err)
 			return nil, err
 		}
 	}
@@ -202,17 +244,20 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	// Later occurrences of the same ID override earlier ones
 	dedupedUpserts, err := h.deduplicateUpsertRows(req.UpsertRows)
 	if err != nil {
+		releaseOnError(err)
 		return nil, err
 	}
 
 	// If upsert_condition is specified, process conditionally
 	if req.UpsertCondition != nil {
 		if err := h.processConditionalUpserts(ctx, ns, loaded.State.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch); err != nil {
+			releaseOnError(err)
 			return nil, err
 		}
 	} else {
 		for _, row := range dedupedUpserts {
 			if err := h.processUpsertRow(row, subBatch); err != nil {
+				releaseOnError(err)
 				return nil, err
 			}
 		}
@@ -222,17 +267,20 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	// Patches run after upserts per write ordering spec
 	dedupedPatches, err := h.deduplicatePatchRows(req.PatchRows)
 	if err != nil {
+		releaseOnError(err)
 		return nil, err
 	}
 
 	// If patch_condition is specified, process conditionally
 	if req.PatchCondition != nil {
 		if err := h.processConditionalPatches(ctx, ns, loaded.State.WAL.HeadSeq, dedupedPatches, req.PatchCondition, subBatch); err != nil {
+			releaseOnError(err)
 			return nil, err
 		}
 	} else {
 		for _, row := range dedupedPatches {
 			if err := h.processPatchRow(row, subBatch); err != nil {
+				releaseOnError(err)
 				return nil, err
 			}
 		}
@@ -242,11 +290,13 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	// If delete_condition is specified, process conditionally
 	if req.DeleteCondition != nil {
 		if err := h.processConditionalDeletes(ctx, ns, loaded.State.WAL.HeadSeq, req.Deletes, req.DeleteCondition, subBatch); err != nil {
+			releaseOnError(err)
 			return nil, err
 		}
 	} else {
 		for _, id := range req.Deletes {
 			if err := h.processDelete(id, subBatch); err != nil {
+				releaseOnError(err)
 				return nil, err
 			}
 		}
@@ -257,7 +307,9 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	// Encode the WAL entry
 	result, err := h.encoder.Encode(walEntry)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode WAL entry: %w", err)
+		err = fmt.Errorf("failed to encode WAL entry: %w", err)
+		releaseOnError(err)
+		return nil, err
 	}
 
 	// Write WAL entry to object storage with If-None-Match for idempotency
@@ -266,22 +318,33 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		ContentType: "application/octet-stream",
 	})
 	if err != nil && !objectstore.IsConflictError(err) {
-		return nil, fmt.Errorf("failed to write WAL entry: %w", err)
+		err = fmt.Errorf("failed to write WAL entry: %w", err)
+		releaseOnError(err)
+		return nil, err
 	}
 
 	// Update namespace state to advance WAL head with schema delta
 	_, err = h.stateMan.AdvanceWAL(ctx, ns, loaded.ETag, walKey, int64(len(result.Data)), schemaDelta)
 	if err != nil {
-		return nil, fmt.Errorf("failed to update namespace state: %w", err)
+		err = fmt.Errorf("failed to update namespace state: %w", err)
+		releaseOnError(err)
+		return nil, err
 	}
 
-	return &WriteResponse{
+	resp := &WriteResponse{
 		RowsAffected:  subBatch.Stats.RowsAffected,
 		RowsUpserted:  subBatch.Stats.RowsUpserted,
 		RowsPatched:   subBatch.Stats.RowsPatched,
 		RowsDeleted:   subBatch.Stats.RowsDeleted,
 		RowsRemaining: rowsRemaining,
-	}, nil
+	}
+
+	// Complete the idempotency reservation with the successful response
+	if reserved && h.idempotency != nil {
+		h.idempotency.Complete(ns, req.RequestID, resp)
+	}
+
+	return resp, nil
 }
 
 // processDeleteByFilter implements the two-phase delete_by_filter operation.
@@ -1008,9 +1071,17 @@ func (h *Handler) deduplicateUpsertRows(rows []map[string]any) ([]map[string]any
 }
 
 // ParseWriteRequest parses a write request from a JSON body map.
+// If request_id is provided in the body, it takes precedence over the parameter.
 func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, error) {
 	req := &WriteRequest{
 		RequestID: requestID,
+	}
+
+	// Parse request_id from body if provided (takes precedence)
+	if rid, ok := body["request_id"]; ok {
+		if ridStr, ok := rid.(string); ok && ridStr != "" {
+			req.RequestID = ridStr
+		}
 	}
 
 	// Parse upsert_rows

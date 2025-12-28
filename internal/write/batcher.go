@@ -54,6 +54,7 @@ type pendingWrite struct {
 	namespace string
 	req       *WriteRequest
 	result    chan batchResult
+	reserved  bool // true if this request has an idempotency reservation
 }
 
 // batchResult contains the result of a batched write.
@@ -75,11 +76,12 @@ type namespaceBatch struct {
 
 // Batcher batches write requests per namespace, committing at most 1 WAL entry per second.
 type Batcher struct {
-	cfg      BatcherConfig
-	store    objectstore.Store
-	stateMan *namespace.StateManager
-	canon    *wal.Canonicalizer
-	tailStore tail.Store
+	cfg           BatcherConfig
+	store         objectstore.Store
+	stateMan      *namespace.StateManager
+	canon         *wal.Canonicalizer
+	tailStore     tail.Store
+	idempotency   *IdempotencyStore
 
 	mu       sync.Mutex
 	batches  map[string]*namespaceBatch // namespace -> pending batch
@@ -102,12 +104,13 @@ func NewBatcherWithConfig(store objectstore.Store, stateMan *namespace.StateMana
 	}
 
 	return &Batcher{
-		cfg:       cfg,
-		store:     store,
-		stateMan:  stateMan,
-		canon:     wal.NewCanonicalizer(),
-		tailStore: tailStore,
-		batches:   make(map[string]*namespaceBatch),
+		cfg:         cfg,
+		store:       store,
+		stateMan:    stateMan,
+		canon:       wal.NewCanonicalizer(),
+		tailStore:   tailStore,
+		idempotency: NewIdempotencyStore(),
+		batches:     make(map[string]*namespaceBatch),
 	}, nil
 }
 
@@ -138,12 +141,42 @@ func (b *Batcher) Close() error {
 	// Wait for all pending flushes to complete
 	b.closeWg.Wait()
 
+	// Close idempotency store
+	if b.idempotency != nil {
+		b.idempotency.Close()
+	}
+
 	return nil
 }
 
 // Submit submits a write request for batching.
 // It blocks until the write is committed or an error occurs.
+// If a duplicate request_id is detected (cached or in-flight), returns the original response.
 func (b *Batcher) Submit(ctx context.Context, ns string, req *WriteRequest) (*WriteResponse, error) {
+	// Check for duplicate request_id and reserve if not
+	reserved := false
+	if req.RequestID != "" {
+		result, cached, inflight := b.idempotency.Reserve(ns, req.RequestID)
+		switch result {
+		case ReserveCached:
+			return cached, nil
+		case ReserveInFlight:
+			// Wait for the in-flight request to complete (respects ctx cancellation)
+			resp, err := b.idempotency.WaitForInFlight(ctx, inflight)
+			if resp != nil {
+				return resp, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			// Original request failed with no error, retry by reserving again
+			return b.Submit(ctx, ns, req)
+		case ReserveOK:
+			// We have the reservation, proceed with batching
+			reserved = true
+		}
+	}
+
 	resultCh := make(chan batchResult, 1)
 
 	pw := &pendingWrite{
@@ -151,6 +184,7 @@ func (b *Batcher) Submit(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		namespace: ns,
 		req:       req,
 		result:    resultCh,
+		reserved:  reserved,
 	}
 
 	// Estimate the size of this write for batching decisions
@@ -161,6 +195,9 @@ func (b *Batcher) Submit(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
+		if reserved {
+			b.idempotency.Release(ns, req.RequestID, ErrBatcherClosed)
+		}
 		return nil, ErrBatcherClosed
 	}
 
@@ -244,9 +281,13 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 
 	loaded, err := b.stateMan.LoadOrCreate(batchCtx, batch.namespace)
 	if err != nil {
-		// Fail all writes in the batch
+		// Fail all writes in the batch and release their reservations
+		batchErr := fmt.Errorf("failed to load namespace state: %w", err)
 		for _, pw := range batch.writes {
-			pw.result <- batchResult{err: fmt.Errorf("failed to load namespace state: %w", err)}
+			if pw.reserved {
+				b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+			}
+			pw.result <- batchResult{err: batchErr}
 		}
 		return
 	}
@@ -272,6 +313,9 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 		select {
 		case <-writeCtx.Done():
 			results[i] = nil
+			if pw.reserved {
+				b.idempotency.Release(batch.namespace, pw.req.RequestID, writeCtx.Err())
+			}
 			pw.result <- batchResult{err: writeCtx.Err()}
 			continue
 		default:
@@ -279,8 +323,11 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 
 		resp, subBatch, writeSchemaDelta, err := b.processWrite(writeCtx, batch.namespace, loaded.State, pw.req)
 		if err != nil {
-			// Record error for this specific write
+			// Record error for this specific write and release reservation
 			results[i] = nil
+			if pw.reserved {
+				b.idempotency.Release(batch.namespace, pw.req.RequestID, err)
+			}
 			pw.result <- batchResult{err: err}
 			continue
 		}
@@ -308,9 +355,13 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	// Create encoder for this batch (avoid shared state race)
 	encoder, err := wal.NewEncoder()
 	if err != nil {
+		batchErr := fmt.Errorf("failed to create encoder: %w", err)
 		for i, pw := range batch.writes {
 			if results[i] != nil {
-				pw.result <- batchResult{err: fmt.Errorf("failed to create encoder: %w", err)}
+				if pw.reserved {
+					b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+				}
+				pw.result <- batchResult{err: batchErr}
 			}
 		}
 		return
@@ -320,10 +371,14 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	// Encode the WAL entry
 	result, err := encoder.Encode(walEntry)
 	if err != nil {
-		// Fail all pending writes
+		// Fail all pending writes and release reservations
+		batchErr := fmt.Errorf("failed to encode WAL entry: %w", err)
 		for i, pw := range batch.writes {
 			if results[i] != nil {
-				pw.result <- batchResult{err: fmt.Errorf("failed to encode WAL entry: %w", err)}
+				if pw.reserved {
+					b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+				}
+				pw.result <- batchResult{err: batchErr}
 			}
 		}
 		return
@@ -335,10 +390,14 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 		ContentType: "application/octet-stream",
 	})
 	if err != nil && !objectstore.IsConflictError(err) {
-		// Fail all pending writes
+		// Fail all pending writes and release reservations
+		batchErr := fmt.Errorf("failed to write WAL entry: %w", err)
 		for i, pw := range batch.writes {
 			if results[i] != nil {
-				pw.result <- batchResult{err: fmt.Errorf("failed to write WAL entry: %w", err)}
+				if pw.reserved {
+					b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+				}
+				pw.result <- batchResult{err: batchErr}
 			}
 		}
 		return
@@ -347,18 +406,26 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	// Update namespace state (use batchCtx for durability)
 	_, err = b.stateMan.AdvanceWAL(batchCtx, batch.namespace, loaded.ETag, walKey, int64(len(result.Data)), schemaDelta)
 	if err != nil {
-		// Fail all pending writes
+		// Fail all pending writes and release reservations
+		batchErr := fmt.Errorf("failed to update namespace state: %w", err)
 		for i, pw := range batch.writes {
 			if results[i] != nil {
-				pw.result <- batchResult{err: fmt.Errorf("failed to update namespace state: %w", err)}
+				if pw.reserved {
+					b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+				}
+				pw.result <- batchResult{err: batchErr}
 			}
 		}
 		return
 	}
 
-	// Send success results
+	// Send success results and complete idempotency reservations
 	for i, pw := range batch.writes {
 		if results[i] != nil {
+			// Complete the idempotency reservation with successful response
+			if pw.reserved {
+				b.idempotency.Complete(batch.namespace, pw.req.RequestID, results[i])
+			}
 			pw.result <- batchResult{resp: results[i]}
 		}
 	}

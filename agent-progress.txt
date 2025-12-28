@@ -136,3 +136,12 @@ KEY DEPENDENCIES:
 - No new correctness issues found in the fixes.
 - Tests not re-run (per instruction to trust prior runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T01:45:20.000Z] Completed write-idempotency: Re-verify idempotency fixes
+- Reviewed staged changes in `internal/write/batcher.go`, `internal/write/handler.go`, `internal/write/idempotency.go`, and `internal/write/idempotency_test.go`.
+- Verified request_id de-duplication behavior for handler and batcher, including cached responses and in-flight waits.
+- Verified request_id parsing prefers JSON body value over parameter when provided.
+- Checked idempotency store lifecycle cleanup and release/complete logic on success and failure paths.
+- Issue found: reservations were leaked when batcher was closed before enqueue; added release on ErrBatcherClosed.
+- No other correctness issues found after the fix.
+- Tests not re-run (per instruction to trust prior runs).
+- Marked task as passing in `task_list.json`.
