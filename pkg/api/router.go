@@ -2,6 +2,7 @@ package api
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -311,9 +312,44 @@ func (r *Router) handleListNamespaces(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	// Parse query parameters
+	q := req.URL.Query()
+	cursor := q.Get("cursor")
+	prefix := q.Get("prefix")
+	pageSizeStr := q.Get("page_size")
+
+	// Default page_size is 100, max is 1000
+	pageSize := 100
+	if pageSizeStr != "" {
+		ps, err := parsePageSize(pageSizeStr)
+		if err != nil {
+			r.writeAPIError(w, ErrBadRequest(err.Error()))
+			return
+		}
+		pageSize = ps
+	}
+
+	// List namespaces from object store
+	if r.store != nil {
+		namespaces, nextCursor, err := listNamespacesFromStore(req.Context(), r.store, cursor, prefix, pageSize)
+		if err != nil {
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+
+		response := map[string]interface{}{
+			"namespaces": namespaces,
+		}
+		if nextCursor != "" {
+			response["next_cursor"] = nextCursor
+		}
+		r.writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	// Fallback for test mode - return empty list
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"namespaces":  []string{},
-		"next_cursor": nil,
+		"namespaces": []interface{}{},
 	})
 }
 
@@ -1160,4 +1196,115 @@ func (r *Router) SetCacheWarmer(w *warmer.Warmer) {
 // CacheWarmer returns the cache warmer.
 func (r *Router) CacheWarmer() *warmer.Warmer {
 	return r.cacheWarmer
+}
+
+// parsePageSize parses and validates the page_size parameter.
+// Returns default 100 if empty, validates range [1, 1000].
+func parsePageSize(s string) (int, error) {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, errors.New("page_size must be a positive integer")
+		}
+		n = n*10 + int(c-'0')
+		if n > 1000 {
+			return 0, errors.New("page_size cannot exceed 1000")
+		}
+	}
+	if n < 1 {
+		return 0, errors.New("page_size must be at least 1")
+	}
+	return n, nil
+}
+
+// listNamespacesFromStore lists namespaces from object storage with pagination.
+// Returns namespace entries, next_cursor (if more results), and any error.
+func listNamespacesFromStore(ctx context.Context, store objectstore.Store, cursor, prefix string, pageSize int) ([]map[string]interface{}, string, error) {
+	// Namespaces are stored under: vex/namespaces/<namespace>/meta/state.json
+	// We list with prefix "vex/namespaces/" and extract namespace names.
+	// For prefix filtering, we add the user prefix to the path.
+	listPrefix := "vex/namespaces/"
+	if prefix != "" {
+		listPrefix = "vex/namespaces/" + prefix
+	}
+
+	// To handle pagination across namespace directories, we use a delimiter approach
+	// or scan state.json files. For simplicity, we'll scan for state.json files
+	// and extract unique namespace names.
+
+	// We request more objects than needed to find enough unique namespaces
+	// because we're filtering for state.json files only.
+	result, err := store.List(ctx, &objectstore.ListOptions{
+		Prefix:    listPrefix,
+		Marker:    cursor,
+		MaxKeys:   pageSize * 10, // Request more to account for non-state.json files
+		Delimiter: "",
+	})
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Extract unique namespace names from state.json paths
+	seen := make(map[string]bool)
+	namespaces := make([]map[string]interface{}, 0, pageSize)
+	var lastKey string
+	brokeEarly := false
+	brokeBeforeEnd := false
+
+	for i, obj := range result.Objects {
+		// Match pattern: vex/namespaces/<namespace>/meta/state.json
+		if !strings.HasSuffix(obj.Key, "/meta/state.json") {
+			continue
+		}
+
+		// Extract namespace name
+		// Key format: vex/namespaces/<namespace>/meta/state.json
+		parts := strings.Split(obj.Key, "/")
+		if len(parts) < 4 {
+			continue
+		}
+		nsName := parts[2] // "vex", "namespaces", "<namespace>", "meta", "state.json"
+
+		// Skip if already seen (shouldn't happen with state.json files)
+		if seen[nsName] {
+			continue
+		}
+		seen[nsName] = true
+
+		// Apply prefix filter if specified
+		if prefix != "" && !strings.HasPrefix(nsName, prefix) {
+			continue
+		}
+
+		namespaces = append(namespaces, map[string]interface{}{
+			"id": nsName,
+		})
+		lastKey = obj.Key
+
+		// Stop if we have enough
+		if len(namespaces) >= pageSize {
+			brokeEarly = true
+			if i < len(result.Objects)-1 {
+				brokeBeforeEnd = true
+			}
+			break
+		}
+	}
+
+	// Determine next_cursor
+	var nextCursor string
+	if brokeEarly {
+		if brokeBeforeEnd || result.IsTruncated {
+			// Use the last namespace key as the cursor for pagination.
+			nextCursor = lastKey
+		}
+	} else if result.IsTruncated {
+		// We exhausted this page without hitting pageSize; continue from the last listed object.
+		nextCursor = result.NextMarker
+		if nextCursor == "" {
+			nextCursor = lastKey
+		}
+	}
+
+	return namespaces, nextCursor, nil
 }

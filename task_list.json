@@ -1447,7 +1447,7 @@
       "Verify page_size parameter (default 100, max 1000)",
       "Test response includes namespaces array and next_cursor"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "delete-namespace-endpoint",

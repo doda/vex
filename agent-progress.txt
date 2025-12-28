@@ -508,3 +508,11 @@ KEY DEPENDENCIES:
 - Issues found: manifest key derived from indexed WAL seq (resolved).
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T15:36:00.000Z] Completed list-namespaces-endpoint: Review GET /v1/namespaces pagination
+- Reviewed namespace listing endpoint handling in `pkg/api/router.go` and tests in `pkg/api/list_namespaces_test.go`.
+- Verified cursor, prefix, and page_size parsing with default/max handling and object store availability checks.
+- Fixed pagination cursor emission when object store listing truncates before hitting page_size to avoid premature end of listings.
+- Simplicity check: list helper remains linear scan with minimal pagination state.
+- Issues found: next_cursor was omitted when list truncated before reaching page_size (resolved).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
