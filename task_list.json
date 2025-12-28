@@ -876,7 +876,7 @@
       "Verify filters applied before ranking",
       "Test combining vector search with filters"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-aggregations",

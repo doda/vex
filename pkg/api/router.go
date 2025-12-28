@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/namespace"
@@ -582,6 +583,13 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 	if queryReq.Limit < 0 || queryReq.Limit > query.MaxTopK {
 		r.writeAPIError(w, ErrBadRequest("limit/top_k must be between 1 and 10,000"))
 		return
+	}
+	// Validate filters if provided
+	if queryReq.Filters != nil {
+		if _, err := filter.Parse(queryReq.Filters); err != nil {
+			r.writeAPIError(w, ErrBadRequest("invalid filter expression: "+err.Error()))
+			return
+		}
 	}
 
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
