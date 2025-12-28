@@ -385,3 +385,13 @@ KEY DEPENDENCIES:
 - No correctness issues found in reviewed changes.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T07:34:35.000Z] Completed vector-recall-aware-filtering: Review recall-aware filtering changes
+- Reviewed ANN filter handling updates in `internal/query/handler.go`.
+- Reviewed new recall-aware filtering utilities in `internal/query/recall_filter.go`.
+- Reviewed new unit tests in `internal/query/recall_filter_test.go` for selectivity, planning, and retry behavior.
+- Verified IVF index is skipped when filters are present and merge path is filter-free.
+- Verified selectivity estimation and recall-aware planning logic align with task steps.
+- Simplicity check: no unnecessary abstractions; helper logic is clear.
+- No correctness issues found in reviewed changes.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

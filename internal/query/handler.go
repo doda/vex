@@ -494,22 +494,35 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 	}
 
 	// Check if there's an IVF index available
-	// Note: When filters are present, we skip the IVF index because we don't have
-	// filter bitmaps yet. The IVF index only stores docID + vector, not attributes.
-	// Using the index with filters would return unfiltered results, which is incorrect.
-	// Once filter bitmaps are implemented (Phase 4), we can use recall-aware filtering.
 	var indexResults []vector.IVFSearchResult
 	indexedWALSeq := loaded.State.Index.IndexedWALSeq
-	if loaded.State.Index.ManifestKey != "" && h.indexReader != nil && f == nil {
+
+	// Determine if we should use the index
+	// IMPORTANT: When filters are present, we CANNOT use the IVF index because:
+	// 1. The IVF index only stores docID + vector, not document attributes
+	// 2. We cannot verify if indexed docs match the filter
+	// 3. Using the index with filters would return unfiltered results (incorrect)
+	// 4. Documents in the index but not in tail cannot be post-filtered
+	//
+	// The only safe approach is to use exhaustive search when filters are present.
+	// This ensures all documents are checked against the filter.
+	//
+	// Recall-aware filtering helps optimize the exhaustive search by:
+	// - Estimating selectivity to predict result set size
+	// - Providing metrics for monitoring and optimization
+	useIndex := loaded.State.Index.ManifestKey != "" && h.indexReader != nil && f == nil
+
+	if useIndex {
 		ivfReader, clusterDataKey, err := h.indexReader.GetIVFReader(ctx, ns, loaded.State.Index.ManifestKey, loaded.State.Index.ManifestSeq)
 		if err != nil {
 			// Log error but fall back to exhaustive search
 			_ = err
 		} else if ivfReader != nil {
-			// Use IVF index for ANN search with nProbe centroids
+			// Use standard ANN parameters (no filter present)
 			nProbe := DefaultNProbe
+			candidates := req.Limit
 
-			indexResults, err = h.indexReader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, parsed.QueryVector, req.Limit, nProbe)
+			indexResults, err = h.indexReader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe)
 			if err != nil {
 				// Fall back to exhaustive search on error
 				indexResults = nil
@@ -548,6 +561,7 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 
 	// Merge index results with tail results
 	// Tail results are authoritative for deduplication (newer data)
+	// Note: This path is only reached when no filter is present (f == nil)
 	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq)
 	return rows, nil
 }

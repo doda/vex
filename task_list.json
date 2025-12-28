@@ -1123,7 +1123,7 @@
       "Test candidate oversampling for ANN with filters",
       "Verify adaptive probe/candidate budget increase"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "filter-index-bitmaps",
