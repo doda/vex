@@ -1159,7 +1159,7 @@
       "Test newest segments/tail processed first",
       "Verify tombstones (deletes) exclude docs from results"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "bm25-schema-config",

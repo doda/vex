@@ -569,48 +569,81 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 // mergeVectorResults merges IVF index results with tail results.
 // Tail results take precedence for deduplication since they contain newer data.
 // Note: This function is only called when no filter is present (filters skip the index path).
+// Deduplication ensures last-write-wins semantics across segments and tail.
+//
+// The deduplication strategy:
+// 1. Tail documents have explicit WAL seq and always take precedence for the same doc ID
+// 2. Index results have WAL seq <= indexedWALSeq (when the index was built)
+// 3. For duplicate doc IDs in index results, we keep the first occurrence (they should be unique in a well-formed index)
+// 4. Tombstones in tail exclude documents from results
 func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64) []Row {
-	// Build a set of document IDs from tail for deduplication
-	tailDocIDs := make(map[uint64]bool)
+	// Use deduplicator to track tail documents for proper deduplication.
+	// Tail always has the authoritative version (higher WAL seq than index).
+	dedup := NewDeduplicator()
+
+	// Add tail results first (they have WAL seq info and are always authoritative over index)
 	for _, res := range tailResults {
-		// Use the document ID's u64 representation
-		if res.Doc.ID.Type() == document.IDTypeU64 {
-			tailDocIDs[res.Doc.ID.U64()] = true
-		}
+		dedup.AddTailDoc(res.Doc)
 	}
 
-	// Filter out index results that are superseded by tail
+	// Track distances separately since Deduplicator doesn't store distances
 	type scoredDoc struct {
 		docID      any
 		dist       float64
 		attributes map[string]any
 	}
-	candidates := make([]scoredDoc, 0, len(indexResults)+len(tailResults))
 
-	// Add index results (excluding those in tail which have newer data)
-	for _, res := range indexResults {
-		if tailDocIDs[res.DocID] {
-			// This doc is in tail, skip index version
+	// Map to track best distance per unique doc ID (after deduplication)
+	docDistances := make(map[string]scoredDoc)
+
+	// Add tail results with their distances (skip deleted/tombstoned docs)
+	for _, res := range tailResults {
+		if res.Doc.Deleted {
 			continue
 		}
-
-		candidates = append(candidates, scoredDoc{
-			docID:      res.DocID,
-			dist:       float64(res.Distance),
-			attributes: nil, // No attributes from index
-		})
-	}
-
-	// Add tail results
-	for _, res := range tailResults {
-		candidates = append(candidates, scoredDoc{
+		idStr := res.Doc.ID.String()
+		docDistances[idStr] = scoredDoc{
 			docID:      docIDToAny(res.Doc.ID),
 			dist:       res.Distance,
 			attributes: res.Doc.Attributes,
-		})
+		}
 	}
 
-	// Sort by distance
+	// Process index results - deduplicate across segments and against tail
+	// Use a set to deduplicate doc IDs that might appear multiple times in index results
+	seenIndexDocs := make(map[uint64]bool)
+	for _, res := range indexResults {
+		// Skip if already seen in index results (handles duplicates across segments)
+		if seenIndexDocs[res.DocID] {
+			continue
+		}
+		seenIndexDocs[res.DocID] = true
+
+		idStr := document.NewU64ID(res.DocID).String()
+
+		// Check if this doc exists in tail - tail is always authoritative
+		// Tail contains all docs with WAL seq > indexedWALSeq, so if a doc
+		// is in tail, that version supersedes the index version.
+		if existingDoc := dedup.GetDoc(idStr); existingDoc != nil {
+			// Tail has this doc - tail is authoritative since it has newer data
+			// The doc is either updated (keep tail version) or deleted (skip entirely)
+			// Deleted docs are already excluded from docDistances above
+			continue
+		}
+
+		// Add to results - doc not in tail so index version is current
+		docDistances[idStr] = scoredDoc{
+			docID:      res.DocID,
+			dist:       float64(res.Distance),
+			attributes: nil, // No attributes from index
+		}
+	}
+
+	// Convert to slice and sort by distance
+	candidates := make([]scoredDoc, 0, len(docDistances))
+	for _, sc := range docDistances {
+		candidates = append(candidates, sc)
+	}
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].dist < candidates[j].dist
 	})
