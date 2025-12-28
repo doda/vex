@@ -1786,7 +1786,7 @@
       "Verify type checking rejects invalid types",
       "Test deterministic schema inference"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-unit-filter",
