@@ -1878,7 +1878,7 @@
       "Verify monotonic WAL seq invariant",
       "Test snapshot correctness for strong reads"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-fault-injection",

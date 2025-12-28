@@ -690,3 +690,11 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T20:38:59Z] Completed test-simulation-deterministic: Review deterministic simulation tests
+- Reviewed new simulation helpers in `tests/simulation/scheduler.go` and `tests/simulation/store.go`.
+- Reviewed deterministic simulation tests in `tests/simulation/simulation_test.go` for concurrent writes, crash recovery, indexer crash, monotonic WAL, snapshot correctness, CAS interleaving, and invariants.
+- Verified coverage matches task description: deterministic store, scheduler, crash/fault scenarios, and invariants.
+- Simplicity check: helpers are direct and readable with minimal abstraction.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
