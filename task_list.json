@@ -858,7 +858,7 @@
       "Test ContainsAllTokens regardless of adjacency",
       "Test last_as_prefix: true option for prefix matching"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-with-filters",

@@ -518,14 +518,177 @@ func (f *Filter) evalRegex(doc Document) bool {
 	return re.MatchString(docStr)
 }
 
-func (f *Filter) evalContainsTokenSequence(_ Document) bool {
-	// Token sequence matching will be implemented in a separate task
+func (f *Filter) evalContainsTokenSequence(doc Document) bool {
+	docVal, exists := doc[f.Attr]
+	if !exists || docVal == nil {
+		return false
+	}
+
+	docStr, ok := docVal.(string)
+	if !ok {
+		return false
+	}
+
+	queryTokens, lastAsPrefix := parseTokenFilterValue(f.Value)
+	if len(queryTokens) == 0 {
+		return true // Empty query matches everything
+	}
+
+	docTokens := tokenize(docStr)
+	return containsTokenSequence(docTokens, queryTokens, lastAsPrefix)
+}
+
+func (f *Filter) evalContainsAllTokens(doc Document) bool {
+	docVal, exists := doc[f.Attr]
+	if !exists || docVal == nil {
+		return false
+	}
+
+	docStr, ok := docVal.(string)
+	if !ok {
+		return false
+	}
+
+	queryTokens, lastAsPrefix := parseTokenFilterValue(f.Value)
+	if len(queryTokens) == 0 {
+		return true // Empty query matches everything
+	}
+
+	docTokens := tokenize(docStr)
+	return containsAllTokens(docTokens, queryTokens, lastAsPrefix)
+}
+
+// parseTokenFilterValue extracts query tokens and last_as_prefix option from filter value.
+// Supports two formats:
+// 1. Simple string: "hello world" -> tokens=["hello", "world"], lastAsPrefix=false
+// 2. Object: {"query": "hello wo", "last_as_prefix": true} -> tokens=["hello", "wo"], lastAsPrefix=true
+func parseTokenFilterValue(value any) (tokens []string, lastAsPrefix bool) {
+	switch v := value.(type) {
+	case string:
+		return tokenize(v), false
+	case map[string]any:
+		if q, ok := v["query"].(string); ok {
+			tokens = tokenize(q)
+		}
+		if lap, ok := v["last_as_prefix"].(bool); ok {
+			lastAsPrefix = lap
+		}
+		return tokens, lastAsPrefix
+	default:
+		return nil, false
+	}
+}
+
+// tokenize splits a string into lowercase tokens by whitespace and punctuation.
+func tokenize(s string) []string {
+	var tokens []string
+	var current []rune
+	for _, r := range s {
+		if isTokenChar(r) {
+			current = append(current, toLower(r))
+		} else if len(current) > 0 {
+			tokens = append(tokens, string(current))
+			current = current[:0]
+		}
+	}
+	if len(current) > 0 {
+		tokens = append(tokens, string(current))
+	}
+	return tokens
+}
+
+// isTokenChar returns true if the rune is part of a token (alphanumeric).
+func isTokenChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
+// toLower returns the lowercase version of an ASCII letter.
+func toLower(r rune) rune {
+	if r >= 'A' && r <= 'Z' {
+		return r + ('a' - 'A')
+	}
+	return r
+}
+
+// containsTokenSequence checks if docTokens contains queryTokens in adjacent order.
+// If lastAsPrefix is true, the last query token can be a prefix of a doc token.
+func containsTokenSequence(docTokens, queryTokens []string, lastAsPrefix bool) bool {
+	if len(queryTokens) == 0 {
+		return true
+	}
+	if len(docTokens) < len(queryTokens) {
+		return false
+	}
+
+	// Slide a window of len(queryTokens) across docTokens
+	for i := 0; i <= len(docTokens)-len(queryTokens); i++ {
+		match := true
+		for j := 0; j < len(queryTokens); j++ {
+			docToken := docTokens[i+j]
+			queryToken := queryTokens[j]
+			if j == len(queryTokens)-1 && lastAsPrefix {
+				// Last token: prefix match
+				if !hasPrefix(docToken, queryToken) {
+					match = false
+					break
+				}
+			} else {
+				// Exact match
+				if docToken != queryToken {
+					match = false
+					break
+				}
+			}
+		}
+		if match {
+			return true
+		}
+	}
 	return false
 }
 
-func (f *Filter) evalContainsAllTokens(_ Document) bool {
-	// Token matching will be implemented in a separate task
-	return false
+// containsAllTokens checks if all queryTokens appear somewhere in docTokens (any order).
+// If lastAsPrefix is true, the last query token can be a prefix of a doc token.
+func containsAllTokens(docTokens, queryTokens []string, lastAsPrefix bool) bool {
+	if len(queryTokens) == 0 {
+		return true
+	}
+
+	// Build a set of doc tokens for O(1) lookup
+	docSet := make(map[string]bool, len(docTokens))
+	for _, t := range docTokens {
+		docSet[t] = true
+	}
+
+	for i, queryToken := range queryTokens {
+		if i == len(queryTokens)-1 && lastAsPrefix {
+			// Last token: need to check if any doc token has this prefix
+			found := false
+			for _, docToken := range docTokens {
+				if hasPrefix(docToken, queryToken) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		} else {
+			// Exact match required
+			if !docSet[queryToken] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// hasPrefix returns true if s starts with prefix.
+func hasPrefix(s, prefix string) bool {
+	if len(prefix) > len(s) {
+		return false
+	}
+	return s[:len(prefix)] == prefix
 }
 
 // IsRegexOp returns true if the operator requires regex: true in schema.
