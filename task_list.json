@@ -782,7 +782,7 @@
       "Verify strings use lexicographic comparison",
       "Verify datetimes compare as numeric milliseconds"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "filter-array-ops",

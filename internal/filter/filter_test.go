@@ -2,6 +2,7 @@ package filter
 
 import (
 	"testing"
+	"time"
 )
 
 func TestParseAndEval_And(t *testing.T) {
@@ -903,4 +904,313 @@ func TestArrayOperators(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestComparison_TaskVerification tests exactly the verification steps for the filter-comparisons task.
+func TestComparison_TaskVerification(t *testing.T) {
+	t.Run("Lt_numeric_comparison", func(t *testing.T) {
+		// Test Lt operator for numeric comparison
+		f, err := Parse([]any{"value", "Lt", float64(10)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when value is less
+		if !f.Eval(Document{"value": float64(5)}) {
+			t.Error("Lt should match when doc value (5) < filter value (10)")
+		}
+		if !f.Eval(Document{"value": float64(9.9)}) {
+			t.Error("Lt should match when doc value (9.9) < filter value (10)")
+		}
+		if !f.Eval(Document{"value": float64(0)}) {
+			t.Error("Lt should match when doc value (0) < filter value (10)")
+		}
+		if !f.Eval(Document{"value": float64(-5)}) {
+			t.Error("Lt should match when doc value (-5) < filter value (10)")
+		}
+
+		// Should not match when equal
+		if f.Eval(Document{"value": float64(10)}) {
+			t.Error("Lt should not match when doc value equals filter value")
+		}
+
+		// Should not match when greater
+		if f.Eval(Document{"value": float64(11)}) {
+			t.Error("Lt should not match when doc value (11) > filter value (10)")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": float64(5)}) {
+			t.Error("Lt should not match when attribute is missing")
+		}
+
+		// Test with integer types
+		if !f.Eval(Document{"value": int(5)}) {
+			t.Error("Lt should match with int type")
+		}
+		if !f.Eval(Document{"value": int64(5)}) {
+			t.Error("Lt should match with int64 type")
+		}
+	})
+
+	t.Run("Lte_numeric_comparison", func(t *testing.T) {
+		// Test Lte operator for numeric comparison
+		f, err := Parse([]any{"value", "Lte", float64(10)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when value is less
+		if !f.Eval(Document{"value": float64(5)}) {
+			t.Error("Lte should match when doc value (5) < filter value (10)")
+		}
+
+		// Should match when equal
+		if !f.Eval(Document{"value": float64(10)}) {
+			t.Error("Lte should match when doc value equals filter value")
+		}
+
+		// Should not match when greater
+		if f.Eval(Document{"value": float64(11)}) {
+			t.Error("Lte should not match when doc value (11) > filter value (10)")
+		}
+		if f.Eval(Document{"value": float64(10.001)}) {
+			t.Error("Lte should not match when doc value (10.001) > filter value (10)")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": float64(5)}) {
+			t.Error("Lte should not match when attribute is missing")
+		}
+	})
+
+	t.Run("Gt_numeric_comparison", func(t *testing.T) {
+		// Test Gt operator for numeric comparison
+		f, err := Parse([]any{"value", "Gt", float64(10)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when value is greater
+		if !f.Eval(Document{"value": float64(15)}) {
+			t.Error("Gt should match when doc value (15) > filter value (10)")
+		}
+		if !f.Eval(Document{"value": float64(10.001)}) {
+			t.Error("Gt should match when doc value (10.001) > filter value (10)")
+		}
+		if !f.Eval(Document{"value": float64(100)}) {
+			t.Error("Gt should match when doc value (100) > filter value (10)")
+		}
+
+		// Should not match when equal
+		if f.Eval(Document{"value": float64(10)}) {
+			t.Error("Gt should not match when doc value equals filter value")
+		}
+
+		// Should not match when less
+		if f.Eval(Document{"value": float64(5)}) {
+			t.Error("Gt should not match when doc value (5) < filter value (10)")
+		}
+		if f.Eval(Document{"value": float64(-10)}) {
+			t.Error("Gt should not match when doc value (-10) < filter value (10)")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": float64(15)}) {
+			t.Error("Gt should not match when attribute is missing")
+		}
+	})
+
+	t.Run("Gte_numeric_comparison", func(t *testing.T) {
+		// Test Gte operator for numeric comparison
+		f, err := Parse([]any{"value", "Gte", float64(10)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when value is greater
+		if !f.Eval(Document{"value": float64(15)}) {
+			t.Error("Gte should match when doc value (15) > filter value (10)")
+		}
+
+		// Should match when equal
+		if !f.Eval(Document{"value": float64(10)}) {
+			t.Error("Gte should match when doc value equals filter value")
+		}
+
+		// Should not match when less
+		if f.Eval(Document{"value": float64(5)}) {
+			t.Error("Gte should not match when doc value (5) < filter value (10)")
+		}
+		if f.Eval(Document{"value": float64(9.999)}) {
+			t.Error("Gte should not match when doc value (9.999) < filter value (10)")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": float64(15)}) {
+			t.Error("Gte should not match when attribute is missing")
+		}
+	})
+
+	t.Run("string_lexicographic_comparison", func(t *testing.T) {
+		// Verify strings use lexicographic comparison
+
+		// Test Lt for strings
+		ltFilter, err := Parse([]any{"name", "Lt", "banana"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !ltFilter.Eval(Document{"name": "apple"}) {
+			t.Error("Lt should match 'apple' < 'banana' (lexicographic)")
+		}
+		if !ltFilter.Eval(Document{"name": "aardvark"}) {
+			t.Error("Lt should match 'aardvark' < 'banana' (lexicographic)")
+		}
+		if ltFilter.Eval(Document{"name": "cherry"}) {
+			t.Error("Lt should not match 'cherry' > 'banana' (lexicographic)")
+		}
+		if ltFilter.Eval(Document{"name": "banana"}) {
+			t.Error("Lt should not match 'banana' = 'banana'")
+		}
+
+		// Test Lte for strings
+		lteFilter, err := Parse([]any{"name", "Lte", "banana"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !lteFilter.Eval(Document{"name": "banana"}) {
+			t.Error("Lte should match 'banana' = 'banana'")
+		}
+		if !lteFilter.Eval(Document{"name": "apple"}) {
+			t.Error("Lte should match 'apple' < 'banana'")
+		}
+
+		// Test Gt for strings
+		gtFilter, err := Parse([]any{"name", "Gt", "banana"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !gtFilter.Eval(Document{"name": "cherry"}) {
+			t.Error("Gt should match 'cherry' > 'banana' (lexicographic)")
+		}
+		if !gtFilter.Eval(Document{"name": "zoo"}) {
+			t.Error("Gt should match 'zoo' > 'banana' (lexicographic)")
+		}
+		if gtFilter.Eval(Document{"name": "apple"}) {
+			t.Error("Gt should not match 'apple' < 'banana' (lexicographic)")
+		}
+		if gtFilter.Eval(Document{"name": "banana"}) {
+			t.Error("Gt should not match 'banana' = 'banana'")
+		}
+
+		// Test Gte for strings
+		gteFilter, err := Parse([]any{"name", "Gte", "banana"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !gteFilter.Eval(Document{"name": "banana"}) {
+			t.Error("Gte should match 'banana' = 'banana'")
+		}
+		if !gteFilter.Eval(Document{"name": "cherry"}) {
+			t.Error("Gte should match 'cherry' > 'banana'")
+		}
+
+		// Test case sensitivity (uppercase comes before lowercase in ASCII)
+		if !ltFilter.Eval(Document{"name": "Apple"}) {
+			t.Error("Lt should match 'Apple' < 'banana' (uppercase before lowercase)")
+		}
+		if !ltFilter.Eval(Document{"name": "BANANA"}) {
+			t.Error("Lt should match 'BANANA' < 'banana' (uppercase before lowercase)")
+		}
+	})
+
+	t.Run("datetime_comparison_as_numeric_milliseconds", func(t *testing.T) {
+		// Verify datetimes compare as numeric milliseconds
+		now := time.Now()
+		past := now.Add(-1 * time.Hour)
+		future := now.Add(1 * time.Hour)
+
+		// Create filter comparing against 'now' as time.Time
+		ltFilter, err := Parse([]any{"timestamp", "Lt", now})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !ltFilter.Eval(Document{"timestamp": past}) {
+			t.Error("Lt should match past < now for time.Time values")
+		}
+		if ltFilter.Eval(Document{"timestamp": future}) {
+			t.Error("Lt should not match future > now for time.Time values")
+		}
+
+		// Test Gt with datetimes
+		gtFilter, err := Parse([]any{"timestamp", "Gt", now})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !gtFilter.Eval(Document{"timestamp": future}) {
+			t.Error("Gt should match future > now for time.Time values")
+		}
+		if gtFilter.Eval(Document{"timestamp": past}) {
+			t.Error("Gt should not match past < now for time.Time values")
+		}
+
+		// Test comparing time.Time against numeric milliseconds
+		nowMs := now.UnixMilli()
+
+		// Document has time.Time, filter has milliseconds (as float64)
+		ltMsFilter, err := Parse([]any{"timestamp", "Lt", float64(nowMs)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !ltMsFilter.Eval(Document{"timestamp": past}) {
+			t.Error("Lt should match when comparing time.Time < milliseconds")
+		}
+		if ltMsFilter.Eval(Document{"timestamp": future}) {
+			t.Error("Lt should not match when comparing time.Time > milliseconds")
+		}
+
+		// Document has time.Time, filter has milliseconds (as int64)
+		ltInt64Filter, err := Parse([]any{"timestamp", "Lt", int64(nowMs)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !ltInt64Filter.Eval(Document{"timestamp": past}) {
+			t.Error("Lt should match when comparing time.Time < int64 milliseconds")
+		}
+
+		// Test Lte/Gte with exact equal datetime
+		lteFilter, err := Parse([]any{"timestamp", "Lte", now})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !lteFilter.Eval(Document{"timestamp": now}) {
+			t.Error("Lte should match when timestamps are equal")
+		}
+		if !lteFilter.Eval(Document{"timestamp": past}) {
+			t.Error("Lte should match when timestamp is before")
+		}
+
+		gteFilter, err := Parse([]any{"timestamp", "Gte", now})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !gteFilter.Eval(Document{"timestamp": now}) {
+			t.Error("Gte should match when timestamps are equal")
+		}
+		if !gteFilter.Eval(Document{"timestamp": future}) {
+			t.Error("Gte should match when timestamp is after")
+		}
+
+		// Test with RFC3339 string format
+		pastStr := past.Format(time.RFC3339)
+		ltStrFilter, err := Parse([]any{"timestamp", "Lt", pastStr})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		// Document time is "past" parsed from string, should be equal to itself
+		parsedPast, _ := time.Parse(time.RFC3339, pastStr)
+		if ltStrFilter.Eval(Document{"timestamp": parsedPast}) {
+			t.Error("Lt should not match when timestamps are equal")
+		}
+	})
 }
