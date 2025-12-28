@@ -121,6 +121,21 @@ func ErrIndexBuilding(message string) *APIError {
 	return NewAPIError(http.StatusAccepted, message)
 }
 
+// ErrRequestTimeout returns a 504 Gateway Timeout error when a request exceeds its CPU budget.
+func ErrRequestTimeout(message string) *APIError {
+	return NewAPIError(http.StatusGatewayTimeout, message)
+}
+
+// ErrQueryTimeout returns a 504 error specifically for query timeout.
+func ErrQueryTimeout() *APIError {
+	return ErrRequestTimeout("query timed out: CPU budget exceeded")
+}
+
+// ErrWriteTimeout returns a 504 error specifically for write timeout.
+func ErrWriteTimeout() *APIError {
+	return ErrRequestTimeout("write timed out: CPU budget exceeded")
+}
+
 // MaxRequestBodySize is the maximum allowed request body size (256MB).
 const MaxRequestBodySize = 256 * 1024 * 1024
 

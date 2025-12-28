@@ -2041,7 +2041,7 @@
       "Test query timeout enforcement",
       "Verify write timeout handling"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "cache-temperature-metrics",

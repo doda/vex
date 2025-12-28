@@ -160,10 +160,10 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 	r.mux.HandleFunc("GET /v1/namespaces", r.authMiddleware(r.handleListNamespaces))
 	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/metadata", r.authMiddleware(r.validateNamespace(r.handleGetMetadata)))
 	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/hint_cache_warm", r.authMiddleware(r.validateNamespace(r.handleWarmCache)))
-	r.mux.HandleFunc("POST /v2/namespaces/{namespace}", r.authMiddleware(r.validateNamespace(r.handleWrite)))
-	r.mux.HandleFunc("POST /v2/namespaces/{namespace}/query", r.authMiddleware(r.validateNamespace(r.handleQuery)))
+	r.mux.HandleFunc("POST /v2/namespaces/{namespace}", r.authMiddleware(r.validateNamespace(r.writeTimeoutMiddleware(r.handleWrite))))
+	r.mux.HandleFunc("POST /v2/namespaces/{namespace}/query", r.authMiddleware(r.validateNamespace(r.queryTimeoutMiddleware(r.handleQuery))))
 	r.mux.HandleFunc("DELETE /v2/namespaces/{namespace}", r.authMiddleware(r.validateNamespace(r.handleDeleteNamespace)))
-	r.mux.HandleFunc("POST /v1/namespaces/{namespace}/_debug/recall", r.authMiddleware(r.validateNamespace(r.handleDebugRecall)))
+	r.mux.HandleFunc("POST /v1/namespaces/{namespace}/_debug/recall", r.authMiddleware(r.validateNamespace(r.queryTimeoutMiddleware(r.handleDebugRecall))))
 	r.mux.HandleFunc("GET /_debug/state/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugState)))
 	r.mux.HandleFunc("GET /_debug/cache/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugCache)))
 	r.mux.HandleFunc("GET /_debug/wal/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugWal)))
@@ -334,6 +334,29 @@ func (r *Router) validateNamespace(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, req)
 	}
+}
+
+// timeoutMiddleware wraps a handler with a context deadline for CPU budget enforcement.
+func (r *Router) timeoutMiddleware(timeoutMs int, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		timeout := time.Duration(timeoutMs) * time.Millisecond
+		ctx, cancel := context.WithTimeout(req.Context(), timeout)
+		defer cancel()
+		req = req.WithContext(ctx)
+		next(w, req)
+	}
+}
+
+// queryTimeoutMiddleware applies the query timeout to a handler.
+func (r *Router) queryTimeoutMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	timeoutMs := r.cfg.Timeout.GetQueryTimeout()
+	return r.timeoutMiddleware(timeoutMs, next)
+}
+
+// writeTimeoutMiddleware applies the write timeout to a handler.
+func (r *Router) writeTimeoutMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	timeoutMs := r.cfg.Timeout.GetWriteTimeout()
+	return r.timeoutMiddleware(timeoutMs, next)
 }
 
 func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
@@ -626,6 +649,15 @@ func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if err != nil {
+		// Check for context timeout first
+		if errors.Is(err, context.DeadlineExceeded) {
+			r.writeAPIError(w, ErrWriteTimeout())
+			return
+		}
+		if errors.Is(err, context.Canceled) {
+			r.writeAPIError(w, ErrWriteTimeout())
+			return
+		}
 		if errors.Is(err, namespace.ErrNamespaceTombstoned) {
 			r.writeAPIError(w, ErrNamespaceDeleted(ns))
 			return
@@ -730,6 +762,15 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 	if r.queryHandler != nil {
 		resp, err := r.queryHandler.Handle(req.Context(), ns, queryReq)
 		if err != nil {
+			// Check for context timeout first
+			if errors.Is(err, context.DeadlineExceeded) {
+				r.writeAPIError(w, ErrQueryTimeout())
+				return
+			}
+			if errors.Is(err, context.Canceled) {
+				r.writeAPIError(w, ErrQueryTimeout())
+				return
+			}
 			if errors.Is(err, query.ErrRankByRequired) {
 				r.writeAPIError(w, ErrBadRequest("rank_by is required unless aggregate_by is specified"))
 				return
@@ -895,6 +936,15 @@ func (r *Router) handleMultiQuery(w http.ResponseWriter, req *http.Request, ns s
 	if r.queryHandler != nil {
 		resp, err := r.queryHandler.HandleMultiQuery(req.Context(), ns, queries, consistency)
 		if err != nil {
+			// Check for context timeout first
+			if errors.Is(err, context.DeadlineExceeded) {
+				r.writeAPIError(w, ErrQueryTimeout())
+				return
+			}
+			if errors.Is(err, context.Canceled) {
+				r.writeAPIError(w, ErrQueryTimeout())
+				return
+			}
 			if errors.Is(err, query.ErrTooManySubqueries) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
 				return

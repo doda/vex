@@ -64,6 +64,33 @@ type Config struct {
 	Membership  MembershipConfig  `json:"membership"`
 	Indexer     IndexerConfig     `json:"indexer"`
 	Guardrails  GuardrailsConfig  `json:"guardrails"`
+	Timeout     TimeoutConfig     `json:"timeout"`
+}
+
+// TimeoutConfig holds per-request timeout configuration.
+type TimeoutConfig struct {
+	// QueryTimeoutMs is the maximum time allowed for query requests in milliseconds.
+	// Default: 30000 (30 seconds)
+	QueryTimeoutMs int `json:"query_timeout_ms"`
+	// WriteTimeoutMs is the maximum time allowed for write requests in milliseconds.
+	// Default: 60000 (60 seconds)
+	WriteTimeoutMs int `json:"write_timeout_ms"`
+}
+
+// GetQueryTimeout returns the query timeout duration with default fallback.
+func (c TimeoutConfig) GetQueryTimeout() int {
+	if c.QueryTimeoutMs <= 0 {
+		return 30000 // 30 seconds default
+	}
+	return c.QueryTimeoutMs
+}
+
+// GetWriteTimeout returns the write timeout duration with default fallback.
+func (c TimeoutConfig) GetWriteTimeout() int {
+	if c.WriteTimeoutMs <= 0 {
+		return 60000 // 60 seconds default
+	}
+	return c.WriteTimeoutMs
 }
 
 // GetCompatMode returns the compatibility mode as a typed CompatMode.
@@ -310,6 +337,18 @@ func Load(path string) (*Config, error) {
 	if env := os.Getenv("VEX_GUARDRAILS_MAX_CONCURRENT_COLD_FILLS"); env != "" {
 		if n, err := parseIntEnv(env); err == nil {
 			cfg.Guardrails.MaxConcurrentColdFills = n
+		}
+	}
+
+	// Timeout configuration
+	if env := os.Getenv("VEX_TIMEOUT_QUERY_MS"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Timeout.QueryTimeoutMs = n
+		}
+	}
+	if env := os.Getenv("VEX_TIMEOUT_WRITE_MS"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Timeout.WriteTimeoutMs = n
 		}
 	}
 

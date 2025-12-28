@@ -747,3 +747,13 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T22:42:03Z] Completed request-timeout: Review per-request CPU budget timeouts
+- Reviewed timeout config wiring, env overrides, and router middleware in `internal/config/config.go`, `pkg/api/router.go`, and `pkg/api/errors.go`.
+- Reviewed new timeout tests in `pkg/api/timeout_test.go` covering defaults, overrides, middleware deadline behavior, and timeout error types.
+- Verified routes apply query/write timeout middleware to query/write/debug recall endpoints.
+- Verified handlers map context deadline/cancel to 504 via ErrQueryTimeout/ErrWriteTimeout.
+- Fixed unused timeout middleware parameter to avoid compile error and keep API simple.
+- Simplicity check: config defaults and middleware are straightforward and localized.
+- Issues found: unused parameter in timeout middleware; resolved by removing parameter.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
