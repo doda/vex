@@ -339,6 +339,93 @@ func TestCompatModeConfig(t *testing.T) {
 	}
 }
 
+func TestGossipConfig(t *testing.T) {
+	os.Setenv("VEX_MEMBERSHIP_TYPE", "gossip")
+	os.Setenv("VEX_GOSSIP_BIND_ADDR", "10.0.0.1")
+	os.Setenv("VEX_GOSSIP_BIND_PORT", "7947")
+	os.Setenv("VEX_GOSSIP_ADVERTISE_ADDR", "192.168.1.100")
+	os.Setenv("VEX_GOSSIP_ADVERTISE_PORT", "7948")
+	os.Setenv("VEX_GOSSIP_SEED_NODES", "seed1:7946, seed2:7946, seed3:7946")
+	defer os.Unsetenv("VEX_MEMBERSHIP_TYPE")
+	defer os.Unsetenv("VEX_GOSSIP_BIND_ADDR")
+	defer os.Unsetenv("VEX_GOSSIP_BIND_PORT")
+	defer os.Unsetenv("VEX_GOSSIP_ADVERTISE_ADDR")
+	defer os.Unsetenv("VEX_GOSSIP_ADVERTISE_PORT")
+	defer os.Unsetenv("VEX_GOSSIP_SEED_NODES")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Membership.Type != "gossip" {
+		t.Errorf("expected membership type gossip, got %s", cfg.Membership.Type)
+	}
+	if cfg.Membership.Gossip.BindAddr != "10.0.0.1" {
+		t.Errorf("expected gossip bind addr 10.0.0.1, got %s", cfg.Membership.Gossip.BindAddr)
+	}
+	if cfg.Membership.Gossip.BindPort != 7947 {
+		t.Errorf("expected gossip bind port 7947, got %d", cfg.Membership.Gossip.BindPort)
+	}
+	if cfg.Membership.Gossip.AdvertiseAddr != "192.168.1.100" {
+		t.Errorf("expected gossip advertise addr 192.168.1.100, got %s", cfg.Membership.Gossip.AdvertiseAddr)
+	}
+	if cfg.Membership.Gossip.AdvertisePort != 7948 {
+		t.Errorf("expected gossip advertise port 7948, got %d", cfg.Membership.Gossip.AdvertisePort)
+	}
+	if len(cfg.Membership.Gossip.SeedNodes) != 3 {
+		t.Errorf("expected 3 seed nodes, got %d", len(cfg.Membership.Gossip.SeedNodes))
+	}
+	expectedSeeds := []string{"seed1:7946", "seed2:7946", "seed3:7946"}
+	for i, seed := range cfg.Membership.Gossip.SeedNodes {
+		if seed != expectedSeeds[i] {
+			t.Errorf("expected seed node %s, got %s", expectedSeeds[i], seed)
+		}
+	}
+}
+
+func TestGossipConfigFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"membership": {
+			"type": "gossip",
+			"nodes": ["localhost:8080"],
+			"gossip": {
+				"bind_addr": "0.0.0.0",
+				"bind_port": 7946,
+				"advertise_addr": "192.168.1.50",
+				"advertise_port": 7946,
+				"seed_nodes": ["seed-node-1:7946", "seed-node-2:7946"]
+			}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Membership.Type != "gossip" {
+		t.Errorf("expected membership type gossip, got %s", cfg.Membership.Type)
+	}
+	if cfg.Membership.Gossip.BindAddr != "0.0.0.0" {
+		t.Errorf("expected gossip bind addr 0.0.0.0, got %s", cfg.Membership.Gossip.BindAddr)
+	}
+	if cfg.Membership.Gossip.BindPort != 7946 {
+		t.Errorf("expected gossip bind port 7946, got %d", cfg.Membership.Gossip.BindPort)
+	}
+	if cfg.Membership.Gossip.AdvertiseAddr != "192.168.1.50" {
+		t.Errorf("expected gossip advertise addr 192.168.1.50, got %s", cfg.Membership.Gossip.AdvertiseAddr)
+	}
+	if len(cfg.Membership.Gossip.SeedNodes) != 2 {
+		t.Errorf("expected 2 seed nodes, got %d", len(cfg.Membership.Gossip.SeedNodes))
+	}
+}
+
 func TestInvalidConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

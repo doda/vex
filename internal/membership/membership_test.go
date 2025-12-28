@@ -297,18 +297,19 @@ func TestNewFromConfigDefaultToStatic(t *testing.T) {
 	}
 }
 
-func TestNewFromConfigGossipFallback(t *testing.T) {
-	// Gossip is not implemented, should fall back to static
+func TestNewFromConfigGossipReturnsGossipProvider(t *testing.T) {
+	// Gossip is now implemented, should return GossipProvider
 	cfg := config.MembershipConfig{
 		Type:  "gossip",
 		Nodes: []string{"node1:8080", "node2:8080"},
 	}
 
 	provider := NewFromConfig(cfg)
-	nodes := provider.Nodes()
 
-	if len(nodes) != 2 {
-		t.Errorf("expected 2 nodes (gossip fallback to static), got %d", len(nodes))
+	// Should be a GossipProvider
+	_, ok := provider.(*GossipProvider)
+	if !ok {
+		t.Errorf("NewFromConfig with type=gossip should return *GossipProvider")
 	}
 }
 

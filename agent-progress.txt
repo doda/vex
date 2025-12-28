@@ -478,3 +478,13 @@ KEY DEPENDENCIES:
 - Issues found: missing error handling in cache read/write paths (resolved).
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T14:45:28.000Z] Completed membership-gossip: Review gossip membership for dynamic clusters
+- Reviewed gossip membership provider and config integration in `internal/membership/gossip.go` and `internal/config/config.go`.
+- Reviewed gossip membership tests in `internal/membership/gossip_test.go` and config coverage in `internal/config/config_test.go`.
+- Verified NewFromConfig now returns gossip provider and membership updates drive routing.
+- Verified gossip provider lifecycle hooks, callbacks, and memberlist integration.
+- Fixed self address derivation to avoid empty/invalid advertised API address when no nodes configured.
+- Simplicity check: implementation stays close to memberlist defaults with minimal helpers.
+- Issues found: invalid self API address fallback (resolved).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

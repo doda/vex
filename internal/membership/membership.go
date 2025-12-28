@@ -143,8 +143,7 @@ func (m *Manager) syncNodes() {
 func NewFromConfig(cfg config.MembershipConfig) Provider {
 	switch cfg.Type {
 	case "gossip":
-		// Gossip is not yet implemented, fall back to static
-		return NewStaticProvider(cfg)
+		return NewGossipProvider(cfg)
 	default:
 		return NewStaticProvider(cfg)
 	}

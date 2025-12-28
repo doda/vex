@@ -45,6 +45,21 @@ type CacheConfig struct {
 type MembershipConfig struct {
 	Type  string   `json:"type"`
 	Nodes []string `json:"nodes"`
+	// Gossip-specific configuration
+	Gossip GossipConfig `json:"gossip"`
+}
+
+type GossipConfig struct {
+	// BindAddr is the address to bind gossip listener to (default: "0.0.0.0")
+	BindAddr string `json:"bind_addr"`
+	// BindPort is the port to bind gossip listener to (default: 7946)
+	BindPort int `json:"bind_port"`
+	// AdvertiseAddr is the address advertised to other cluster members (optional)
+	AdvertiseAddr string `json:"advertise_addr"`
+	// AdvertisePort is the port advertised to other cluster members (optional)
+	AdvertisePort int `json:"advertise_port"`
+	// SeedNodes is a list of seed nodes to bootstrap gossip membership
+	SeedNodes []string `json:"seed_nodes"`
 }
 
 func Default() *Config {
@@ -140,6 +155,25 @@ func Load(path string) (*Config, error) {
 	}
 	if env := os.Getenv("VEX_MEMBERSHIP_NODES"); env != "" {
 		cfg.Membership.Nodes = parseNodeList(env)
+	}
+	if env := os.Getenv("VEX_GOSSIP_BIND_ADDR"); env != "" {
+		cfg.Membership.Gossip.BindAddr = env
+	}
+	if env := os.Getenv("VEX_GOSSIP_BIND_PORT"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Membership.Gossip.BindPort = n
+		}
+	}
+	if env := os.Getenv("VEX_GOSSIP_ADVERTISE_ADDR"); env != "" {
+		cfg.Membership.Gossip.AdvertiseAddr = env
+	}
+	if env := os.Getenv("VEX_GOSSIP_ADVERTISE_PORT"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Membership.Gossip.AdvertisePort = n
+		}
+	}
+	if env := os.Getenv("VEX_GOSSIP_SEED_NODES"); env != "" {
+		cfg.Membership.Gossip.SeedNodes = parseNodeList(env)
 	}
 
 	if env := os.Getenv("VEX_COMPAT_MODE"); env != "" {

@@ -1387,7 +1387,7 @@
       "Test gossip-based membership discovery (optional)",
       "Verify dynamic membership updates routing"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "metadata-endpoint",
