@@ -1013,7 +1013,7 @@
       "Verify each segment covers WAL sequence interval (start_wal_seq, end_wal_seq)",
       "Test segment includes docs_key, vectors_key, filter_keys"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "index-lsm-model",

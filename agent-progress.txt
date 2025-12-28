@@ -329,3 +329,13 @@ KEY DEPENDENCIES:
 - No correctness issues found in implementation or tests.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+
+[2025-12-28T05:54:50.000Z] Completed index-segment-format: Review immutable index segment format
+- Reviewed new files `internal/index/segment.go` and `internal/index/segment_test.go`.
+- Verified segment builder enforces sealed immutability and WAL range validation.
+- Verified immutable wrapper returns defensive copies and WAL range helpers.
+- Verified segment writer uploads objects with checksums and tracks written keys.
+- Verified object key helpers and segment metadata JSON helpers.
+- No correctness issues found in implementation or tests.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
