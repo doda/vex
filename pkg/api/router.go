@@ -475,12 +475,6 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Check for strong query with backpressure disabled and high unindexed data
-	if err := r.checkStrongQueryBackpressure(ns); err != nil {
-		r.writeAPIError(w, err)
-		return
-	}
-
 	// Check if index is still building and return 202
 	nsState := r.getNamespaceState(ns)
 	if nsState != nil && nsState.IndexBuilding {
@@ -516,6 +510,16 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		r.writeAPIError(w, ErrBadRequest(err.Error()))
 		return
+	}
+
+	// Check for strong query with backpressure disabled and high unindexed data.
+	// Only apply this check for strong consistency queries (default or explicit "strong").
+	// Eventual queries should continue to work even when unindexed > 2GB.
+	if queryReq.Consistency != "eventual" {
+		if err := r.checkStrongQueryBackpressure(ns); err != nil {
+			r.writeAPIError(w, err)
+			return
+		}
 	}
 
 	// Execute query if handler is available

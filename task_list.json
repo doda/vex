@@ -710,7 +710,7 @@
       "Test strong query returns 503 when disable_backpressure=true and unindexed > 2GB",
       "Verify eventual queries continue to work in same scenario"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "filter-evaluation",
