@@ -460,10 +460,27 @@ func (f *Filter) evalAnyComparison(doc Document, direction int, orEqual bool) bo
 	return false
 }
 
-func (f *Filter) evalGlob(_ Document, _ bool) bool {
-	// Glob matching will be implemented in a separate task
-	// For now, return false
-	return false
+func (f *Filter) evalGlob(doc Document, caseInsensitive bool) bool {
+	docVal, exists := doc[f.Attr]
+	if !exists || docVal == nil {
+		return false
+	}
+
+	// Get the string value to match against
+	docStr, ok := docVal.(string)
+	if !ok {
+		return false
+	}
+
+	// Get the pattern from the filter value
+	pattern, ok := f.Value.(string)
+	if !ok {
+		return false
+	}
+
+	// Create a glob matcher and match
+	matcher := NewGlobMatcher(pattern, caseInsensitive)
+	return matcher.Match(docStr)
 }
 
 func (f *Filter) evalRegex(_ Document) bool {

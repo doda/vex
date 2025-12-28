@@ -823,7 +823,7 @@
       "Test NotIGlob for case-insensitive exclusion",
       "Verify prefix globs compile to range queries"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "filter-regex",
