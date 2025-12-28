@@ -36,7 +36,7 @@ func TestStatus200Success(t *testing.T) {
 		{"get metadata", "GET", "/v1/namespaces/test-ns/metadata", ""},
 		{"warm cache", "GET", "/v1/namespaces/test-ns/hint_cache_warm", ""},
 		{"write endpoint", "POST", "/v2/namespaces/test-ns", `{"upsert_rows":[]}`},
-		{"query endpoint", "POST", "/v2/namespaces/test-ns/query", `{}`},
+		{"query endpoint", "POST", "/v2/namespaces/test-ns/query", `{"rank_by":["id","asc"]}`},
 		{"delete namespace", "DELETE", "/v2/namespaces/test-ns", ""},
 		{"debug recall", "POST", "/v1/namespaces/test-ns/_debug/recall", ""},
 	}

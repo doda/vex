@@ -15,6 +15,7 @@ import (
 	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/query"
 	"github.com/vexsearch/vex/internal/routing"
 	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/write"
@@ -83,7 +84,8 @@ type Router struct {
 	stateManager *namespace.StateManager
 	tailStore    tail.Store
 	writeHandler *write.Handler
-	writeBatcher *write.Batcher // batches writes at 1/sec per namespace
+	writeBatcher *write.Batcher  // batches writes at 1/sec per namespace
+	queryHandler *query.Handler  // handles query execution
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -129,6 +131,8 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 		if err == nil {
 			r.writeBatcher = writeBatcher
 		}
+		// Create query handler
+		r.queryHandler = query.NewHandler(store, r.stateManager, r.tailStore)
 	}
 
 	// Set up proxy if we have a cluster router
@@ -496,6 +500,82 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Parse request body
+	var body map[string]interface{}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		if strings.Contains(err.Error(), "http: request body too large") {
+			r.writeAPIError(w, ErrPayloadTooLarge("request body exceeds 256MB limit"))
+			return
+		}
+		r.writeAPIError(w, ErrInvalidJSON())
+		return
+	}
+
+	// Parse the query request
+	queryReq, err := query.ParseQueryRequest(body)
+	if err != nil {
+		r.writeAPIError(w, ErrBadRequest(err.Error()))
+		return
+	}
+
+	// Execute query if handler is available
+	if r.queryHandler != nil {
+		resp, err := r.queryHandler.Handle(req.Context(), ns, queryReq)
+		if err != nil {
+			if errors.Is(err, query.ErrRankByRequired) {
+				r.writeAPIError(w, ErrBadRequest("rank_by is required unless aggregate_by is specified"))
+				return
+			}
+			if errors.Is(err, query.ErrInvalidLimit) {
+				r.writeAPIError(w, ErrBadRequest("limit/top_k must be between 1 and 10,000"))
+				return
+			}
+			if errors.Is(err, query.ErrInvalidRankBy) || errors.Is(err, query.ErrInvalidFilter) || errors.Is(err, query.ErrAttributeConflict) || errors.Is(err, query.ErrInvalidVectorEncoding) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			if errors.Is(err, query.ErrNamespaceNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+
+		// Convert rows to JSON-serializable format
+		rows := make([]interface{}, 0, len(resp.Rows))
+		for _, row := range resp.Rows {
+			rows = append(rows, query.RowToJSON(row))
+		}
+
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"rows": rows,
+			"billing": map[string]int64{
+				"billable_logical_bytes_queried":  resp.Billing.BillableLogicalBytesQueried,
+				"billable_logical_bytes_returned": resp.Billing.BillableLogicalBytesReturned,
+			},
+			"performance": map[string]interface{}{
+				"cache_temperature": resp.Performance.CacheTemperature,
+				"server_total_ms":   resp.Performance.ServerTotalMs,
+			},
+		})
+		return
+	}
+
+	// Fallback when no query handler (test mode) - validate request first
+	if queryReq.RankBy == nil && queryReq.AggregateBy == nil {
+		r.writeAPIError(w, ErrBadRequest("rank_by is required unless aggregate_by is specified"))
+		return
+	}
+	if queryReq.Limit < 0 || queryReq.Limit > query.MaxTopK {
+		r.writeAPIError(w, ErrBadRequest("limit/top_k must be between 1 and 10,000"))
+		return
+	}
+
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"rows": []interface{}{},
 		"billing": map[string]int{
@@ -682,7 +762,7 @@ func (r *Router) ClusterNodes() []routing.Node {
 	return r.router.Nodes()
 }
 
-// SetStore sets the object store and initializes the write handler and batcher.
+// SetStore sets the object store and initializes the write handler, batcher, and query handler.
 // Used for testing.
 func (r *Router) SetStore(store objectstore.Store) error {
 	r.store = store
@@ -700,6 +780,8 @@ func (r *Router) SetStore(store objectstore.Store) error {
 			return err
 		}
 		r.writeBatcher = writeBatcher
+		// Initialize the query handler
+		r.queryHandler = query.NewHandler(store, r.stateManager, r.tailStore)
 	}
 	return nil
 }

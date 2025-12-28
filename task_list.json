@@ -615,7 +615,7 @@
       "Verify limit/top_k controls result count (max 10,000)",
       "Test response includes rows array with id and $dist"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-vector-ann",
