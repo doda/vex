@@ -1803,7 +1803,7 @@
       "Verify null semantics (Eq null matches missing)",
       "Test nested boolean operators"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-unit-rankby",
