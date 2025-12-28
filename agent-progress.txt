@@ -534,3 +534,13 @@ KEY DEPENDENCIES:
 - Issues found: incorrect sequence formatting in GC tests (resolved).
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T16:18:12.000Z] Completed recall-debug-endpoint: Review POST /v1/namespaces/:namespace/_debug/recall
+- Reviewed endpoint wiring in `pkg/api/router.go` and recall logic in `internal/query/recall.go`.
+- Verified request parsing, namespace checks, and response fields for recall metrics.
+- Reviewed tests in `pkg/api/recall_debug_test.go` and `internal/query/recall_test.go`.
+- Fixed recall handler to use `errors.Is` for namespace not found detection.
+- Fixed debug recall body parsing to distinguish empty body from invalid JSON and respect payload size errors.
+- Simplicity check: direct sampling with ANN/exhaustive comparison, no unnecessary abstraction.
+- Issues found: invalid JSON previously treated as empty body (resolved).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

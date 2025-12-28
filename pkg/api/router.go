@@ -1027,7 +1027,65 @@ func (r *Router) handleDeleteNamespace(w http.ResponseWriter, req *http.Request)
 func (r *Router) handleDebugRecall(w http.ResponseWriter, req *http.Request) {
 	ns := req.PathValue("namespace")
 
-	// Check if namespace exists
+	// Check object store availability
+	if err := r.checkObjectStore(); err != nil {
+		r.writeAPIError(w, err)
+		return
+	}
+
+	// Parse request body
+	var body map[string]interface{}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		if errors.Is(err, io.EOF) {
+			// Empty body is OK, use defaults
+			body = make(map[string]interface{})
+		} else if strings.Contains(err.Error(), "http: request body too large") {
+			r.writeAPIError(w, ErrPayloadTooLarge("request body exceeds 256MB limit"))
+			return
+		} else {
+			r.writeAPIError(w, ErrInvalidJSON())
+			return
+		}
+	}
+
+	// Parse request parameters
+	recallReq := &query.RecallRequest{
+		Num:  query.DefaultRecallNum,
+		TopK: query.DefaultRecallTopK,
+	}
+	if num, ok := body["num"].(float64); ok && num > 0 {
+		recallReq.Num = int(num)
+	}
+	if topK, ok := body["top_k"].(float64); ok && topK > 0 {
+		recallReq.TopK = int(topK)
+	}
+
+	// Use query handler if available (this will also check namespace existence)
+	if r.queryHandler != nil {
+		resp, err := r.queryHandler.HandleRecall(req.Context(), ns, recallReq)
+		if err != nil {
+			if errors.Is(err, query.ErrNamespaceNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"avg_recall":           resp.AvgRecall,
+			"avg_ann_count":        resp.AvgANNCount,
+			"avg_exhaustive_count": resp.AvgExhaustiveCount,
+		})
+		return
+	}
+
+	// Fallback when no query handler (test mode)
+	// Check if namespace exists using test state
 	if err := r.checkNamespaceExists(ns, true); err != nil {
 		r.writeAPIError(w, err)
 		return

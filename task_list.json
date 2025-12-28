@@ -1500,7 +1500,7 @@
       "Verify ANN and exhaustive top_k compared",
       "Test avg_recall, avg_ann_count, avg_exhaustive_count returned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "debug-state-endpoint",
