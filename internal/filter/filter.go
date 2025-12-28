@@ -9,6 +9,7 @@ package filter
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 )
 
 // Operator represents a filter operator.
@@ -53,9 +54,14 @@ const (
 	OpNotIGlob Operator = "NotIGlob"
 )
 
-// Other operators
+// Regex operators
 const (
-	OpRegex                 Operator = "Regex"
+	OpRegex    Operator = "Regex"
+	OpNotRegex Operator = "NotRegex"
+)
+
+// Token operators
+const (
 	OpContainsTokenSequence Operator = "ContainsTokenSequence"
 	OpContainsAllTokens     Operator = "ContainsAllTokens"
 )
@@ -196,7 +202,7 @@ func parseComparisonFilter(attr string, arr []any) (*Filter, error) {
 	op := Operator(opStr)
 
 	// Validate operator
-	if !op.IsComparisonOp() && !op.IsArrayOp() && op != OpGlob && op != OpNotGlob && op != OpIGlob && op != OpNotIGlob && op != OpRegex && op != OpContainsTokenSequence && op != OpContainsAllTokens {
+	if !op.IsComparisonOp() && !op.IsArrayOp() && op != OpGlob && op != OpNotGlob && op != OpIGlob && op != OpNotIGlob && op != OpRegex && op != OpNotRegex && op != OpContainsTokenSequence && op != OpContainsAllTokens {
 		return nil, fmt.Errorf("unknown operator: %s", op)
 	}
 
@@ -277,6 +283,8 @@ func (f *Filter) Eval(doc Document) bool {
 		return !f.evalGlob(doc, true)
 	case OpRegex:
 		return f.evalRegex(doc)
+	case OpNotRegex:
+		return !f.evalRegex(doc)
 	case OpContainsTokenSequence:
 		return f.evalContainsTokenSequence(doc)
 	case OpContainsAllTokens:
@@ -483,9 +491,31 @@ func (f *Filter) evalGlob(doc Document, caseInsensitive bool) bool {
 	return matcher.Match(docStr)
 }
 
-func (f *Filter) evalRegex(_ Document) bool {
-	// Regex matching will be implemented in a separate task
-	return false
+func (f *Filter) evalRegex(doc Document) bool {
+	docVal, exists := doc[f.Attr]
+	if !exists || docVal == nil {
+		return false
+	}
+
+	// Get the string value to match against
+	docStr, ok := docVal.(string)
+	if !ok {
+		return false
+	}
+
+	// Get the pattern from the filter value
+	pattern, ok := f.Value.(string)
+	if !ok {
+		return false
+	}
+
+	// Compile and match the regex
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false
+	}
+
+	return re.MatchString(docStr)
 }
 
 func (f *Filter) evalContainsTokenSequence(_ Document) bool {
@@ -495,5 +525,81 @@ func (f *Filter) evalContainsTokenSequence(_ Document) bool {
 
 func (f *Filter) evalContainsAllTokens(_ Document) bool {
 	// Token matching will be implemented in a separate task
+	return false
+}
+
+// IsRegexOp returns true if the operator requires regex: true in schema.
+func (o Operator) IsRegexOp() bool {
+	return o == OpRegex || o == OpNotRegex
+}
+
+// ErrRegexNotEnabled is returned when a Regex filter is used on an attribute
+// that does not have regex: true in the schema.
+var ErrRegexNotEnabled = fmt.Errorf("Regex operator requires regex: true in schema for the attribute")
+
+// SchemaChecker provides schema information for filter validation.
+type SchemaChecker interface {
+	// HasRegex returns true if the attribute has regex: true in its schema.
+	HasRegex(attrName string) bool
+}
+
+// ValidateWithSchema validates that filter operators are compatible with the schema.
+// Returns an error if Regex/NotRegex operators are used on attributes without regex: true.
+func (f *Filter) ValidateWithSchema(schema SchemaChecker) error {
+	if f == nil {
+		return nil
+	}
+
+	switch f.Op {
+	case OpAnd:
+		for _, child := range f.Children {
+			if err := child.ValidateWithSchema(schema); err != nil {
+				return err
+			}
+		}
+	case OpOr:
+		for _, child := range f.Children {
+			if err := child.ValidateWithSchema(schema); err != nil {
+				return err
+			}
+		}
+	case OpNot:
+		if f.Child != nil {
+			return f.Child.ValidateWithSchema(schema)
+		}
+	case OpRegex, OpNotRegex:
+		if schema == nil || !schema.HasRegex(f.Attr) {
+			return fmt.Errorf("%w: attribute %q", ErrRegexNotEnabled, f.Attr)
+		}
+	}
+	return nil
+}
+
+// UsesRegexOperators returns true if this filter or any nested filter uses Regex/NotRegex operators.
+func (f *Filter) UsesRegexOperators() bool {
+	if f == nil {
+		return false
+	}
+
+	switch f.Op {
+	case OpRegex, OpNotRegex:
+		return true
+	case OpAnd:
+		for _, child := range f.Children {
+			if child.UsesRegexOperators() {
+				return true
+			}
+		}
+	case OpOr:
+		for _, child := range f.Children {
+			if child.UsesRegexOperators() {
+				return true
+			}
+		}
+	case OpNot:
+		if f.Child != nil {
+			return f.Child.UsesRegexOperators()
+		}
+	}
 	return false
 }

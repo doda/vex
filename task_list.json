@@ -841,7 +841,7 @@
       "Verify regex: true must be set in schema",
       "Test regex without schema option returns error"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "filter-fulltext-tokens",

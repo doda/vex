@@ -474,7 +474,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 
 	// PHASE 1: delete_by_filter runs BEFORE all other operations
 	if req.DeleteByFilter != nil {
-		remaining, err := handler.processDeleteByFilter(ctx, ns, state.WAL.HeadSeq, req.DeleteByFilter, subBatch)
+		remaining, err := handler.processDeleteByFilter(ctx, ns, state.WAL.HeadSeq, req.DeleteByFilter, subBatch, state.Schema)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -483,7 +483,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 
 	// PHASE 2: patch_by_filter runs AFTER delete_by_filter, BEFORE other operations
 	if req.PatchByFilter != nil {
-		remaining, err := handler.processPatchByFilter(ctx, ns, state.WAL.HeadSeq, req.PatchByFilter, subBatch)
+		remaining, err := handler.processPatchByFilter(ctx, ns, state.WAL.HeadSeq, req.PatchByFilter, subBatch, state.Schema)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -615,24 +615,24 @@ type writeProcessor struct {
 // The following methods delegate to the Handler implementation.
 // We create a temporary Handler instance to reuse the existing logic.
 
-func (p *writeProcessor) processDeleteByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *DeleteByFilterRequest, batch *wal.WriteSubBatch) (bool, error) {
+func (p *writeProcessor) processDeleteByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *DeleteByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema) (bool, error) {
 	h := &Handler{
 		store:     p.store,
 		stateMan:  p.stateMan,
 		canon:     p.canon,
 		tailStore: p.tailStore,
 	}
-	return h.processDeleteByFilter(ctx, ns, snapshotSeq, req, batch)
+	return h.processDeleteByFilter(ctx, ns, snapshotSeq, req, batch, nsSchema)
 }
 
-func (p *writeProcessor) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch) (bool, error) {
+func (p *writeProcessor) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema) (bool, error) {
 	h := &Handler{
 		store:     p.store,
 		stateMan:  p.stateMan,
 		canon:     p.canon,
 		tailStore: p.tailStore,
 	}
-	return h.processPatchByFilter(ctx, ns, snapshotSeq, req, batch)
+	return h.processPatchByFilter(ctx, ns, snapshotSeq, req, batch, nsSchema)
 }
 
 func (p *writeProcessor) processCopyFromNamespace(ctx context.Context, sourceNs string, batch *wal.WriteSubBatch) error {

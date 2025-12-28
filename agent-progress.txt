@@ -247,3 +247,12 @@ KEY DEPENDENCIES:
 - No correctness issues found in the implementation.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T04:13:38.000Z] Completed filter-regex: Review Regex filter operator implementation
+- Reviewed staged changes in `internal/filter/filter.go`, `internal/filter/regex_test.go`, `internal/filter/schema_adapter.go`.
+- Reviewed schema validation hooks in `internal/query/handler.go` and `internal/write/handler.go`.
+- Verified Regex/NotRegex parsing, evaluation behavior, and missing/non-string attribute handling.
+- Verified schema validation rejects Regex/NotRegex without regex: true and allows with schema set.
+- Verified query and write paths now enforce schema validation when Regex operators are used.
+- No correctness issues found.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

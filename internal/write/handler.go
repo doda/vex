@@ -224,7 +224,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// PHASE 1: delete_by_filter runs BEFORE all other operations
 	if req.DeleteByFilter != nil {
-		remaining, err := h.processDeleteByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.DeleteByFilter, subBatch)
+		remaining, err := h.processDeleteByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.DeleteByFilter, subBatch, loaded.State.Schema)
 		if err != nil {
 			releaseOnError(err)
 			return nil, err
@@ -234,7 +234,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// PHASE 2: patch_by_filter runs AFTER delete_by_filter, BEFORE other operations
 	if req.PatchByFilter != nil {
-		remaining, err := h.processPatchByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.PatchByFilter, subBatch)
+		remaining, err := h.processPatchByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.PatchByFilter, subBatch, loaded.State.Schema)
 		if err != nil {
 			releaseOnError(err)
 			return nil, err
@@ -367,7 +367,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 // Phase 1: Evaluate filter at snapshot, select matching IDs (bounded by limit)
 // Phase 2: Re-evaluate filter and delete IDs that still match
 // Returns true if rows_remaining (more rows matched than limit)
-func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *DeleteByFilterRequest, batch *wal.WriteSubBatch) (bool, error) {
+func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *DeleteByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema) (bool, error) {
 	// Parse the filter
 	f, err := filter.Parse(req.Filter)
 	if err != nil {
@@ -377,6 +377,14 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 	// If filter is nil, no documents match
 	if f == nil {
 		return false, nil
+	}
+
+	// Validate regex filters against schema
+	if f.UsesRegexOperators() {
+		schemaChecker := buildSchemaChecker(nsSchema)
+		if err := f.ValidateWithSchema(schemaChecker); err != nil {
+			return false, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
+		}
 	}
 
 	// Phase 1: Get candidate IDs at the current snapshot
@@ -448,7 +456,7 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 // Phase 1: Evaluate filter at snapshot, select matching IDs (bounded by limit)
 // Phase 2: Re-evaluate filter and patch IDs that still match
 // Returns true if rows_remaining (more rows matched than limit)
-func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch) (bool, error) {
+func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema) (bool, error) {
 	// Parse the filter
 	f, err := filter.Parse(req.Filter)
 	if err != nil {
@@ -458,6 +466,14 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 	// If filter is nil, no documents match
 	if f == nil {
 		return false, nil
+	}
+
+	// Validate regex filters against schema
+	if f.UsesRegexOperators() {
+		schemaChecker := buildSchemaChecker(nsSchema)
+		if err := f.ValidateWithSchema(schemaChecker); err != nil {
+			return false, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
+		}
 	}
 
 	// Phase 1: Get candidate IDs at the current snapshot
@@ -1546,4 +1562,17 @@ func ParseColumnarToPatchRows(cols map[string]any) ([]map[string]any, error) {
 	}
 
 	return rows, nil
+}
+
+// buildSchemaChecker creates a filter.SchemaChecker from namespace schema.
+func buildSchemaChecker(schema *namespace.Schema) filter.SchemaChecker {
+	regexAttrs := make(map[string]bool)
+	if schema != nil {
+		for name, attr := range schema.Attributes {
+			if attr.Regex {
+				regexAttrs[name] = true
+			}
+		}
+	}
+	return filter.NewNamespaceSchemaAdapter(regexAttrs)
 }

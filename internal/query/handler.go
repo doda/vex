@@ -158,6 +158,14 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		if err != nil {
 			return nil, ErrInvalidFilter
 		}
+
+		// Validate regex filters against schema
+		if f.UsesRegexOperators() {
+			schemaChecker := buildSchemaChecker(loaded.State.Schema)
+			if err := f.ValidateWithSchema(schemaChecker); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
+			}
+		}
 	}
 
 	// Determine byte limit for eventual consistency
@@ -659,4 +667,17 @@ func filterAttributes(rows []Row, include, exclude []string) []Row {
 	}
 
 	return rows
+}
+
+// buildSchemaChecker creates a filter.SchemaChecker from namespace schema.
+func buildSchemaChecker(schema *namespace.Schema) filter.SchemaChecker {
+	regexAttrs := make(map[string]bool)
+	if schema != nil {
+		for name, attr := range schema.Attributes {
+			if attr.Regex {
+				regexAttrs[name] = true
+			}
+		}
+	}
+	return filter.NewNamespaceSchemaAdapter(regexAttrs)
 }
