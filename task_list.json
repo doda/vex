@@ -1898,7 +1898,7 @@
       "Test eventual queries degrade gracefully",
       "Verify background repair restores state"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-compat-suite",
