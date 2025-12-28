@@ -1214,7 +1214,7 @@
       "Verify $dist contains BM25 score",
       "Test documents with score zero excluded"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "bm25-operators",

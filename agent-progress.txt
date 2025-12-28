@@ -430,3 +430,12 @@ KEY DEPENDENCIES:
 - No correctness issues found during re-review.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T13:32:44.000Z] Completed bm25-query: Review BM25 ranking query implementation
+- Reviewed BM25 parsing and execution logic in `internal/query/handler.go`.
+- Reviewed BM25 query and API tests in `internal/query/bm25_query_test.go` and `pkg/api/bm25_query_test.go`.
+- Verified rank_by syntax parsing, BM25 scoring, result ordering, and $dist behavior align with task steps.
+- Verified empty query/token cases return empty results and zero-score docs are excluded.
+- Simplicity check: implementation is straightforward and consistent with existing query patterns.
+- No correctness issues found in reviewed changes.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

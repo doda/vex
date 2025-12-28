@@ -3,13 +3,16 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/fts"
 	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
@@ -135,6 +138,7 @@ type ParsedRankBy struct {
 	Field       string     // For attribute or BM25 ranking
 	Direction   string     // "asc" or "desc" for attribute ranking
 	QueryVector []float32  // For vector ANN
+	QueryText   string     // For BM25 text search
 }
 
 // DefaultNProbe is the default number of centroids to probe in ANN search.
@@ -319,7 +323,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		case RankByAttr:
 			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req, tailByteCap)
 		case RankByBM25:
-			rows, err = h.executeBM25Query(ctx, ns, parsed, f, req)
+			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req)
 		}
 		if err != nil {
 			return nil, err
@@ -423,9 +427,14 @@ func parseRankBy(rankBy any, vectorEncoding string) (*ParsedRankBy, error) {
 	if len(arr) >= 3 {
 		op, ok := arr[1].(string)
 		if ok && op == "BM25" {
+			queryText, ok := arr[2].(string)
+			if !ok {
+				return nil, ErrInvalidRankBy
+			}
 			return &ParsedRankBy{
-				Type:  RankByBM25,
-				Field: field,
+				Type:      RankByBM25,
+				Field:     field,
+				QueryText: queryText,
 			}, nil
 		}
 	}
@@ -719,9 +728,179 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *Parse
 }
 
 // executeBM25Query executes a BM25 full-text search query.
-func (h *Handler) executeBM25Query(ctx context.Context, ns string, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
-	// BM25 indexing not yet implemented - return empty results
-	return nil, nil
+// It searches the tail for documents matching the query and ranks them by BM25 score.
+// Documents with zero score are excluded from results.
+func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
+	if h.tailStore == nil {
+		return nil, nil
+	}
+
+	// Get FTS config for the field from schema
+	ftsCfg := h.getFTSConfig(loaded, parsed.Field)
+	if ftsCfg == nil {
+		// Use default config if not configured
+		ftsCfg = fts.DefaultConfig()
+	}
+
+	// Tokenize the query
+	tokenizer := fts.NewTokenizer(ftsCfg)
+	queryTokens := tokenizer.Tokenize(parsed.QueryText)
+	if ftsCfg.RemoveStopwords {
+		queryTokens = fts.RemoveStopwords(queryTokens)
+	}
+
+	// If query produces no tokens, return empty results
+	if len(queryTokens) == 0 {
+		return []Row{}, nil
+	}
+
+	// Scan documents from tail
+	docs, err := h.tailStore.Scan(ctx, ns, f)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(docs) == 0 {
+		return []Row{}, nil
+	}
+
+	// Build a temporary FTS index from tail documents for BM25 scoring
+	// This computes term frequencies and document statistics needed for BM25
+	index := fts.NewIndex(parsed.Field, ftsCfg)
+	docIDMap := make(map[uint32]*tail.Document) // Map internal doc IDs to tail docs
+
+	for i, doc := range docs {
+		if doc.Deleted {
+			continue
+		}
+
+		// Get the text value for the field
+		text, ok := h.getDocTextValue(doc, parsed.Field)
+		if !ok || text == "" {
+			continue
+		}
+
+		internalID := uint32(i)
+		index.AddDocument(internalID, text)
+		docIDMap[internalID] = doc
+	}
+
+	// If no documents have the field, return empty results
+	if index.TotalDocs == 0 {
+		return []Row{}, nil
+	}
+
+	// Score documents using BM25
+	type scoredDoc struct {
+		doc   *tail.Document
+		score float64
+	}
+	var scored []scoredDoc
+
+	for docID, doc := range docIDMap {
+		score := computeBM25Score(index, docID, queryTokens)
+		if score > 0 {
+			scored = append(scored, scoredDoc{doc: doc, score: score})
+		}
+	}
+
+	// Sort by score descending
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	// Apply limit
+	if len(scored) > req.Limit {
+		scored = scored[:req.Limit]
+	}
+
+	// Build result rows
+	rows := make([]Row, 0, len(scored))
+	for _, sc := range scored {
+		dist := sc.score
+		rows = append(rows, Row{
+			ID:         docIDToAny(sc.doc.ID),
+			Dist:       &dist,
+			Attributes: sc.doc.Attributes,
+		})
+	}
+
+	return rows, nil
+}
+
+// getFTSConfig retrieves the FTS configuration for a field from the schema.
+func (h *Handler) getFTSConfig(loaded *namespace.LoadedState, field string) *fts.Config {
+	if loaded.State.Schema == nil {
+		return nil
+	}
+
+	attrSchema, ok := loaded.State.Schema.Attributes[field]
+	if !ok {
+		return nil
+	}
+
+	if attrSchema.FullTextSearch == nil {
+		return nil
+	}
+
+	// Parse the FTS config from the raw JSON
+	var ftsVal any
+	if err := json.Unmarshal(attrSchema.FullTextSearch, &ftsVal); err != nil {
+		return nil
+	}
+
+	cfg, err := fts.Parse(ftsVal)
+	if err != nil {
+		return nil
+	}
+
+	return cfg
+}
+
+// getDocTextValue gets the string value of a field from a document.
+func (h *Handler) getDocTextValue(doc *tail.Document, field string) (string, bool) {
+	if doc.Attributes == nil {
+		return "", false
+	}
+	val, ok := doc.Attributes[field]
+	if !ok {
+		return "", false
+	}
+	text, ok := val.(string)
+	return text, ok
+}
+
+// computeBM25Score computes the BM25 score for a document given query tokens.
+func computeBM25Score(idx *fts.Index, docID uint32, queryTokens []string) float64 {
+	k1 := idx.Config.K1
+	b := idx.Config.B
+	avgDL := idx.AvgDocLength
+	docLen := float64(idx.GetDocLength(docID))
+	n := float64(idx.TotalDocs)
+
+	var score float64
+	for _, term := range queryTokens {
+		tf := float64(idx.GetTermFrequency(term, docID))
+		if tf == 0 {
+			continue
+		}
+
+		df := float64(idx.GetDocumentFrequency(term))
+		if df == 0 {
+			continue
+		}
+
+		// IDF: log((N - df + 0.5) / (df + 0.5) + 1)
+		idf := math.Log((n-df+0.5)/(df+0.5) + 1)
+
+		// BM25 term score: IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docLen / avgDL)))
+		denominator := tf + k1*(1-b+b*(docLen/avgDL))
+		if denominator > 0 {
+			score += idf * (tf * (k1 + 1)) / denominator
+		}
+	}
+
+	return score
 }
 
 // docIDToAny converts a document.ID to an interface{} for JSON serialization.
@@ -1375,7 +1554,7 @@ func (h *Handler) executeSubQuery(ctx context.Context, ns string, loaded *namesp
 		case RankByAttr:
 			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req, tailByteCap)
 		case RankByBM25:
-			rows, err = h.executeBM25Query(ctx, ns, parsed, f, req)
+			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req)
 		}
 		if err != nil {
 			return nil, err
