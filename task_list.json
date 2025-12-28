@@ -1735,7 +1735,7 @@
       "Test format_version in index manifests",
       "Verify format_version in state.json"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "upgrade-strategy",

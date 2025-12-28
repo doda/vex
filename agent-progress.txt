@@ -622,3 +622,11 @@ KEY DEPENDENCIES:
 - Issues found: object store metrics were defined but not recorded before fix.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T18:35:17.000Z] Completed format-versioning: Review format version coverage
+- Reviewed new tests in `internal/version/format_test.go` covering WAL entries, manifests, and state.json.
+- Verified WAL entries include format_version in protobuf and are set by `NewWalEntry`.
+- Verified manifest/state JSON include format_version constants and validation paths.
+- Verified related formats already versioned (IVF header, FTS header, filter header).
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
