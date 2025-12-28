@@ -20,22 +20,32 @@ import (
 const (
 	// MaxDeleteByFilterRows is the maximum number of rows that can be deleted by filter
 	MaxDeleteByFilterRows = 5_000_000
+	// MaxPatchByFilterRows is the maximum number of rows that can be patched by filter
+	MaxPatchByFilterRows = 500_000
 )
 
 var (
-	ErrInvalidRequest         = errors.New("invalid write request")
-	ErrInvalidID              = errors.New("invalid document ID")
-	ErrInvalidAttribute       = errors.New("invalid attribute")
-	ErrDuplicateIDColumn      = errors.New("duplicate IDs in columnar format")
-	ErrVectorPatchForbidden   = errors.New("vector attribute cannot be patched")
-	ErrDeleteByFilterTooMany  = errors.New("delete_by_filter exceeds maximum rows limit")
-	ErrInvalidFilter          = errors.New("invalid filter expression")
+	ErrInvalidRequest        = errors.New("invalid write request")
+	ErrInvalidID             = errors.New("invalid document ID")
+	ErrInvalidAttribute      = errors.New("invalid attribute")
+	ErrDuplicateIDColumn     = errors.New("duplicate IDs in columnar format")
+	ErrVectorPatchForbidden  = errors.New("vector attribute cannot be patched")
+	ErrDeleteByFilterTooMany = errors.New("delete_by_filter exceeds maximum rows limit")
+	ErrPatchByFilterTooMany  = errors.New("patch_by_filter exceeds maximum rows limit")
+	ErrInvalidFilter         = errors.New("invalid filter expression")
 )
 
 // DeleteByFilterRequest represents a delete_by_filter operation.
 type DeleteByFilterRequest struct {
 	Filter       any  // The filter expression (JSON-compatible)
 	AllowPartial bool // If true, allow partial deletion when limit is exceeded
+}
+
+// PatchByFilterRequest represents a patch_by_filter operation.
+type PatchByFilterRequest struct {
+	Filter       any            // The filter expression (JSON-compatible)
+	Updates      map[string]any // The attributes to update on matching documents
+	AllowPartial bool           // If true, allow partial patch when limit is exceeded
 }
 
 // WriteRequest represents a write request from the API.
@@ -45,6 +55,7 @@ type WriteRequest struct {
 	PatchRows      []map[string]any
 	Deletes        []any
 	DeleteByFilter *DeleteByFilterRequest // Optional delete_by_filter operation
+	PatchByFilter  *PatchByFilterRequest  // Optional patch_by_filter operation
 }
 
 // ColumnarData represents columnar format data with ids and attribute arrays.
@@ -136,7 +147,19 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		rowsRemaining = remaining
 	}
 
-	// PHASE 2: Process upsert_rows with last-write-wins deduplication
+	// PHASE 2: patch_by_filter runs AFTER delete_by_filter, BEFORE other operations
+	if req.PatchByFilter != nil {
+		remaining, err := h.processPatchByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.PatchByFilter, subBatch)
+		if err != nil {
+			return nil, err
+		}
+		// Only update rowsRemaining if we haven't already set it
+		if remaining {
+			rowsRemaining = true
+		}
+	}
+
+	// PHASE 4: Process upsert_rows with last-write-wins deduplication
 	// Later occurrences of the same ID override earlier ones
 	dedupedUpserts, err := h.deduplicateUpsertRows(req.UpsertRows)
 	if err != nil {
@@ -148,7 +171,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		}
 	}
 
-	// PHASE 3: Process patch_rows with last-write-wins deduplication
+	// PHASE 5: Process patch_rows with last-write-wins deduplication
 	// Patches run after upserts per write ordering spec
 	dedupedPatches, err := h.deduplicatePatchRows(req.PatchRows)
 	if err != nil {
@@ -160,7 +183,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		}
 	}
 
-	// PHASE 4: Process deletes (runs after patches per write ordering spec)
+	// PHASE 6: Process deletes (runs after patches per write ordering spec)
 	for _, id := range req.Deletes {
 		if err := h.processDelete(id, subBatch); err != nil {
 			return nil, err
@@ -275,6 +298,104 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 		// Add delete mutation
 		protoID := wal.DocumentIDFromID(id)
 		batch.AddDelete(protoID)
+	}
+
+	return rowsRemaining, nil
+}
+
+// processPatchByFilter implements the two-phase patch_by_filter operation.
+// Phase 1: Evaluate filter at snapshot, select matching IDs (bounded by limit)
+// Phase 2: Re-evaluate filter and patch IDs that still match
+// Returns true if rows_remaining (more rows matched than limit)
+func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch) (bool, error) {
+	// Parse the filter
+	f, err := filter.Parse(req.Filter)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
+	}
+
+	// If filter is nil, no documents match
+	if f == nil {
+		return false, nil
+	}
+
+	// Phase 1: Get candidate IDs at the current snapshot
+	// We need a tail store to evaluate the filter
+	if h.tailStore == nil {
+		// No tail store configured - filter operations require document state
+		return false, nil
+	}
+
+	// Refresh tail to ensure we have current data
+	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
+		return false, fmt.Errorf("failed to refresh tail: %w", err)
+	}
+
+	// Scan for matching documents
+	docs, err := h.tailStore.Scan(ctx, ns, f)
+	if err != nil {
+		return false, fmt.Errorf("failed to scan for matching documents: %w", err)
+	}
+
+	// Check if we exceed the limit
+	rowsRemaining := len(docs) > MaxPatchByFilterRows
+	if rowsRemaining && !req.AllowPartial {
+		return false, fmt.Errorf("%w: %d rows match filter, max is %d", ErrPatchByFilterTooMany, len(docs), MaxPatchByFilterRows)
+	}
+
+	// Limit the candidates if we're in partial mode
+	candidateIDs := make([]document.ID, 0, len(docs))
+	for i, doc := range docs {
+		if i >= MaxPatchByFilterRows {
+			break
+		}
+		candidateIDs = append(candidateIDs, doc.ID)
+	}
+
+	// Canonicalize the updates once before the loop
+	attrs := make(map[string]any, len(req.Updates))
+	for k, v := range req.Updates {
+		if k == "id" {
+			continue
+		}
+		if k == "vector" {
+			return false, ErrVectorPatchForbidden
+		}
+		if err := schema.ValidateAttributeName(k); err != nil {
+			return false, fmt.Errorf("%w: %s: %v", ErrInvalidAttribute, k, err)
+		}
+		attrs[k] = v
+	}
+	canonAttrs, err := h.canon.CanonicalizeAttributes(attrs)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrInvalidAttribute, err)
+	}
+
+	// Phase 2: Re-evaluate filter for each candidate and patch those that still match
+	// This implements "Read Committed" semantics - docs that newly qualify between
+	// phases can be missed, and docs that no longer qualify are not patched
+	for _, id := range candidateIDs {
+		// Get the document again to re-evaluate
+		doc, err := h.tailStore.GetDocument(ctx, ns, id)
+		if err != nil {
+			continue // Skip on error
+		}
+		if doc == nil || doc.Deleted {
+			continue // Document was deleted between phases
+		}
+
+		// Re-evaluate the filter
+		filterDoc := make(filter.Document)
+		for k, v := range doc.Attributes {
+			filterDoc[k] = v
+		}
+		if !f.Eval(filterDoc) {
+			continue // Document no longer matches filter
+		}
+
+		// Add patch mutation
+		protoID := wal.DocumentIDFromID(id)
+		batch.AddPatch(protoID, canonAttrs)
 	}
 
 	return rowsRemaining, nil
@@ -544,6 +665,40 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 		if allowPartial, ok := body["delete_by_filter_allow_partial"]; ok {
 			if b, ok := allowPartial.(bool); ok {
 				req.DeleteByFilter.AllowPartial = b
+			}
+		}
+	}
+
+	// Parse patch_by_filter
+	if pbf, ok := body["patch_by_filter"]; ok {
+		pbfMap, ok := pbf.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: patch_by_filter must be an object", ErrInvalidRequest)
+		}
+
+		filterExpr, hasFilter := pbfMap["filter"]
+		if !hasFilter {
+			return nil, fmt.Errorf("%w: patch_by_filter missing 'filter' field", ErrInvalidRequest)
+		}
+
+		updates, hasUpdates := pbfMap["updates"]
+		if !hasUpdates {
+			return nil, fmt.Errorf("%w: patch_by_filter missing 'updates' field", ErrInvalidRequest)
+		}
+		updatesMap, ok := updates.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: patch_by_filter 'updates' must be an object", ErrInvalidRequest)
+		}
+
+		req.PatchByFilter = &PatchByFilterRequest{
+			Filter:  filterExpr,
+			Updates: updatesMap,
+		}
+
+		// Check for patch_by_filter_allow_partial flag
+		if allowPartial, ok := body["patch_by_filter_allow_partial"]; ok {
+			if b, ok := allowPartial.(bool); ok {
+				req.PatchByFilter.AllowPartial = b
 			}
 		}
 	}

@@ -69,3 +69,11 @@ KEY DEPENDENCIES:
 - Confirmed no other regressions introduced by the fixes.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T00:00:21.904Z] Completed write-patch-by-filter: Review patch_by_filter two-phase implementation
+- Reviewed changes in `internal/write/handler.go`, `internal/write/patch_by_filter_test.go`, `pkg/api/router.go`.
+- Verified patch_by_filter two-phase logic, ordering after delete_by_filter, and rows_remaining handling.
+- Verified API maps patch_by_filter limit and vector patch errors to 400.
+- Issue found: patch_by_filter updates skipped attribute name validation and allowed updating `id`.
+- Resolved by validating update keys and ignoring `id` before canonicalization.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

@@ -369,7 +369,7 @@
       "Verify two-phase with re-evaluation (Read Committed semantics)",
       "Test vector attribute cannot be patched via filter"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-copy-from-namespace",
