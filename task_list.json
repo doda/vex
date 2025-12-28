@@ -996,7 +996,7 @@
       "Verify segments array lists all segment details",
       "Test stats includes approx_row_count and approx_logical_bytes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "index-segment-format",

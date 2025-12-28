@@ -321,3 +321,11 @@ KEY DEPENDENCIES:
 - Checked for new issues and complexity; no correctness regressions found.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T05:46:00.000Z] Completed index-manifest-format: Review index manifest format implementation
+- Reviewed new files `internal/index/manifest.go` and `internal/index/manifest_test.go`.
+- Verified manifest includes format_version, namespace, generated_at, indexed_wal_seq, segments, and stats.
+- Verified indexed_wal_seq tracks max segment end and WALRangeCovered uses it.
+- Verified segments include per-segment keys and stats; aggregate stats computed from segments.
+- No correctness issues found in implementation or tests.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
