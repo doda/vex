@@ -1640,7 +1640,7 @@
       "Test repair task advances state head_seq safely",
       "Verify staleness bounded to target 60s"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "failure-node-churn",
