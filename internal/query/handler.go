@@ -38,6 +38,8 @@ var (
 	ErrInvalidConsistency    = errors.New("consistency must be 'strong' or 'eventual'")
 	ErrSnapshotRefreshFailed = errors.New("failed to refresh snapshot for strong consistency")
 	ErrInvalidAggregation    = errors.New("invalid aggregation expression")
+	ErrInvalidGroupBy        = errors.New("invalid group_by expression")
+	ErrGroupByWithoutAgg     = errors.New("group_by requires aggregate_by to be specified")
 )
 
 // AggregationType indicates the type of aggregation function.
@@ -70,10 +72,11 @@ type QueryRequest struct {
 
 // QueryResponse represents the response from a query.
 type QueryResponse struct {
-	Rows         []Row                  `json:"rows,omitempty"`
-	Aggregations map[string]any         `json:"aggregations,omitempty"`
-	Billing      BillingInfo            `json:"billing"`
-	Performance  PerformanceInfo        `json:"performance"`
+	Rows              []Row            `json:"rows,omitempty"`
+	Aggregations      map[string]any   `json:"aggregations,omitempty"`
+	AggregationGroups []map[string]any `json:"aggregation_groups,omitempty"`
+	Billing           BillingInfo      `json:"billing"`
+	Performance       PerformanceInfo  `json:"performance"`
 }
 
 // Row represents a single result row.
@@ -198,7 +201,34 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 			return nil, err
 		}
 
-		// Execute aggregation query
+		// Check if this is a grouped aggregation
+		if req.GroupBy != nil {
+			// Parse group_by
+			groupByAttrs, err := parseGroupBy(req.GroupBy)
+			if err != nil {
+				return nil, err
+			}
+
+			// Execute grouped aggregation query
+			aggGroups, err := h.executeGroupedAggregationQuery(ctx, ns, f, aggregations, groupByAttrs, req.Limit, tailByteCap)
+			if err != nil {
+				return nil, err
+			}
+
+			return &QueryResponse{
+				AggregationGroups: aggGroups,
+				Billing: BillingInfo{
+					BillableLogicalBytesQueried:  0,
+					BillableLogicalBytesReturned: 0,
+				},
+				Performance: PerformanceInfo{
+					CacheTemperature: "cold",
+					ServerTotalMs:    0,
+				},
+			}, nil
+		}
+
+		// Execute non-grouped aggregation query
 		aggResults, err := h.executeAggregationQuery(ctx, ns, f, aggregations, tailByteCap)
 		if err != nil {
 			return nil, err
@@ -277,6 +307,11 @@ func (h *Handler) validateRequest(req *QueryRequest) error {
 	// Validate consistency if specified
 	if req.Consistency != "" && req.Consistency != "strong" && req.Consistency != "eventual" {
 		return ErrInvalidConsistency
+	}
+
+	// group_by requires aggregate_by to be specified
+	if req.GroupBy != nil && req.AggregateBy == nil {
+		return ErrGroupByWithoutAgg
 	}
 
 	return nil
@@ -848,4 +883,127 @@ func computeSum(docs []*tail.Document, attr string) float64 {
 		}
 	}
 	return sum
+}
+
+// parseGroupBy parses the group_by field into an array of attribute names.
+func parseGroupBy(groupBy any) ([]string, error) {
+	switch v := groupBy.(type) {
+	case []string:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("%w: group_by must have at least one attribute", ErrInvalidGroupBy)
+		}
+		return v, nil
+	case []any:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("%w: group_by must have at least one attribute", ErrInvalidGroupBy)
+		}
+		result := make([]string, 0, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: group_by element %d is not a string", ErrInvalidGroupBy, i)
+			}
+			result = append(result, s)
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("%w: group_by must be an array of attribute names", ErrInvalidGroupBy)
+	}
+}
+
+// executeGroupedAggregationQuery executes an aggregation query with grouping.
+func (h *Handler) executeGroupedAggregationQuery(ctx context.Context, ns string, f *filter.Filter, aggregations map[string]*ParsedAggregation, groupByAttrs []string, limit int, tailByteCap int64) ([]map[string]any, error) {
+	if h.tailStore == nil {
+		return []map[string]any{}, nil
+	}
+
+	// Scan all documents matching the filter
+	var docs []*tail.Document
+	var err error
+	if tailByteCap > 0 {
+		docs, err = h.tailStore.ScanWithByteLimit(ctx, ns, f, tailByteCap)
+	} else {
+		docs, err = h.tailStore.Scan(ctx, ns, f)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Group documents by the group key
+	groups := make(map[string][]*tail.Document)
+	groupKeys := make(map[string]map[string]any) // group key string -> attribute values
+
+	for _, doc := range docs {
+		keyStr, keyVals := buildGroupKey(doc, groupByAttrs)
+		groups[keyStr] = append(groups[keyStr], doc)
+		if _, exists := groupKeys[keyStr]; !exists {
+			groupKeys[keyStr] = keyVals
+		}
+	}
+
+	// Compute aggregations for each group
+	result := make([]map[string]any, 0, len(groups))
+	for keyStr, groupDocs := range groups {
+		row := make(map[string]any)
+
+		// Add group key attributes
+		keyVals := groupKeys[keyStr]
+		for attr, val := range keyVals {
+			row[attr] = val
+		}
+
+		// Compute aggregations for this group
+		for label, agg := range aggregations {
+			switch agg.Type {
+			case AggCount:
+				row[label] = int64(len(groupDocs))
+			case AggSum:
+				row[label] = computeSum(groupDocs, agg.Attribute)
+			}
+		}
+
+		result = append(result, row)
+	}
+
+	// Sort result by group key attributes to ensure deterministic order
+	sortAggregationGroups(result, groupByAttrs)
+
+	// Apply limit if set
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+
+	return result, nil
+}
+
+// buildGroupKey builds a string key and attribute map from a document's group attributes.
+func buildGroupKey(doc *tail.Document, groupByAttrs []string) (string, map[string]any) {
+	keyVals := make(map[string]any, len(groupByAttrs))
+	var keyStr string
+
+	for i, attr := range groupByAttrs {
+		val := getDocAttrValue(doc, attr)
+		keyVals[attr] = val
+		if i > 0 {
+			keyStr += "|"
+		}
+		keyStr += formatKeyValue(val)
+	}
+
+	return keyStr, keyVals
+}
+
+// sortAggregationGroups sorts aggregation groups by group key attributes.
+func sortAggregationGroups(groups []map[string]any, groupByAttrs []string) {
+	sort.Slice(groups, func(i, j int) bool {
+		for _, attr := range groupByAttrs {
+			vi := groups[i][attr]
+			vj := groups[j][attr]
+			cmp := compareValues(vi, vj)
+			if cmp != 0 {
+				return cmp < 0
+			}
+		}
+		return false
+	})
 }

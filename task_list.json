@@ -908,7 +908,7 @@
       "Test group_by returns aggregation_groups object",
       "Verify groups are computed correctly"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-multi-query",

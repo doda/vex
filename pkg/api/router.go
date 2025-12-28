@@ -555,6 +555,14 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
 				return
 			}
+			if errors.Is(err, query.ErrInvalidGroupBy) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			if errors.Is(err, query.ErrGroupByWithoutAgg) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
 			r.writeAPIError(w, ErrInternalServer(err.Error()))
 			return
 		}
@@ -571,7 +579,10 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 			},
 		}
 
-		if resp.Aggregations != nil {
+		if resp.AggregationGroups != nil {
+			// Grouped aggregation query response
+			responseBody["aggregation_groups"] = resp.AggregationGroups
+		} else if resp.Aggregations != nil {
 			// Aggregation query response
 			responseBody["aggregations"] = resp.Aggregations
 		} else {

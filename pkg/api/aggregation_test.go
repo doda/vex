@@ -260,4 +260,154 @@ func TestAggregationAPIResponse(t *testing.T) {
 			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
+
+	t.Run("group_by returns aggregation_groups", func(t *testing.T) {
+		body := map[string]any{
+			"aggregate_by": map[string]any{
+				"count": []any{"Count"},
+			},
+			"group_by": []any{"category"},
+		}
+		jsonBody, _ := json.Marshal(body)
+
+		req := httptest.NewRequest(http.MethodPost, "/v2/namespaces/test-ns/query", bytes.NewReader(jsonBody))
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+
+		// Check that aggregation_groups array exists
+		aggGroups, ok := resp["aggregation_groups"].([]any)
+		if !ok {
+			t.Fatal("expected aggregation_groups array in response")
+		}
+
+		// Should have 2 groups (A and B)
+		if len(aggGroups) != 2 {
+			t.Errorf("expected 2 groups, got %d", len(aggGroups))
+		}
+
+		// Check that rows is NOT in the response
+		if _, ok := resp["rows"]; ok {
+			t.Error("expected no rows in grouped aggregation response")
+		}
+
+		// Check that aggregations is NOT in the response (it's groups, not aggregations)
+		if _, ok := resp["aggregations"]; ok {
+			t.Error("expected no aggregations in grouped aggregation response")
+		}
+
+		// Check billing and performance are present
+		if _, ok := resp["billing"]; !ok {
+			t.Error("expected billing in response")
+		}
+		if _, ok := resp["performance"]; !ok {
+			t.Error("expected performance in response")
+		}
+	})
+
+	t.Run("group_by groups are computed correctly", func(t *testing.T) {
+		body := map[string]any{
+			"aggregate_by": map[string]any{
+				"count":       []any{"Count"},
+				"total_price": []any{"Sum", "price"},
+			},
+			"group_by": []any{"category"},
+		}
+		jsonBody, _ := json.Marshal(body)
+
+		req := httptest.NewRequest(http.MethodPost, "/v2/namespaces/test-ns/query", bytes.NewReader(jsonBody))
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+
+		aggGroups, ok := resp["aggregation_groups"].([]any)
+		if !ok {
+			t.Fatal("expected aggregation_groups array in response")
+		}
+
+		// Find groups and verify counts and sums
+		for _, g := range aggGroups {
+			group := g.(map[string]any)
+			cat := group["category"]
+			if cat == "A" {
+				// Category A: 2 docs (10.5 + 15.0 = 25.5)
+				if group["count"] != float64(2) {
+					t.Errorf("expected count 2 for category A, got %v", group["count"])
+				}
+				if group["total_price"] != 25.5 {
+					t.Errorf("expected total_price 25.5 for category A, got %v", group["total_price"])
+				}
+			} else if cat == "B" {
+				// Category B: 1 doc (20.0)
+				if group["count"] != float64(1) {
+					t.Errorf("expected count 1 for category B, got %v", group["count"])
+				}
+				if group["total_price"] != 20.0 {
+					t.Errorf("expected total_price 20.0 for category B, got %v", group["total_price"])
+				}
+			}
+		}
+	})
+
+	t.Run("group_by without aggregate_by returns 400", func(t *testing.T) {
+		body := map[string]any{
+			"rank_by":  []any{"id", "asc"},
+			"group_by": []any{"category"},
+		}
+		jsonBody, _ := json.Marshal(body)
+
+		req := httptest.NewRequest(http.MethodPost, "/v2/namespaces/test-ns/query", bytes.NewReader(jsonBody))
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("invalid group_by format returns 400", func(t *testing.T) {
+		body := map[string]any{
+			"aggregate_by": map[string]any{
+				"count": []any{"Count"},
+			},
+			"group_by": "not_an_array",
+		}
+		jsonBody, _ := json.Marshal(body)
+
+		req := httptest.NewRequest(http.MethodPost, "/v2/namespaces/test-ns/query", bytes.NewReader(jsonBody))
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 }
