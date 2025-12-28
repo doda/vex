@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/routing"
 	"github.com/vexsearch/vex/pkg/api"
+	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 func Run(args []string) {
@@ -41,7 +43,27 @@ func Run(args []string) {
 		log.Fatalf("Failed to start membership manager: %v", err)
 	}
 
-	router := api.NewRouterWithMembership(cfg, clusterRouter, membershipMgr)
+	// Initialize object store from config
+	var store objectstore.Store
+	if cfg.ObjectStore.Type != "" {
+		var err error
+		store, err = objectstore.New(objectstore.Config{
+			Type:      cfg.ObjectStore.Type,
+			Endpoint:  cfg.ObjectStore.Endpoint,
+			Bucket:    cfg.ObjectStore.Bucket,
+			AccessKey: cfg.ObjectStore.AccessKey,
+			SecretKey: cfg.ObjectStore.SecretKey,
+			Region:    cfg.ObjectStore.Region,
+			UseSSL:    cfg.ObjectStore.UseSSL,
+		})
+		if err != nil {
+			log.Fatalf("Failed to initialize object store: %v", err)
+		}
+		fmt.Printf("Connected to object store: %s at %s\n", cfg.ObjectStore.Type, cfg.ObjectStore.Endpoint)
+	}
+
+	logger := logging.New()
+	router := api.NewRouterWithStore(cfg, clusterRouter, membershipMgr, logger, store)
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
@@ -69,6 +91,11 @@ func Run(args []string) {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Shutdown error: %v", err)
+	}
+
+	// Close router resources (batcher, write handler, tail store)
+	if err := router.Close(); err != nil {
+		log.Printf("Router close error: %v", err)
 	}
 
 	membershipMgr.Stop()

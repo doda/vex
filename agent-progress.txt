@@ -720,3 +720,12 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T21:52:50Z] Completed local-dev-minio: Review MinIO local dev support
+- Reviewed object store wiring in cmd/vex/serve/serve.go and router namespace checks in pkg/api/router.go.
+- Reviewed MinIO endpoint scheme handling in pkg/objectstore/s3.go for http/https endpoints.
+- Reviewed new integration coverage in tests/integration/minio_test.go for CRUD and persistence.
+- Verified behavior aligns with task: server can connect to MinIO, operations exercised via integration tests.
+- Simplicity check: changes are direct and localized; no unnecessary abstraction.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in task_list.json.

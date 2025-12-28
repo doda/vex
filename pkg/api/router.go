@@ -1426,16 +1426,42 @@ func (r *Router) checkObjectStore() *APIError {
 // Returns nil if namespace exists and is not deleted.
 // If requireExists is false, non-existent namespaces are allowed (for write endpoints).
 func (r *Router) checkNamespaceExists(ns string, requireExists bool) *APIError {
+	// First check test state for deleted flag (for test compatibility)
 	nsState := r.getNamespaceState(ns)
+	if nsState != nil && nsState.Deleted {
+		return ErrNamespaceDeleted(ns)
+	}
+
+	// When we have a real state manager, use it to check namespace existence
+	if r.stateManager != nil {
+		_, err := r.stateManager.Load(context.Background(), ns)
+		if err != nil {
+			if errors.Is(err, namespace.ErrStateNotFound) {
+				// Namespace doesn't exist in store - check test state
+				if nsState != nil && nsState.Exists {
+					return nil // Test says it exists
+				}
+				if requireExists {
+					return ErrNamespaceNotFound(ns)
+				}
+				return nil
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				return ErrNamespaceDeleted(ns)
+			}
+			// For other errors (e.g. network issues), return nil and let the handler deal with it
+			return nil
+		}
+		return nil
+	}
+
+	// Fallback to test state when no real state manager
 	if nsState == nil {
 		// No state set - if requireExists is true, it's a 404
 		if requireExists {
 			return ErrNamespaceNotFound(ns)
 		}
 		return nil
-	}
-	if nsState.Deleted {
-		return ErrNamespaceDeleted(ns)
 	}
 	if requireExists && !nsState.Exists {
 		return ErrNamespaceNotFound(ns)

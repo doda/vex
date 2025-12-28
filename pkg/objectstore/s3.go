@@ -29,9 +29,21 @@ type S3Store struct {
 }
 
 func NewS3Store(cfg S3Config) (*S3Store, error) {
-	client, err := minio.New(cfg.Endpoint, &minio.Options{
+	// Strip http:// or https:// from endpoint if present
+	// minio-go expects just the host:port, not a full URL
+	endpoint := cfg.Endpoint
+	secure := cfg.UseSSL
+	if strings.HasPrefix(endpoint, "https://") {
+		endpoint = strings.TrimPrefix(endpoint, "https://")
+		secure = true
+	} else if strings.HasPrefix(endpoint, "http://") {
+		endpoint = strings.TrimPrefix(endpoint, "http://")
+		secure = false
+	}
+
+	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: cfg.UseSSL,
+		Secure: secure,
 		Region: cfg.Region,
 	})
 	if err != nil {

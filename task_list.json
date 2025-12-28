@@ -1972,7 +1972,7 @@
       "Test Vex connects to local MinIO",
       "Verify all operations work with MinIO backend"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "config-management",
