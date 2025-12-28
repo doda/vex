@@ -1195,7 +1195,7 @@
       "Verify BM25 index segments are created",
       "Test FTS index referenced in segment fts_keys"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "bm25-query",
