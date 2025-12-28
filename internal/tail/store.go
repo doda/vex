@@ -231,10 +231,11 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 	// Load WAL entries from object storage
 	for seq := startSeq; seq <= upToSeq; seq++ {
 		key := wal.KeyForSeq(seq)
+		fullKey := "vex/namespaces/" + namespace + "/" + key
 
 		// Check if in NVMe cache first
 		cacheKey := cache.CacheKey{
-			ObjectKey: namespace + "/" + key,
+			ObjectKey: fullKey,
 			ETag:      "", // We don't have ETag for WAL entries
 		}
 
@@ -252,7 +253,7 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 
 		if compressed == nil {
 			// Fetch from object storage
-			reader, _, err := ts.objectStore.Get(ctx, namespace+"/"+key, nil)
+			reader, _, err := ts.objectStore.Get(ctx, fullKey, nil)
 			if err != nil {
 				if objectstore.IsNotFoundError(err) {
 					// WAL entry doesn't exist yet

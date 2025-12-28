@@ -132,7 +132,7 @@ func TestVerifyConcurrentWritesBatchIntoSameWALEntry(t *testing.T) {
 	}
 
 	// Verify WAL entry contains multiple sub-batches
-	walKey := state.State.WAL.HeadKey
+	walKey := "vex/namespaces/" + ns + "/" + state.State.WAL.HeadKey
 	reader, _, err := store.Get(context.Background(), walKey, nil)
 	if err != nil {
 		t.Fatalf("failed to read WAL entry: %v", err)

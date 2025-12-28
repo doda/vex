@@ -28,8 +28,8 @@ func TestVerification_QueryNodeReadsWALFromObjectStorage(t *testing.T) {
 		_, data := createTestWALEntry(namespace, seq, []testDoc{
 			{id: seq, attrs: map[string]any{"seq": int64(seq)}},
 		})
-		// Use correct key format: namespace/wal/N.wal.zst
-		store.objects[namespace+"/"+wal.KeyForSeq(seq)] = data
+		// Use correct key format: vex/namespaces/namespace/wal/N.wal.zst
+		store.objects["vex/namespaces/"+namespace+"/"+wal.KeyForSeq(seq)] = data
 	}
 
 	// Query node refreshes tail from object storage
@@ -148,7 +148,7 @@ func TestVerification_NVMeTierForSpilledTailBlocks(t *testing.T) {
 	_, data := createTestWALEntry(namespace, 1, []testDoc{
 		{id: 1, attrs: map[string]any{"test": "nvme-data"}},
 	})
-	store.objects[namespace+"/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/"+namespace+"/wal/1.wal.zst"] = data
 
 	// Refresh to load from object storage
 	ctx := context.Background()
@@ -159,7 +159,7 @@ func TestVerification_NVMeTierForSpilledTailBlocks(t *testing.T) {
 
 	// Verify WAL was cached to NVMe tier (disk cache)
 	cacheKey := cache.CacheKey{
-		ObjectKey: namespace + "/wal/1.wal.zst",
+		ObjectKey: "vex/namespaces/" + namespace + "/wal/1.wal.zst",
 		ETag:      "",
 	}
 
@@ -226,7 +226,7 @@ func TestVerification_TailSupportsVectorScanAndFilterEvaluation(t *testing.T) {
 		{id: 4, attrs: map[string]any{"category": "tech", "price": int64(300)}, vector: []float32{0.8, 0.2, 0.0}},
 		{id: 5, attrs: map[string]any{"category": "food", "price": int64(75)}, vector: []float32{0.0, 0.9, 0.1}},
 	})
-	store.objects[namespace+"/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/"+namespace+"/wal/1.wal.zst"] = data
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, namespace, 0, 1)
@@ -430,7 +430,7 @@ func TestVerification_AllDistanceMetrics(t *testing.T) {
 		{id: 2, vector: []float32{0.0, 1.0}},
 		{id: 3, vector: []float32{1.0, 1.0}},
 	})
-	store.objects[namespace+"/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/"+namespace+"/wal/1.wal.zst"] = data
 
 	ctx := context.Background()
 	ts.Refresh(ctx, namespace, 0, 1)

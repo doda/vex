@@ -326,7 +326,8 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	}
 
 	// Write WAL entry to object storage with If-None-Match for idempotency
-	walKey := wal.KeyForSeq(nextSeq)
+	walKeyRelative := wal.KeyForSeq(nextSeq)
+	walKey := "vex/namespaces/" + ns + "/" + walKeyRelative
 	_, err = h.store.PutIfAbsent(ctx, walKey, bytes.NewReader(result.Data), int64(len(result.Data)), &objectstore.PutOptions{
 		ContentType: "application/octet-stream",
 	})
@@ -340,7 +341,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	rebuildChanges := DetectSchemaRebuildChanges(req.Schema, loaded.State.Schema)
 
 	// Update namespace state to advance WAL head with schema delta and disable_backpressure flag
-	updatedState, err := h.stateMan.AdvanceWALWithOptions(ctx, ns, loaded.ETag, walKey, int64(len(result.Data)), namespace.AdvanceWALOptions{
+	updatedState, err := h.stateMan.AdvanceWALWithOptions(ctx, ns, loaded.ETag, walKeyRelative, int64(len(result.Data)), namespace.AdvanceWALOptions{
 		SchemaDelta:        schemaDelta,
 		DisableBackpressure: req.DisableBackpressure,
 	})

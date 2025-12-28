@@ -1856,7 +1856,7 @@
       "Test limit and aggregation responses",
       "Test multi-query response layout"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-simulation-deterministic",

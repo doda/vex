@@ -182,7 +182,7 @@ func TestHandler_WALCommitToObjectStorage(t *testing.T) {
 	}
 
 	// Verify WAL entry exists in object storage
-	walKey := "wal/1.wal.zst"
+	walKey := "vex/namespaces/" + ns + "/wal/1.wal.zst"
 	_, info, err := store.Get(ctx, walKey, nil)
 	if err != nil {
 		t.Fatalf("WAL entry not found in object storage: %v", err)
@@ -200,8 +200,9 @@ func TestHandler_WALCommitToObjectStorage(t *testing.T) {
 	if loaded.State.WAL.HeadSeq != 1 {
 		t.Errorf("expected WAL head_seq 1, got %d", loaded.State.WAL.HeadSeq)
 	}
-	if loaded.State.WAL.HeadKey != walKey {
-		t.Errorf("expected WAL head_key %q, got %q", walKey, loaded.State.WAL.HeadKey)
+	walKeyRelative := "wal/1.wal.zst"
+	if loaded.State.WAL.HeadKey != walKeyRelative {
+		t.Errorf("expected WAL head_key %q, got %q", walKeyRelative, loaded.State.WAL.HeadKey)
 	}
 }
 
@@ -1787,7 +1788,7 @@ func TestHandler_DeleteRecordedInWAL(t *testing.T) {
 	}
 
 	// Verify WAL entry exists in object storage
-	walKey := "wal/1.wal.zst"
+	walKey := "vex/namespaces/" + ns + "/wal/1.wal.zst"
 	_, info, err := store.Get(ctx, walKey, nil)
 	if err != nil {
 		t.Fatalf("WAL entry not found in object storage: %v", err)

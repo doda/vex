@@ -217,7 +217,7 @@ func TestHandler_DeleteByFilter_Resurrection(t *testing.T) {
 
 	// Verify the WAL contains both the delete and the upsert
 	// When applied, the upsert should win since it comes after the delete in ordering
-	walKey := "wal/2.wal.zst"
+	walKey := "vex/namespaces/" + ns + "/wal/2.wal.zst"
 	_, info, err := store.Get(ctx, walKey, nil)
 	if err != nil {
 		t.Fatalf("failed to get WAL entry: %v", err)
@@ -444,7 +444,7 @@ func TestHandler_WriteOrdering_Atomicity(t *testing.T) {
 
 	// Verify only ONE WAL entry was created for this complex request
 	// (the setup created WAL entry 1, so this should be entry 2)
-	walKey := "wal/2.wal.zst"
+	walKey := "vex/namespaces/" + ns + "/wal/2.wal.zst"
 	_, info, err := store.Get(ctx, walKey, nil)
 	if err != nil {
 		t.Fatalf("failed to get WAL entry: %v", err)
@@ -454,7 +454,7 @@ func TestHandler_WriteOrdering_Atomicity(t *testing.T) {
 	}
 
 	// Verify that WAL entry 3 does NOT exist (no partial commits)
-	_, _, err = store.Get(ctx, "wal/3.wal.zst", nil)
+	_, _, err = store.Get(ctx, "vex/namespaces/"+ns+"/wal/3.wal.zst", nil)
 	if err == nil {
 		t.Error("WAL entry 3 should not exist - all ops should be in one entry")
 	}

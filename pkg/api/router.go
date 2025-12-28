@@ -1562,6 +1562,16 @@ func (r *Router) RAMCache() *cache.MemoryCache {
 	return r.ramCache
 }
 
+// GetWriteHandler returns the write handler for direct access (testing).
+func (r *Router) GetWriteHandler() *write.Handler {
+	return r.writeHandler
+}
+
+// GetQueryHandler returns the query handler for direct access (testing).
+func (r *Router) GetQueryHandler() *query.Handler {
+	return r.queryHandler
+}
+
 // parsePageSize parses and validates the page_size parameter.
 // Returns default 100 if empty, validates range [1, 1000].
 func parsePageSize(s string) (int, error) {

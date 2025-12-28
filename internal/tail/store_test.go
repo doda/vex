@@ -179,12 +179,12 @@ func TestTailStore_RefreshFromObjectStorage(t *testing.T) {
 		{id: 1, attrs: map[string]any{"category": "A"}},
 		{id: 2, attrs: map[string]any{"category": "B"}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data
 
 	_, data2 := createTestWALEntry("test-ns", 2, []testDoc{
 		{id: 3, attrs: map[string]any{"category": "C"}},
 	})
-	store.objects["test-ns/wal/2.wal.zst"] = data2
+	store.objects["vex/namespaces/test-ns/wal/2.wal.zst"] = data2
 
 	// Refresh tail
 	ctx := context.Background()
@@ -251,7 +251,7 @@ func TestTailStore_NVMeTier(t *testing.T) {
 	_, data := createTestWALEntry("test-ns", 1, []testDoc{
 		{id: 1, attrs: map[string]any{"value": 42}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data
 
 	// Refresh should load from object store and cache to NVMe
 	ctx := context.Background()
@@ -271,7 +271,7 @@ func TestTailStore_NVMeTier(t *testing.T) {
 
 	// Verify data was cached to disk
 	cacheKey := cache.CacheKey{
-		ObjectKey: "test-ns/wal/1.wal.zst",
+		ObjectKey: "vex/namespaces/test-ns/wal/1.wal.zst",
 		ETag:      "",
 	}
 	if !diskCache.Contains(cacheKey) {
@@ -290,7 +290,7 @@ func TestTailStore_VectorScan(t *testing.T) {
 		{id: 2, attrs: map[string]any{"name": "medium"}, vector: []float32{0.7, 0.7, 0.0}},
 		{id: 3, attrs: map[string]any{"name": "far"}, vector: []float32{0.0, 1.0, 0.0}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, "test-ns", 0, 1)
@@ -334,7 +334,7 @@ func TestTailStore_VectorScanEuclidean(t *testing.T) {
 		{id: 2, vector: []float32{1.0, 0.0}},
 		{id: 3, vector: []float32{3.0, 4.0}}, // distance 5 from origin
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, "test-ns", 0, 1)
@@ -382,7 +382,7 @@ func TestTailStore_FilterEvaluation(t *testing.T) {
 		{id: 2, attrs: map[string]any{"category": "B", "score": int64(20)}},
 		{id: 3, attrs: map[string]any{"category": "A", "score": int64(30)}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, "test-ns", 0, 1)
@@ -424,7 +424,7 @@ func TestTailStore_VectorScanWithFilter(t *testing.T) {
 		{id: 2, attrs: map[string]any{"category": "B"}, vector: []float32{0.9, 0.1}},
 		{id: 3, attrs: map[string]any{"category": "A"}, vector: []float32{0.5, 0.5}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, "test-ns", 0, 1)
@@ -467,13 +467,13 @@ func TestTailStore_DeletedDocuments(t *testing.T) {
 		{id: 1, attrs: map[string]any{"name": "doc1"}},
 		{id: 2, attrs: map[string]any{"name": "doc2"}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data
 
 	// Delete one document
 	_, data2 := createTestWALEntry("test-ns", 2, []testDoc{
 		{id: 1, deleted: true},
 	})
-	store.objects["test-ns/wal/2.wal.zst"] = data2
+	store.objects["vex/namespaces/test-ns/wal/2.wal.zst"] = data2
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, "test-ns", 0, 2)
@@ -513,13 +513,13 @@ func TestTailStore_LastWriteWins(t *testing.T) {
 	_, data := createTestWALEntry("test-ns", 1, []testDoc{
 		{id: 1, attrs: map[string]any{"version": int64(1)}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data
 
 	// Update document
 	_, data2 := createTestWALEntry("test-ns", 2, []testDoc{
 		{id: 1, attrs: map[string]any{"version": int64(2)}},
 	})
-	store.objects["test-ns/wal/2.wal.zst"] = data2
+	store.objects["vex/namespaces/test-ns/wal/2.wal.zst"] = data2
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, "test-ns", 0, 2)
@@ -662,19 +662,19 @@ func TestTailStore_ScanWithByteLimit(t *testing.T) {
 	_, data1 := createTestWALEntry("test-ns", 1, []testDoc{
 		{id: 1, attrs: map[string]any{"seq": int64(1)}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data1
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data1
 
 	// Entry 2: middle (seq=2)
 	_, data2 := createTestWALEntry("test-ns", 2, []testDoc{
 		{id: 2, attrs: map[string]any{"seq": int64(2)}},
 	})
-	store.objects["test-ns/wal/2.wal.zst"] = data2
+	store.objects["vex/namespaces/test-ns/wal/2.wal.zst"] = data2
 
 	// Entry 3: newest (seq=3)
 	_, data3 := createTestWALEntry("test-ns", 3, []testDoc{
 		{id: 3, attrs: map[string]any{"seq": int64(3)}},
 	})
-	store.objects["test-ns/wal/3.wal.zst"] = data3
+	store.objects["vex/namespaces/test-ns/wal/3.wal.zst"] = data3
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, "test-ns", 0, 3)
@@ -750,19 +750,19 @@ func TestTailStore_VectorScanWithByteLimit(t *testing.T) {
 	_, data1 := createTestWALEntry("test-ns", 1, []testDoc{
 		{id: 1, attrs: map[string]any{"seq": int64(1)}, vector: []float32{0.0, 1.0}},
 	})
-	store.objects["test-ns/wal/1.wal.zst"] = data1
+	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = data1
 
 	// Entry 2: middle (seq=2) - closest to query
 	_, data2 := createTestWALEntry("test-ns", 2, []testDoc{
 		{id: 2, attrs: map[string]any{"seq": int64(2)}, vector: []float32{1.0, 0.0}},
 	})
-	store.objects["test-ns/wal/2.wal.zst"] = data2
+	store.objects["vex/namespaces/test-ns/wal/2.wal.zst"] = data2
 
 	// Entry 3: newest (seq=3)
 	_, data3 := createTestWALEntry("test-ns", 3, []testDoc{
 		{id: 3, attrs: map[string]any{"seq": int64(3)}, vector: []float32{0.5, 0.5}},
 	})
-	store.objects["test-ns/wal/3.wal.zst"] = data3
+	store.objects["vex/namespaces/test-ns/wal/3.wal.zst"] = data3
 
 	ctx := context.Background()
 	err := ts.Refresh(ctx, "test-ns", 0, 3)
@@ -820,8 +820,8 @@ func TestTailStore_ByteLimitNewestFirstOrdering(t *testing.T) {
 		_, data := createTestWALEntry("test-ns", i, []testDoc{
 			{id: i, attrs: map[string]any{"seq": int64(i)}},
 		})
-		// KeyForSeq returns "wal/N.wal.zst", so the full key is "test-ns/" + KeyForSeq(i)
-		store.objects["test-ns/"+wal.KeyForSeq(i)] = data
+		// KeyForSeq returns "wal/N.wal.zst", so the full key is "vex/namespaces/test-ns/" + KeyForSeq(i)
+		store.objects["vex/namespaces/test-ns/"+wal.KeyForSeq(i)] = data
 	}
 
 	ctx := context.Background()

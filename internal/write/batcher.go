@@ -391,7 +391,8 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	}
 
 	// Write WAL entry to object storage (use batchCtx for durability)
-	walKey := wal.KeyForSeq(nextSeq)
+	walKeyRelative := wal.KeyForSeq(nextSeq)
+	walKey := "vex/namespaces/" + batch.namespace + "/" + walKeyRelative
 	_, err = b.store.PutIfAbsent(batchCtx, walKey, bytes.NewReader(result.Data), int64(len(result.Data)), &objectstore.PutOptions{
 		ContentType: "application/octet-stream",
 	})
@@ -410,7 +411,7 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	}
 
 	// Update namespace state (use batchCtx for durability)
-	_, err = b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, loaded.ETag, walKey, int64(len(result.Data)), namespace.AdvanceWALOptions{
+	_, err = b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, loaded.ETag, walKeyRelative, int64(len(result.Data)), namespace.AdvanceWALOptions{
 		SchemaDelta:        schemaDelta,
 		DisableBackpressure: anyDisableBackpressure,
 	})

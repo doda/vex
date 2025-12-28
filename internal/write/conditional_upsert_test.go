@@ -294,7 +294,7 @@ func TestConditionalUpsert_AtomicWithWriting(t *testing.T) {
 	}, 1)
 
 	// Verify WAL entry exists
-	walKey1 := "wal/1.wal.zst"
+	walKey1 := "vex/namespaces/" + ns + "/wal/1.wal.zst"
 	_, _, err := store.Get(ctx, walKey1, nil)
 	if err != nil {
 		t.Fatalf("WAL entry 1 not found: %v", err)
@@ -320,7 +320,7 @@ func TestConditionalUpsert_AtomicWithWriting(t *testing.T) {
 	}
 
 	// Verify WAL entry 2 exists (write was committed)
-	walKey2 := "wal/2.wal.zst"
+	walKey2 := "vex/namespaces/" + ns + "/wal/2.wal.zst"
 	_, _, err = store.Get(ctx, walKey2, nil)
 	if err != nil {
 		t.Fatalf("WAL entry 2 not found: %v", err)
