@@ -1141,7 +1141,7 @@
       "Verify range queries with numeric/datetime fields",
       "Test inverted mapping for array elements"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-deduplication",
