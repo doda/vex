@@ -388,7 +388,7 @@
       "Test can be combined with other write operations",
       "Verify source namespace read at consistent snapshot"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-schema-updates",

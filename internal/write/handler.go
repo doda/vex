@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
@@ -25,14 +26,15 @@ const (
 )
 
 var (
-	ErrInvalidRequest        = errors.New("invalid write request")
-	ErrInvalidID             = errors.New("invalid document ID")
-	ErrInvalidAttribute      = errors.New("invalid attribute")
-	ErrDuplicateIDColumn     = errors.New("duplicate IDs in columnar format")
-	ErrVectorPatchForbidden  = errors.New("vector attribute cannot be patched")
-	ErrDeleteByFilterTooMany = errors.New("delete_by_filter exceeds maximum rows limit")
-	ErrPatchByFilterTooMany  = errors.New("patch_by_filter exceeds maximum rows limit")
-	ErrInvalidFilter         = errors.New("invalid filter expression")
+	ErrInvalidRequest          = errors.New("invalid write request")
+	ErrInvalidID               = errors.New("invalid document ID")
+	ErrInvalidAttribute        = errors.New("invalid attribute")
+	ErrDuplicateIDColumn       = errors.New("duplicate IDs in columnar format")
+	ErrVectorPatchForbidden    = errors.New("vector attribute cannot be patched")
+	ErrDeleteByFilterTooMany   = errors.New("delete_by_filter exceeds maximum rows limit")
+	ErrPatchByFilterTooMany    = errors.New("patch_by_filter exceeds maximum rows limit")
+	ErrInvalidFilter           = errors.New("invalid filter expression")
+	ErrSourceNamespaceNotFound = errors.New("source namespace not found")
 )
 
 // DeleteByFilterRequest represents a delete_by_filter operation.
@@ -50,12 +52,13 @@ type PatchByFilterRequest struct {
 
 // WriteRequest represents a write request from the API.
 type WriteRequest struct {
-	RequestID      string
-	UpsertRows     []map[string]any
-	PatchRows      []map[string]any
-	Deletes        []any
-	DeleteByFilter *DeleteByFilterRequest // Optional delete_by_filter operation
-	PatchByFilter  *PatchByFilterRequest  // Optional patch_by_filter operation
+	RequestID         string
+	UpsertRows        []map[string]any
+	PatchRows         []map[string]any
+	Deletes           []any
+	DeleteByFilter    *DeleteByFilterRequest // Optional delete_by_filter operation
+	PatchByFilter     *PatchByFilterRequest  // Optional patch_by_filter operation
+	CopyFromNamespace string                 // Optional: source namespace for server-side bulk copy
 }
 
 // ColumnarData represents columnar format data with ids and attribute arrays.
@@ -156,6 +159,13 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		// Only update rowsRemaining if we haven't already set it
 		if remaining {
 			rowsRemaining = true
+		}
+	}
+
+	// PHASE 3: copy_from_namespace runs AFTER patch_by_filter, BEFORE explicit upserts/patches/deletes
+	if req.CopyFromNamespace != "" {
+		if err := h.processCopyFromNamespace(ctx, req.CopyFromNamespace, subBatch); err != nil {
+			return nil, err
 		}
 	}
 
@@ -399,6 +409,73 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 	}
 
 	return rowsRemaining, nil
+}
+
+// processCopyFromNamespace performs a server-side bulk copy from a source namespace.
+// It reads all documents from the source namespace at a consistent snapshot
+// and adds them as upserts to the current batch.
+func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string, batch *wal.WriteSubBatch) error {
+	// We need a tail store to read source documents
+	if h.tailStore == nil {
+		return fmt.Errorf("%w: tail store required for copy_from_namespace", ErrInvalidRequest)
+	}
+
+	// Load source namespace state to get a consistent snapshot
+	sourceLoaded, err := h.stateMan.Load(ctx, sourceNs)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrSourceNamespaceNotFound, sourceNs, err)
+	}
+
+	// Refresh tail for source namespace at consistent snapshot
+	if err := h.tailStore.Refresh(ctx, sourceNs, 0, sourceLoaded.State.WAL.HeadSeq); err != nil {
+		return fmt.Errorf("failed to refresh source namespace tail: %w", err)
+	}
+
+	// Scan all documents from source namespace (no filter = all docs)
+	docs, err := h.tailStore.Scan(ctx, sourceNs, nil)
+	if err != nil {
+		return fmt.Errorf("failed to scan source namespace: %w", err)
+	}
+
+	// Add each document as an upsert
+	for _, doc := range docs {
+		if doc.Deleted {
+			continue
+		}
+
+		protoID := wal.DocumentIDFromID(doc.ID)
+
+		// Canonicalize attributes
+		canonAttrs, err := h.canon.CanonicalizeAttributes(doc.Attributes)
+		if err != nil {
+			return fmt.Errorf("failed to canonicalize attributes from source doc %v: %w", doc.ID, err)
+		}
+
+		// Convert vector to byte slice if present
+		var vectorData []byte
+		var vectorDims uint32
+		if len(doc.Vector) > 0 {
+			vectorDims = uint32(len(doc.Vector))
+			vectorData = vectorToBytes(doc.Vector)
+		}
+
+		batch.AddUpsert(protoID, canonAttrs, vectorData, vectorDims)
+	}
+
+	return nil
+}
+
+// vectorToBytes converts a float32 slice to bytes (little-endian).
+func vectorToBytes(v []float32) []byte {
+	data := make([]byte, len(v)*4)
+	for i, f := range v {
+		bits := math.Float32bits(f)
+		data[i*4] = byte(bits)
+		data[i*4+1] = byte(bits >> 8)
+		data[i*4+2] = byte(bits >> 16)
+		data[i*4+3] = byte(bits >> 24)
+	}
+	return data
 }
 
 // processUpsertRow processes a single row for upsert.
@@ -701,6 +778,15 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 				req.PatchByFilter.AllowPartial = b
 			}
 		}
+	}
+
+	// Parse copy_from_namespace
+	if cfn, ok := body["copy_from_namespace"]; ok {
+		cfnStr, ok := cfn.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: copy_from_namespace must be a string", ErrInvalidRequest)
+		}
+		req.CopyFromNamespace = cfnStr
 	}
 
 	return req, nil
