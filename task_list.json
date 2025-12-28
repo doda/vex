@@ -1549,7 +1549,7 @@
       "Test endpoint returns WAL entries from from_seq",
       "Verify gated behind admin auth"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "export-via-pagination",

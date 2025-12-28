@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/klauspost/compress/zstd"
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/filter"
@@ -22,9 +23,11 @@ import (
 	"github.com/vexsearch/vex/internal/query"
 	"github.com/vexsearch/vex/internal/routing"
 	"github.com/vexsearch/vex/internal/tail"
+	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/internal/warmer"
 	"github.com/vexsearch/vex/internal/write"
 	"github.com/vexsearch/vex/pkg/objectstore"
+	"google.golang.org/protobuf/proto"
 )
 
 // NamespaceState represents the state of a namespace for testing/simulation purposes.
@@ -159,6 +162,7 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 	r.mux.HandleFunc("POST /v1/namespaces/{namespace}/_debug/recall", r.authMiddleware(r.validateNamespace(r.handleDebugRecall)))
 	r.mux.HandleFunc("GET /_debug/state/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugState)))
 	r.mux.HandleFunc("GET /_debug/cache/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugCache)))
+	r.mux.HandleFunc("GET /_debug/wal/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugWal)))
 
 	return r
 }
@@ -1247,6 +1251,108 @@ func (r *Router) handleDebugCache(w http.ResponseWriter, req *http.Request) {
 	r.writeJSON(w, http.StatusOK, response)
 }
 
+func (r *Router) handleDebugWal(w http.ResponseWriter, req *http.Request) {
+	ns := req.PathValue("namespace")
+
+	// Check object store availability
+	if err := r.checkObjectStore(); err != nil {
+		r.writeAPIError(w, err)
+		return
+	}
+
+	// Check namespace exists
+	if r.stateManager != nil {
+		loaded, err := r.stateManager.Load(req.Context(), ns)
+		if err != nil {
+			if errors.Is(err, namespace.ErrStateNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+
+		// Parse from_seq query parameter
+		fromSeq := uint64(1)
+		if fromSeqStr := req.URL.Query().Get("from_seq"); fromSeqStr != "" {
+			parsed, err := parseUint64(fromSeqStr)
+			if err != nil {
+				r.writeAPIError(w, ErrBadRequest("from_seq must be a positive integer"))
+				return
+			}
+			if parsed < 1 {
+				r.writeAPIError(w, ErrBadRequest("from_seq must be at least 1"))
+				return
+			}
+			fromSeq = parsed
+		}
+
+		// Parse optional limit (default 100, max 1000)
+		limit := 100
+		if limitStr := req.URL.Query().Get("limit"); limitStr != "" {
+			parsed, err := parseUint64(limitStr)
+			if err != nil || parsed < 1 || parsed > 1000 {
+				r.writeAPIError(w, ErrBadRequest("limit must be between 1 and 1000"))
+				return
+			}
+			limit = int(parsed)
+		}
+
+		// Get WAL head sequence from state
+		headSeq := loaded.State.WAL.HeadSeq
+		if fromSeq > headSeq {
+			// No entries to return
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"namespace": ns,
+				"entries":   []interface{}{},
+				"head_seq":  headSeq,
+			})
+			return
+		}
+
+		// Read WAL entries from from_seq to min(headSeq, from_seq+limit-1)
+		entries := make([]interface{}, 0, limit)
+		for seq := fromSeq; seq <= headSeq && len(entries) < limit; seq++ {
+			entry, err := readWalEntry(req.Context(), r.store, ns, seq)
+			if err != nil {
+				// Skip entries that can't be read (e.g., not found, corrupted)
+				continue
+			}
+			entries = append(entries, entry)
+		}
+
+		response := map[string]interface{}{
+			"namespace": ns,
+			"entries":   entries,
+			"head_seq":  headSeq,
+		}
+		if fromSeq+uint64(limit)-1 < headSeq && len(entries) == limit {
+			response["next_seq"] = fromSeq + uint64(limit)
+		}
+
+		r.writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	// Fallback to test-mode state
+	if err := r.checkNamespaceExists(ns, true); err != nil {
+		r.writeAPIError(w, err)
+		return
+	}
+
+	// Test mode returns empty entries
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"namespace": ns,
+		"entries":   []interface{}{},
+		"head_seq":  uint64(0),
+		"test_mode": true,
+	})
+}
+
 func (r *Router) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1559,4 +1665,189 @@ func listNamespacesFromStore(ctx context.Context, store objectstore.Store, curso
 	}
 
 	return namespaces, nextCursor, nil
+}
+
+// parseUint64 parses a string as a uint64.
+func parseUint64(s string) (uint64, error) {
+	var n uint64
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, errors.New("invalid uint64")
+		}
+		n = n*10 + uint64(c-'0')
+	}
+	return n, nil
+}
+
+// readWalEntry reads and decodes a WAL entry from object storage.
+// WAL entries are stored under vex/namespaces/<namespace>/wal/<seq>.wal.zst.
+func readWalEntry(ctx context.Context, store objectstore.Store, ns string, seq uint64) (map[string]interface{}, error) {
+	key := fmt.Sprintf("vex/namespaces/%s/%s", ns, wal.KeyForSeq(seq))
+	reader, _, err := store.Get(ctx, key, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	// Decompress and decode WAL entry
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+
+	decompressed, err := decoder.DecodeAll(data, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse the protobuf WAL entry and convert to JSON-friendly structure
+	var entry wal.WalEntry
+	if err := proto.Unmarshal(decompressed, &entry); err != nil {
+		return nil, err
+	}
+
+	// Convert to JSON-friendly map
+	result := map[string]interface{}{
+		"seq":              entry.Seq,
+		"namespace":        entry.Namespace,
+		"format_version":   entry.FormatVersion,
+		"committed_at_ms":  entry.CommittedUnixMs,
+	}
+
+	// Convert sub-batches
+	subBatches := make([]interface{}, 0, len(entry.SubBatches))
+	for _, batch := range entry.SubBatches {
+		batchMap := map[string]interface{}{
+			"request_id":    batch.RequestId,
+			"received_at_ms": batch.ReceivedAtMs,
+		}
+
+		// Convert mutations
+		mutations := make([]interface{}, 0, len(batch.Mutations))
+		for _, m := range batch.Mutations {
+			mutMap := map[string]interface{}{
+				"type": m.Type.String(),
+			}
+			if m.Id != nil {
+				mutMap["id"] = walDocIDToInterface(m.Id)
+			}
+			if len(m.Attributes) > 0 {
+				attrs := make(map[string]interface{}, len(m.Attributes))
+				for k, v := range m.Attributes {
+					attrs[k] = walAttrValueToInterface(v)
+				}
+				mutMap["attributes"] = attrs
+			}
+			if m.VectorDims > 0 {
+				mutMap["vector_dims"] = m.VectorDims
+			}
+			mutations = append(mutations, mutMap)
+		}
+		if len(mutations) > 0 {
+			batchMap["mutations"] = mutations
+		}
+
+		// Convert stats
+		if batch.Stats != nil {
+			batchMap["stats"] = map[string]interface{}{
+				"rows_affected": batch.Stats.RowsAffected,
+				"rows_upserted": batch.Stats.RowsUpserted,
+				"rows_patched":  batch.Stats.RowsPatched,
+				"rows_deleted":  batch.Stats.RowsDeleted,
+			}
+		}
+
+		subBatches = append(subBatches, batchMap)
+	}
+	if len(subBatches) > 0 {
+		result["sub_batches"] = subBatches
+	}
+
+	return result, nil
+}
+
+// walDocIDToInterface converts a WAL DocumentID to an interface{} value.
+func walDocIDToInterface(id *wal.DocumentID) interface{} {
+	if id == nil {
+		return nil
+	}
+	switch v := id.GetId().(type) {
+	case *wal.DocumentID_U64:
+		return v.U64
+	case *wal.DocumentID_Uuid:
+		if len(v.Uuid) == 16 {
+			return fmt.Sprintf("%x-%x-%x-%x-%x", v.Uuid[0:4], v.Uuid[4:6], v.Uuid[6:8], v.Uuid[8:10], v.Uuid[10:16])
+		}
+		return nil
+	case *wal.DocumentID_Str:
+		return v.Str
+	default:
+		return nil
+	}
+}
+
+// walAttrValueToInterface converts a WAL AttributeValue to an interface{} value.
+func walAttrValueToInterface(v *wal.AttributeValue) interface{} {
+	if v == nil {
+		return nil
+	}
+	switch val := v.GetValue().(type) {
+	case *wal.AttributeValue_StringVal:
+		return val.StringVal
+	case *wal.AttributeValue_IntVal:
+		return val.IntVal
+	case *wal.AttributeValue_UintVal:
+		return val.UintVal
+	case *wal.AttributeValue_FloatVal:
+		return val.FloatVal
+	case *wal.AttributeValue_BoolVal:
+		return val.BoolVal
+	case *wal.AttributeValue_DatetimeVal:
+		return val.DatetimeVal
+	case *wal.AttributeValue_NullVal:
+		return nil
+	case *wal.AttributeValue_UuidVal:
+		if len(val.UuidVal) == 16 {
+			return fmt.Sprintf("%x-%x-%x-%x-%x", val.UuidVal[0:4], val.UuidVal[4:6], val.UuidVal[6:8], val.UuidVal[8:10], val.UuidVal[10:16])
+		}
+		return nil
+	case *wal.AttributeValue_StringArray:
+		if val.StringArray != nil {
+			return val.StringArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_IntArray:
+		if val.IntArray != nil {
+			return val.IntArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_UintArray:
+		if val.UintArray != nil {
+			return val.UintArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_FloatArray:
+		if val.FloatArray != nil {
+			return val.FloatArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_DatetimeArray:
+		if val.DatetimeArray != nil {
+			return val.DatetimeArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_BoolArray:
+		if val.BoolArray != nil {
+			return val.BoolArray.Values
+		}
+		return nil
+	default:
+		return nil
+	}
 }
