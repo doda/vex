@@ -19,6 +19,7 @@ type Config struct {
 	Mode        Mode              `json:"mode"`
 	ListenAddr  string            `json:"listen_addr"`
 	AuthToken   string            `json:"auth_token"`
+	AdminToken  string            `json:"admin_token"`
 	CompatMode  string            `json:"compat_mode"`
 	ObjectStore ObjectStoreConfig `json:"object_store"`
 	Cache       CacheConfig       `json:"cache"`
@@ -111,6 +112,9 @@ func Load(path string) (*Config, error) {
 	}
 	if env := os.Getenv("VEX_AUTH_TOKEN"); env != "" {
 		cfg.AuthToken = env
+	}
+	if env := os.Getenv("VEX_ADMIN_TOKEN"); env != "" {
+		cfg.AdminToken = env
 	}
 	if env := os.Getenv("VEX_OBJECT_STORE_ENDPOINT"); env != "" {
 		cfg.ObjectStore.Endpoint = env

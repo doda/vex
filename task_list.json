@@ -1516,7 +1516,7 @@
       "Test endpoint returns namespace state",
       "Verify gated behind admin auth"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "debug-cache-endpoint",

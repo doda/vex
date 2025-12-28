@@ -154,6 +154,7 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 	r.mux.HandleFunc("POST /v2/namespaces/{namespace}/query", r.authMiddleware(r.validateNamespace(r.handleQuery)))
 	r.mux.HandleFunc("DELETE /v2/namespaces/{namespace}", r.authMiddleware(r.validateNamespace(r.handleDeleteNamespace)))
 	r.mux.HandleFunc("POST /v1/namespaces/{namespace}/_debug/recall", r.authMiddleware(r.validateNamespace(r.handleDebugRecall)))
+	r.mux.HandleFunc("GET /_debug/state/{namespace}", r.adminAuthMiddleware(r.validateNamespace(r.handleDebugState)))
 
 	return r
 }
@@ -282,6 +283,29 @@ func (r *Router) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		token := strings.TrimPrefix(auth, "Bearer ")
 		if token != r.cfg.AuthToken {
 			r.writeError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+
+		next(w, req)
+	}
+}
+
+func (r *Router) adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if r.cfg.AdminToken == "" {
+			r.writeError(w, http.StatusForbidden, "admin endpoints require admin token configuration")
+			return
+		}
+
+		auth := req.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			r.writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
+			return
+		}
+
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if token != r.cfg.AdminToken {
+			r.writeError(w, http.StatusForbidden, "admin access denied")
 			return
 		}
 
@@ -1096,6 +1120,53 @@ func (r *Router) handleDebugRecall(w http.ResponseWriter, req *http.Request) {
 		"avg_ann_count":        0,
 		"avg_exhaustive_count": 0,
 	})
+}
+
+func (r *Router) handleDebugState(w http.ResponseWriter, req *http.Request) {
+	ns := req.PathValue("namespace")
+
+	// Check object store availability
+	if err := r.checkObjectStore(); err != nil {
+		r.writeAPIError(w, err)
+		return
+	}
+
+	// Try to load state from the real state manager first
+	if r.stateManager != nil {
+		loaded, err := r.stateManager.Load(req.Context(), ns)
+		if err != nil {
+			if errors.Is(err, namespace.ErrStateNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+
+		// Return the full state as JSON
+		r.writeJSON(w, http.StatusOK, loaded.State)
+		return
+	}
+
+	// Fallback to test-mode state for backward compatibility
+	if err := r.checkNamespaceExists(ns, true); err != nil {
+		r.writeAPIError(w, err)
+		return
+	}
+
+	// Return a minimal state representation for test mode
+	nsState := r.getNamespaceState(ns)
+	response := map[string]interface{}{
+		"namespace":   ns,
+		"exists":      nsState != nil && nsState.Exists,
+		"deleted":     nsState != nil && nsState.Deleted,
+		"test_mode":   true,
+	}
+	r.writeJSON(w, http.StatusOK, response)
 }
 
 func (r *Router) writeJSON(w http.ResponseWriter, status int, data interface{}) {

@@ -544,3 +544,14 @@ KEY DEPENDENCIES:
 - Issues found: invalid JSON previously treated as empty body (resolved).
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T16:25:30.000Z] Completed debug-state-endpoint: Review GET /_debug/state/:namespace
+- Reviewed route wiring and handler in `pkg/api/router.go`.
+- Verified admin auth middleware checks `AdminToken` and returns appropriate status codes.
+- Verified handler loads namespace state from state manager and maps not-found/deleted errors.
+- Verified test-mode fallback returns minimal state when no object store is configured.
+- Reviewed config addition for `AdminToken` env override in `internal/config/config.go`.
+- Reviewed new tests in `pkg/api/debug_state_test.go` for auth, not found, deleted, and WAL fields.
+- Simplicity check: handler follows existing patterns, no unnecessary abstraction.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
