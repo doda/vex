@@ -702,6 +702,102 @@ func TestEqNotEq_TaskVerification(t *testing.T) {
 	})
 }
 
+// TestInNotIn_TaskVerification tests exactly the verification steps for the filter-in-notin task.
+func TestInNotIn_TaskVerification(t *testing.T) {
+	t.Run("In_matches_any_value_in_set", func(t *testing.T) {
+		// Test In operator matches any value in set
+		f, err := Parse([]any{"category", "In", []any{"electronics", "books", "clothing"}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match first value
+		if !f.Eval(Document{"category": "electronics"}) {
+			t.Error("In should match first value in set")
+		}
+
+		// Should match middle value
+		if !f.Eval(Document{"category": "books"}) {
+			t.Error("In should match middle value in set")
+		}
+
+		// Should match last value
+		if !f.Eval(Document{"category": "clothing"}) {
+			t.Error("In should match last value in set")
+		}
+
+		// Should not match value outside set
+		if f.Eval(Document{"category": "toys"}) {
+			t.Error("In should not match value outside set")
+		}
+
+		// Test with numeric values
+		fNumeric, err := Parse([]any{"priority", "In", []any{float64(1), float64(2), float64(3)}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fNumeric.Eval(Document{"priority": float64(2)}) {
+			t.Error("In should match numeric value in set")
+		}
+		if fNumeric.Eval(Document{"priority": float64(5)}) {
+			t.Error("In should not match numeric value outside set")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other_field": "value"}) {
+			t.Error("In should not match when attribute is missing")
+		}
+	})
+
+	t.Run("NotIn_excludes_all_values_in_set", func(t *testing.T) {
+		// Test NotIn operator excludes all values in set
+		f, err := Parse([]any{"status", "NotIn", []any{"deleted", "archived", "spam"}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match value outside set
+		if !f.Eval(Document{"status": "active"}) {
+			t.Error("NotIn should match value outside set")
+		}
+		if !f.Eval(Document{"status": "pending"}) {
+			t.Error("NotIn should match another value outside set")
+		}
+
+		// Should not match first value in set
+		if f.Eval(Document{"status": "deleted"}) {
+			t.Error("NotIn should not match first value in set")
+		}
+
+		// Should not match middle value in set
+		if f.Eval(Document{"status": "archived"}) {
+			t.Error("NotIn should not match middle value in set")
+		}
+
+		// Should not match last value in set
+		if f.Eval(Document{"status": "spam"}) {
+			t.Error("NotIn should not match last value in set")
+		}
+
+		// Test with numeric values
+		fNumeric, err := Parse([]any{"level", "NotIn", []any{float64(0), float64(-1)}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fNumeric.Eval(Document{"level": float64(5)}) {
+			t.Error("NotIn should match numeric value outside set")
+		}
+		if fNumeric.Eval(Document{"level": float64(0)}) {
+			t.Error("NotIn should not match numeric value in set")
+		}
+
+		// Missing attribute: NotIn should match (not in set = true)
+		if !f.Eval(Document{"other_field": "value"}) {
+			t.Error("NotIn should match when attribute is missing (missing is not in set)")
+		}
+	})
+}
+
 func TestArrayOperators(t *testing.T) {
 	tests := []struct {
 		name     string

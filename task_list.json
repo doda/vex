@@ -762,7 +762,7 @@
       "Test In operator matches any value in set",
       "Test NotIn operator excludes all values in set"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "filter-comparisons",
