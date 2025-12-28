@@ -464,7 +464,7 @@
       "Verify doc missing = skip",
       "Test $ref_new attributes are supplied as null for delete_condition"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-request-ordering",

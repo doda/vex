@@ -78,6 +78,7 @@ type WriteRequest struct {
 	Schema            *SchemaUpdate          // Optional: explicit schema changes
 	UpsertCondition   any                    // Optional: condition evaluated against current doc for upserts
 	PatchCondition    any                    // Optional: condition evaluated against current doc for patches
+	DeleteCondition   any                    // Optional: condition evaluated against current doc for deletes
 }
 
 // ColumnarData represents columnar format data with ids and attribute arrays.
@@ -238,9 +239,16 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	}
 
 	// PHASE 6: Process deletes (runs after patches per write ordering spec)
-	for _, id := range req.Deletes {
-		if err := h.processDelete(id, subBatch); err != nil {
+	// If delete_condition is specified, process conditionally
+	if req.DeleteCondition != nil {
+		if err := h.processConditionalDeletes(ctx, ns, loaded.State.WAL.HeadSeq, req.Deletes, req.DeleteCondition, subBatch); err != nil {
 			return nil, err
+		}
+	} else {
+		for _, id := range req.Deletes {
+			if err := h.processDelete(id, subBatch); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -710,6 +718,96 @@ func (h *Handler) shouldApplyConditionalPatch(existingDoc *tail.Document, condit
 	return f.Eval(filterDoc), nil
 }
 
+// processConditionalDeletes processes deletes with a condition.
+// Conditional delete semantics:
+//   - If doc missing → skip (can't delete what doesn't exist)
+//   - If doc exists and condition met → delete
+//   - If doc exists and condition not met → skip
+//
+// For $ref_new references in conditions, all attributes are supplied as null
+// since deletion has no "new" values.
+func (h *Handler) processConditionalDeletes(ctx context.Context, ns string, snapshotSeq uint64, ids []any, condition any, batch *wal.WriteSubBatch) error {
+	// We need a tail store to read existing documents
+	// If no tail store, we cannot evaluate conditions against existing docs
+	// In this case, skip all deletes since we can't verify doc existence/conditions
+	if h.tailStore == nil {
+		return nil
+	}
+
+	// Refresh tail to ensure we have current data
+	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
+		return fmt.Errorf("failed to refresh tail for conditional delete: %w", err)
+	}
+
+	for _, rawID := range ids {
+		docID, err := document.ParseID(rawID)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidID, err)
+		}
+
+		// Get existing document
+		existingDoc, err := h.tailStore.GetDocument(ctx, ns, docID)
+		if err != nil {
+			return fmt.Errorf("failed to get existing document: %w", err)
+		}
+
+		// Apply delete based on conditional semantics
+		shouldApply, err := h.shouldApplyConditionalDelete(existingDoc, condition)
+		if err != nil {
+			return err
+		}
+		if shouldApply {
+			if err := h.processDelete(rawID, batch); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// shouldApplyConditionalDelete determines whether a delete should be applied.
+// Conditional delete semantics:
+//   - doc missing → skip (return false) - can't delete what doesn't exist
+//   - doc exists + condition met → apply (return true)
+//   - doc exists + condition not met → skip (return false)
+//
+// For $ref_new references, all attributes are resolved to null since
+// deletion has no "new" values.
+func (h *Handler) shouldApplyConditionalDelete(existingDoc *tail.Document, condition any) (bool, error) {
+	// If document doesn't exist, skip (can't delete what doesn't exist)
+	if existingDoc == nil || existingDoc.Deleted {
+		return false, nil
+	}
+
+	// Document exists - evaluate condition
+	// For delete_condition, $ref_new attributes are supplied as null
+	// since deletion has no "new" value. We pass an empty map which will
+	// cause all $ref_new.X references to resolve to null.
+	nullAttrs := make(map[string]any) // Empty map means all $ref_new.X → null
+	resolvedCondition := filter.ResolveRefNew(condition, nullAttrs)
+
+	// Parse the resolved condition
+	f, err := filter.Parse(resolvedCondition)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
+	}
+
+	// If no filter (nil condition), apply unconditionally
+	if f == nil {
+		return true, nil
+	}
+
+	// Build filter document from existing doc attributes
+	filterDoc := make(filter.Document)
+	for k, v := range existingDoc.Attributes {
+		filterDoc[k] = v
+	}
+
+	// Evaluate condition against existing document
+	return f.Eval(filterDoc), nil
+}
+
 // vectorToBytes converts a float32 slice to bytes (little-endian).
 func vectorToBytes(v []float32) []byte {
 	data := make([]byte, len(v)*4)
@@ -1051,6 +1149,11 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 	// Parse patch_condition
 	if cond, ok := body["patch_condition"]; ok {
 		req.PatchCondition = cond
+	}
+
+	// Parse delete_condition
+	if cond, ok := body["delete_condition"]; ok {
+		req.DeleteCondition = cond
 	}
 
 	return req, nil
