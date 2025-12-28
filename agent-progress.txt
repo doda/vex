@@ -306,3 +306,10 @@ KEY DEPENDENCIES:
 - No correctness issues found in implementation or tests.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T05:20:00.000Z] Completed query-concurrency-limit: Review per-namespace query concurrency cap
+- Reviewed staged changes in `internal/query/handler.go`, `internal/query/limiter.go`, `internal/query/limiter_test.go`, `internal/query/concurrency_test.go`, and `pkg/api/query_concurrency_test.go`.
+- Verified per-namespace limiter enforces default limit 16, blocks/queues over limit, and isolates namespaces.
+- Verified handler acquires/releases limiter slots for single-query and multi-query paths.
+- No correctness issues found in implementation.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

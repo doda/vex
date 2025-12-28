@@ -959,7 +959,7 @@
       "Test queries queue when concurrency exceeds 16",
       "Verify queued queries eventually execute"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "indexer-process",

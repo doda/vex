@@ -45,6 +45,7 @@ var (
 	ErrGroupByWithoutAgg     = errors.New("group_by requires aggregate_by to be specified")
 	ErrTooManySubqueries     = errors.New("multi-query exceeds maximum of 16 subqueries")
 	ErrInvalidMultiQuery     = errors.New("invalid multi-query format")
+	ErrConcurrencyLimitWait  = errors.New("query concurrency limit reached, request queued")
 )
 
 // AggregationType indicates the type of aggregation function.
@@ -139,6 +140,7 @@ type Handler struct {
 	store     objectstore.Store
 	stateMan  *namespace.StateManager
 	tailStore tail.Store
+	limiter   *ConcurrencyLimiter
 }
 
 // NewHandler creates a new query handler.
@@ -147,7 +149,23 @@ func NewHandler(store objectstore.Store, stateMan *namespace.StateManager, tailS
 		store:     store,
 		stateMan:  stateMan,
 		tailStore: tailStore,
+		limiter:   NewConcurrencyLimiter(DefaultConcurrencyLimit),
 	}
+}
+
+// NewHandlerWithLimit creates a new query handler with a custom concurrency limit.
+func NewHandlerWithLimit(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store, limit int) *Handler {
+	return &Handler{
+		store:     store,
+		stateMan:  stateMan,
+		tailStore: tailStore,
+		limiter:   NewConcurrencyLimiter(limit),
+	}
+}
+
+// Limiter returns the concurrency limiter for testing/metrics.
+func (h *Handler) Limiter() *ConcurrencyLimiter {
+	return h.limiter
 }
 
 // Handle executes a query against the given namespace.
@@ -156,6 +174,13 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 	if err := h.validateRequest(req); err != nil {
 		return nil, err
 	}
+
+	// Acquire concurrency slot - blocks until available or context cancelled
+	release, err := h.limiter.Acquire(ctx, ns)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	// Load namespace state
 	loaded, err := h.stateMan.Load(ctx, ns)
@@ -1040,6 +1065,13 @@ func (h *Handler) HandleMultiQuery(ctx context.Context, ns string, queries []map
 	if consistency != "" && consistency != "strong" && consistency != "eventual" {
 		return nil, ErrInvalidConsistency
 	}
+
+	// Acquire concurrency slot - blocks until available or context cancelled
+	release, err := h.limiter.Acquire(ctx, ns)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	// Load namespace state once for snapshot isolation
 	loaded, err := h.stateMan.Load(ctx, ns)
