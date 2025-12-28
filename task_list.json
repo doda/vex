@@ -1049,7 +1049,7 @@
       "Verify state.json CAS update after manifest upload",
       "Test indexed_wal_seq advances only on successful publish"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "index-recovery",
