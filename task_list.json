@@ -1320,7 +1320,7 @@
       "Test missing cached object is fetched from object storage",
       "Verify cold path always works"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "routing-rendezvous-hashing",

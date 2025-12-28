@@ -470,3 +470,11 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T14:23:01.000Z] Completed cache-correctness-invariant: Review cache eviction correctness tests
+- Reviewed new cache correctness tests in `internal/cache/correctness_test.go`.
+- Verified tests cover cache misses, eviction cold path, disabled cache, ETag versioning, concurrency, RAM/disk fallback, and empty/nonexistent objects.
+- Fixed missing error handling in cache read/write helper paths to avoid nil reader panics.
+- Simplicity check: test helpers and flow are straightforward and scoped.
+- Issues found: missing error handling in cache read/write paths (resolved).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
