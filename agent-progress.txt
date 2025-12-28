@@ -439,3 +439,13 @@ KEY DEPENDENCIES:
 - No correctness issues found in reviewed changes.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T14:05:12.000Z] Completed bm25-operators: Review BM25 compositional operators
+- Reviewed composite rank_by parsing and execution in `internal/query/handler.go` and `internal/query/rank_clause.go`.
+- Reviewed new operator and filter tests in `internal/query/rank_clause_test.go`.
+- Verified Sum/Max/Product clause parsing and scoring flow, including BM25 field collection and index build.
+- Verified filter clauses score 1 or 0 and zero-score documents are excluded from results.
+- Verified parseRankBy routes Sum/Max/Product and filter expressions to composite execution.
+- Simplicity check: no unnecessary abstraction beyond RankClause/RankScorer and clear operator handling.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

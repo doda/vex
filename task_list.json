@@ -1232,7 +1232,7 @@
       "Test Product operator applies weight/boost",
       "Verify filters in rank_by yield score 1 or 0"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "bm25-prefix-query",

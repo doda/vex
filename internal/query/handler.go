@@ -127,18 +127,20 @@ type PerformanceInfo struct {
 type RankByType int
 
 const (
-	RankByVector RankByType = iota // ["vector", "ANN", <vector>]
-	RankByBM25                     // ["field", "BM25", "query"]
-	RankByAttr                     // ["attr", "asc|desc"]
+	RankByVector    RankByType = iota // ["vector", "ANN", <vector>]
+	RankByBM25                        // ["field", "BM25", "query"]
+	RankByAttr                        // ["attr", "asc|desc"]
+	RankByComposite                   // ["Sum", ...], ["Max", ...], ["Product", ...], filter boost
 )
 
 // ParsedRankBy holds the parsed rank_by expression.
 type ParsedRankBy struct {
 	Type        RankByType
-	Field       string     // For attribute or BM25 ranking
-	Direction   string     // "asc" or "desc" for attribute ranking
-	QueryVector []float32  // For vector ANN
-	QueryText   string     // For BM25 text search
+	Field       string       // For attribute or BM25 ranking
+	Direction   string       // "asc" or "desc" for attribute ranking
+	QueryVector []float32    // For vector ANN
+	QueryText   string       // For BM25 text search
+	Clause      *RankClause  // For composite rank_by expressions (Sum, Max, Product, Filter)
 }
 
 // DefaultNProbe is the default number of centroids to probe in ANN search.
@@ -324,6 +326,8 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req, tailByteCap)
 		case RankByBM25:
 			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req)
+		case RankByComposite:
+			rows, err = h.executeCompositeQuery(ctx, ns, loaded, parsed, f, req)
 		}
 		if err != nil {
 			return nil, err
@@ -392,15 +396,41 @@ func parseRankBy(rankBy any, vectorEncoding string) (*ParsedRankBy, error) {
 
 	arr, ok := rankBy.([]any)
 	if !ok {
+		// Not an array - could be a filter map for filter-based boost
+		clause, err := ParseRankClause(rankBy)
+		if err != nil {
+			return nil, ErrInvalidRankBy
+		}
+		return &ParsedRankBy{
+			Type:   RankByComposite,
+			Clause: clause,
+		}, nil
+	}
+
+	if len(arr) < 1 {
 		return nil, ErrInvalidRankBy
+	}
+
+	// Check if first element is a string (operator or field name)
+	field, ok := arr[0].(string)
+	if !ok {
+		return nil, ErrInvalidRankBy
+	}
+
+	// Check for composite operators: Sum, Max, Product
+	switch field {
+	case "Sum", "Max", "Product":
+		clause, err := ParseRankClause(rankBy)
+		if err != nil {
+			return nil, err
+		}
+		return &ParsedRankBy{
+			Type:   RankByComposite,
+			Clause: clause,
+		}, nil
 	}
 
 	if len(arr) < 2 {
-		return nil, ErrInvalidRankBy
-	}
-
-	field, ok := arr[0].(string)
-	if !ok {
 		return nil, ErrInvalidRankBy
 	}
 
@@ -901,6 +931,92 @@ func computeBM25Score(idx *fts.Index, docID uint32, queryTokens []string) float6
 	}
 
 	return score
+}
+
+// executeCompositeQuery executes a composite rank_by query.
+// Supports Sum, Max, Product operators and filter-based boosting.
+// Documents with zero score are excluded from results.
+func (h *Handler) executeCompositeQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
+	if h.tailStore == nil {
+		return nil, nil
+	}
+
+	if parsed.Clause == nil {
+		return nil, ErrInvalidRankBy
+	}
+
+	// Scan documents from tail (filtered if needed)
+	docs, err := h.tailStore.Scan(ctx, ns, f)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(docs) == 0 {
+		return []Row{}, nil
+	}
+
+	// Build FTS configs map from schema
+	ftsConfigs := h.buildFTSConfigsFromSchema(loaded)
+
+	// Create scorer and build indexes for BM25 fields
+	scorer := NewRankScorer(parsed.Clause, ftsConfigs)
+	scorer.BuildIndexes(docs)
+
+	// Score all documents
+	type scoredDoc struct {
+		doc   *tail.Document
+		score float64
+	}
+	var scored []scoredDoc
+
+	for i, doc := range docs {
+		if doc.Deleted {
+			continue
+		}
+		score := scorer.Score(doc, uint32(i))
+		if score > 0 {
+			scored = append(scored, scoredDoc{doc: doc, score: score})
+		}
+	}
+
+	// Sort by score descending
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	// Apply limit
+	if len(scored) > req.Limit {
+		scored = scored[:req.Limit]
+	}
+
+	// Build result rows
+	rows := make([]Row, 0, len(scored))
+	for _, sc := range scored {
+		dist := sc.score
+		rows = append(rows, Row{
+			ID:         docIDToAny(sc.doc.ID),
+			Dist:       &dist,
+			Attributes: sc.doc.Attributes,
+		})
+	}
+
+	return rows, nil
+}
+
+// buildFTSConfigsFromSchema extracts FTS configurations for all attributes from the schema.
+func (h *Handler) buildFTSConfigsFromSchema(loaded *namespace.LoadedState) map[string]*fts.Config {
+	configs := make(map[string]*fts.Config)
+	if loaded.State.Schema == nil {
+		return configs
+	}
+
+	for name := range loaded.State.Schema.Attributes {
+		cfg := h.getFTSConfig(loaded, name)
+		if cfg != nil {
+			configs[name] = cfg
+		}
+	}
+	return configs
 }
 
 // docIDToAny converts a document.ID to an interface{} for JSON serialization.
@@ -1555,6 +1671,8 @@ func (h *Handler) executeSubQuery(ctx context.Context, ns string, loaded *namesp
 			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req, tailByteCap)
 		case RankByBM25:
 			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req)
+		case RankByComposite:
+			rows, err = h.executeCompositeQuery(ctx, ns, loaded, parsed, f, req)
 		}
 		if err != nil {
 			return nil, err
