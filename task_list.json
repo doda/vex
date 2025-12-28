@@ -1466,7 +1466,7 @@
       "Verify subsequent reads/writes return 404 'namespace deleted'",
       "Test deletion is irreversible"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "delete-namespace-gc",

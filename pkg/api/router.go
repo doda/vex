@@ -990,10 +990,35 @@ func (r *Router) handleDeleteNamespace(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	// Check if namespace exists (delete requires existing namespace)
+	// Use state manager to delete the namespace if available
+	if r.stateManager != nil {
+		err := r.stateManager.DeleteNamespace(req.Context(), ns)
+		if err != nil {
+			if errors.Is(err, namespace.ErrStateNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+		r.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	// Fallback to test-mode state
 	if err := r.checkNamespaceExists(ns, true); err != nil {
 		r.writeAPIError(w, err)
 		return
+	}
+
+	// Mark namespace as deleted in test state
+	nsState := r.getNamespaceState(ns)
+	if nsState != nil {
+		nsState.Deleted = true
 	}
 
 	r.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

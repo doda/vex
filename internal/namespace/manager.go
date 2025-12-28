@@ -377,3 +377,65 @@ func (m *StateManager) SetTombstoned(ctx context.Context, namespace string, etag
 		return nil
 	})
 }
+
+// TombstoneKey returns the object storage key for a namespace's tombstone.
+func TombstoneKey(namespace string) string {
+	return fmt.Sprintf("vex/namespaces/%s/meta/tombstone.json", namespace)
+}
+
+// Tombstone represents the deletion marker for a namespace.
+type Tombstone struct {
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
+// WriteTombstone writes the tombstone.json file for a namespace.
+// This is used as a fast rejection mechanism for deleted namespaces.
+func (m *StateManager) WriteTombstone(ctx context.Context, namespace string) (*Tombstone, error) {
+	key := TombstoneKey(namespace)
+	tombstone := &Tombstone{
+		DeletedAt: time.Now().UTC(),
+	}
+
+	data, err := json.Marshal(tombstone)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal tombstone: %w", err)
+	}
+
+	// Write tombstone using PutIfAbsent to avoid overwriting an existing tombstone
+	_, err = m.store.PutIfAbsent(ctx, key, bytes.NewReader(data), int64(len(data)), &objectstore.PutOptions{
+		ContentType: "application/json",
+	})
+	if err != nil {
+		if objectstore.IsConflictError(err) {
+			// Tombstone already exists, deletion already in progress
+			return tombstone, nil
+		}
+		return nil, fmt.Errorf("failed to write tombstone: %w", err)
+	}
+
+	return tombstone, nil
+}
+
+// DeleteNamespace marks a namespace as deleted by writing tombstone.json and updating state.json.
+// Returns an error if the namespace doesn't exist or is already deleted.
+func (m *StateManager) DeleteNamespace(ctx context.Context, namespace string) error {
+	// First, load the state to get the ETag and check if it exists
+	loaded, err := m.Load(ctx, namespace)
+	if err != nil {
+		return err
+	}
+
+	// Write tombstone.json first (for fast rejection)
+	_, err = m.WriteTombstone(ctx, namespace)
+	if err != nil {
+		return fmt.Errorf("failed to write tombstone: %w", err)
+	}
+
+	// Update state.json with tombstoned=true
+	_, err = m.SetTombstoned(ctx, namespace, loaded.ETag)
+	if err != nil {
+		return fmt.Errorf("failed to update state: %w", err)
+	}
+
+	return nil
+}

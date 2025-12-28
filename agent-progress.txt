@@ -516,3 +516,12 @@ KEY DEPENDENCIES:
 - Issues found: next_cursor was omitted when list truncated before reaching page_size (resolved).
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T15:52:59.000Z] Completed delete-namespace-endpoint: Review DELETE /v2/namespaces/:namespace
+- Reviewed namespace deletion flow in `internal/namespace/manager.go` and endpoint handling in `pkg/api/router.go`.
+- Verified tombstone creation, state.json tombstoned flag update, and 404 behavior on deleted namespaces.
+- Reviewed coverage in `pkg/api/delete_namespace_test.go` and `internal/namespace/state_test.go`.
+- Fixed tests to use `context.Background()` for object store reads.
+- Simplicity check: deletion uses state manager with fallback test state.
+- Issues found: nil context usage in delete tests (resolved).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

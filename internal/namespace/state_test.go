@@ -3,6 +3,8 @@ package namespace
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -562,6 +564,135 @@ func TestTombstone(t *testing.T) {
 			t.Error("expected error loading tombstoned namespace")
 		}
 		if err != ErrNamespaceTombstoned {
+			t.Errorf("expected ErrNamespaceTombstoned, got %v", err)
+		}
+	})
+}
+
+func TestWriteTombstone(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	mgr := NewStateManager(store)
+
+	t.Run("write tombstone creates file", func(t *testing.T) {
+		tombstone, err := mgr.WriteTombstone(ctx, "test-write-tombstone")
+		if err != nil {
+			t.Fatalf("failed to write tombstone: %v", err)
+		}
+
+		if tombstone.DeletedAt.IsZero() {
+			t.Error("expected deleted_at to be set")
+		}
+
+		// Verify file exists
+		key := TombstoneKey("test-write-tombstone")
+		reader, _, err := store.Get(ctx, key, nil)
+		if err != nil {
+			t.Fatalf("expected tombstone file to exist: %v", err)
+		}
+		reader.Close()
+	})
+
+	t.Run("write tombstone is idempotent", func(t *testing.T) {
+		// First write
+		_, err := mgr.WriteTombstone(ctx, "test-idempotent-tombstone")
+		if err != nil {
+			t.Fatalf("failed to write tombstone: %v", err)
+		}
+
+		// Second write should succeed (tombstone already exists)
+		tombstone, err := mgr.WriteTombstone(ctx, "test-idempotent-tombstone")
+		if err != nil {
+			t.Fatalf("expected idempotent write to succeed: %v", err)
+		}
+
+		if tombstone.DeletedAt.IsZero() {
+			t.Error("expected deleted_at to be set")
+		}
+	})
+}
+
+func TestTombstoneKey(t *testing.T) {
+	key := TombstoneKey("my-namespace")
+	expected := "vex/namespaces/my-namespace/meta/tombstone.json"
+	if key != expected {
+		t.Errorf("expected %q, got %q", expected, key)
+	}
+}
+
+func TestDeleteNamespace(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	mgr := NewStateManager(store)
+
+	t.Run("delete existing namespace", func(t *testing.T) {
+		// Create namespace first
+		_, err := mgr.Create(ctx, "test-delete-ns")
+		if err != nil {
+			t.Fatalf("failed to create namespace: %v", err)
+		}
+
+		// Delete namespace
+		err = mgr.DeleteNamespace(ctx, "test-delete-ns")
+		if err != nil {
+			t.Fatalf("failed to delete namespace: %v", err)
+		}
+
+		// Verify tombstone.json exists
+		tombstoneKey := TombstoneKey("test-delete-ns")
+		reader, _, err := store.Get(ctx, tombstoneKey, nil)
+		if err != nil {
+			t.Fatalf("expected tombstone.json to exist: %v", err)
+		}
+		reader.Close()
+
+		// Verify state.json has tombstoned=true (read directly from store)
+		stateKey := StateKey("test-delete-ns")
+		reader, _, err = store.Get(ctx, stateKey, nil)
+		if err != nil {
+			t.Fatalf("expected state.json to exist: %v", err)
+		}
+		defer reader.Close()
+
+		data, _ := io.ReadAll(reader)
+		var state State
+		if err := json.Unmarshal(data, &state); err != nil {
+			t.Fatalf("failed to parse state: %v", err)
+		}
+
+		if !state.Deletion.Tombstoned {
+			t.Error("expected state.deletion.tombstoned to be true")
+		}
+	})
+
+	t.Run("delete non-existent namespace returns error", func(t *testing.T) {
+		err := mgr.DeleteNamespace(ctx, "nonexistent-ns")
+		if err == nil {
+			t.Error("expected error deleting non-existent namespace")
+		}
+		if !errors.Is(err, ErrStateNotFound) {
+			t.Errorf("expected ErrStateNotFound, got %v", err)
+		}
+	})
+
+	t.Run("delete already deleted namespace returns error", func(t *testing.T) {
+		// Create and delete namespace
+		_, err := mgr.Create(ctx, "test-double-delete")
+		if err != nil {
+			t.Fatalf("failed to create namespace: %v", err)
+		}
+
+		err = mgr.DeleteNamespace(ctx, "test-double-delete")
+		if err != nil {
+			t.Fatalf("failed to delete namespace: %v", err)
+		}
+
+		// Try to delete again
+		err = mgr.DeleteNamespace(ctx, "test-double-delete")
+		if err == nil {
+			t.Error("expected error deleting already deleted namespace")
+		}
+		if !errors.Is(err, ErrNamespaceTombstoned) {
 			t.Errorf("expected ErrNamespaceTombstoned, got %v", err)
 		}
 	})
