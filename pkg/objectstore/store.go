@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -127,4 +128,11 @@ type Store interface {
 	PutIfMatch(ctx context.Context, key string, body io.Reader, size int64, etag string, opts *PutOptions) (*ObjectInfo, error)
 	Delete(ctx context.Context, key string) error
 	List(ctx context.Context, opts *ListOptions) (*ListResult, error)
+}
+
+// SortObjects sorts a slice of ObjectInfo by key in ascending order.
+func SortObjects(objects []ObjectInfo) {
+	sort.Slice(objects, func(i, j int) bool {
+		return objects[i].Key < objects[j].Key
+	})
 }

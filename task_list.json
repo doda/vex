@@ -1065,7 +1065,7 @@
       "Test indexer crash after segment upload but before manifest is safe",
       "Verify orphan objects are unreachable and can be GCed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "vector-ivf-index",

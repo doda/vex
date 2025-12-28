@@ -356,3 +356,13 @@ KEY DEPENDENCIES:
 - No other correctness issues found in publish flow or tests.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T06:25:28.000Z] Completed index-recovery: Review partial index build recovery
+- Reviewed new recovery implementation in `internal/index/recovery.go` and tests in `internal/index/recovery_test.go`.
+- Verified orphan detection scans segment and manifest prefixes and respects min-age retention.
+- Verified recovery handles no-state scenario and flags inconsistent active manifests.
+- Checked deletion path honors DryRun and collects errors without aborting.
+- Verified incremental orphan scanner batches list results and respects marker progression.
+- Reviewed new `SortObjects` helper in `pkg/objectstore/store.go` used for deterministic listings in tests.
+- No correctness issues found in recovery flow or tests.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
