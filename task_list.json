@@ -1752,7 +1752,7 @@
       "Verify indexer can be configured to write new or old format",
       "Test GC of old format segments after retention window"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "gc-orphan-objects",

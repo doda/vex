@@ -36,15 +36,21 @@ type Config struct {
 	// PreserveTombstone if true, keeps the tombstone.json file after GC.
 	// This is used for fast rejection of requests to deleted namespaces.
 	PreserveTombstone bool
+
+	// OldFormatRetentionDays is how long to retain segments with old format versions.
+	// After this period, old format segments are eligible for GC during upgrades.
+	// Default is 7 days, allowing ample time for rolling upgrades to complete.
+	OldFormatRetentionDays int
 }
 
 // DefaultConfig returns a sensible default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		ScanInterval:      5 * time.Minute,
-		MinTombstoneAge:   24 * time.Hour,
-		ObjectBatchSize:   100,
-		PreserveTombstone: true, // Keep tombstone for fast rejection
+		ScanInterval:           5 * time.Minute,
+		MinTombstoneAge:        24 * time.Hour,
+		ObjectBatchSize:        100,
+		PreserveTombstone:      true, // Keep tombstone for fast rejection
+		OldFormatRetentionDays: 7,    // 7 days retention for old format segments
 	}
 }
 

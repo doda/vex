@@ -13,6 +13,14 @@ import (
 const (
 	// CurrentManifestVersion is the current version of the manifest format.
 	CurrentManifestVersion = 1
+	// MinSupportedManifestVersion is the minimum manifest version this node can read.
+	// For N-1 compatibility, this is CurrentManifestVersion - 1, but at least 1.
+	MinSupportedManifestVersion = 1
+)
+
+var (
+	// ErrUnsupportedManifestVersion indicates the manifest format version is not supported.
+	ErrUnsupportedManifestVersion = fmt.Errorf("unsupported manifest format version")
 )
 
 // Manifest represents an index manifest stored at index/manifests/<gen>.idx.json.
@@ -154,10 +162,17 @@ type Stats struct {
 	L0SegmentCount int `json:"l0_segment_count"`
 }
 
-// NewManifest creates a new manifest for a namespace.
+// NewManifest creates a new manifest for a namespace using the current format version.
 func NewManifest(namespace string) *Manifest {
+	return NewManifestWithVersion(namespace, CurrentManifestVersion)
+}
+
+// NewManifestWithVersion creates a new manifest with a specific format version.
+// This is used during rolling upgrades for N-1 compatibility when the indexer
+// is configured to write an older format version.
+func NewManifestWithVersion(namespace string, version int) *Manifest {
 	return &Manifest{
-		FormatVersion: CurrentManifestVersion,
+		FormatVersion: version,
 		Namespace:     namespace,
 		GeneratedAt:   time.Now().UTC(),
 		Segments:      []Segment{},
@@ -288,9 +303,22 @@ func (m *Manifest) Clone() *Manifest {
 
 // Validate checks if the manifest is valid.
 func (m *Manifest) Validate() error {
+	return m.ValidateWithVersionCheck(true)
+}
+
+// ValidateWithVersionCheck validates the manifest with optional format version checking.
+// When checkVersion is true, it validates the format version is supported by this node.
+func (m *Manifest) ValidateWithVersionCheck(checkVersion bool) error {
 	if m.FormatVersion < 1 {
 		return fmt.Errorf("invalid format_version: %d", m.FormatVersion)
 	}
+
+	if checkVersion {
+		if err := CheckManifestFormatVersion(m.FormatVersion); err != nil {
+			return err
+		}
+	}
+
 	if m.Namespace == "" {
 		return fmt.Errorf("namespace is required")
 	}
@@ -316,6 +344,31 @@ func (m *Manifest) Validate() error {
 	}
 
 	return nil
+}
+
+// CheckManifestFormatVersion validates a manifest format version is readable.
+// Returns nil if the version is supported, error otherwise.
+// Supports N-1 compatibility: can read current version and one version back.
+func CheckManifestFormatVersion(version int) error {
+	// Compute minimum version for N-1 compatibility.
+	// minVersion is CurrentManifestVersion - 1, but at least 1.
+	minVersion := CurrentManifestVersion - 1
+	if minVersion < 1 {
+		minVersion = 1
+	}
+
+	if version < minVersion {
+		return fmt.Errorf("%w: version %d is too old (minimum: %d)", ErrUnsupportedManifestVersion, version, minVersion)
+	}
+	if version > CurrentManifestVersion {
+		return fmt.Errorf("%w: version %d is too new (current: %d)", ErrUnsupportedManifestVersion, version, CurrentManifestVersion)
+	}
+	return nil
+}
+
+// CanReadVersion returns true if the given manifest version is readable by this node.
+func CanReadVersion(version int) bool {
+	return CheckManifestFormatVersion(version) == nil
 }
 
 // AllObjectKeys returns all object storage keys referenced by this manifest.

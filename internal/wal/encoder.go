@@ -100,6 +100,12 @@ func (d *Decoder) Close() {
 }
 
 func (d *Decoder) Decode(compressed []byte) (*WalEntry, error) {
+	return d.DecodeWithVersionCheck(compressed, true)
+}
+
+// DecodeWithVersionCheck decodes a WAL entry with optional version checking.
+// When checkVersion is true, it validates the format version is supported.
+func (d *Decoder) DecodeWithVersionCheck(compressed []byte, checkVersion bool) (*WalEntry, error) {
 	if err := d.decompressor.Reset(bytes.NewReader(compressed)); err != nil {
 		return nil, err
 	}
@@ -112,6 +118,14 @@ func (d *Decoder) Decode(compressed []byte) (*WalEntry, error) {
 	var entry WalEntry
 	if err := proto.Unmarshal(decompressed, &entry); err != nil {
 		return nil, err
+	}
+
+	// Validate format version if checking is enabled.
+	// This supports N-1 version compatibility for rolling upgrades.
+	if checkVersion {
+		if err := CheckWALFormatVersion(int(entry.FormatVersion)); err != nil {
+			return nil, err
+		}
 	}
 
 	storedChecksum := entry.Checksum
@@ -129,6 +143,25 @@ func (d *Decoder) Decode(compressed []byte) (*WalEntry, error) {
 	}
 
 	return &entry, nil
+}
+
+// CheckWALFormatVersion validates a WAL format version is readable.
+// Returns nil if the version is supported, error otherwise.
+func CheckWALFormatVersion(version int) error {
+	// MinSupportedWALVersion is the minimum WAL version this node can read.
+	// For N-1 compatibility, this is FormatVersion - 1, but at least 1.
+	minVersion := FormatVersion
+	if minVersion > 1 {
+		minVersion = FormatVersion - 1
+	}
+
+	if version < minVersion {
+		return ErrUnsupportedWALVersion
+	}
+	if version > FormatVersion {
+		return ErrUnsupportedWALVersion
+	}
+	return nil
 }
 
 func sortEntry(entry *WalEntry) {
@@ -231,9 +264,17 @@ func DocumentIDToID(protoID *DocumentID) (document.ID, error) {
 	}
 }
 
+// NewWalEntry creates a new WAL entry using the current format version.
 func NewWalEntry(namespace string, seq uint64) *WalEntry {
+	return NewWalEntryWithVersion(namespace, seq, FormatVersion)
+}
+
+// NewWalEntryWithVersion creates a new WAL entry with a specific format version.
+// This is used during rolling upgrades for N-1 compatibility when the indexer
+// is configured to write an older format version.
+func NewWalEntryWithVersion(namespace string, seq uint64, version int) *WalEntry {
 	return &WalEntry{
-		FormatVersion:   FormatVersion,
+		FormatVersion:   uint32(version),
 		Namespace:       namespace,
 		Seq:             seq,
 		CommittedUnixMs: time.Now().UnixMilli(),

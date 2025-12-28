@@ -47,7 +47,18 @@ func Run(args []string) {
 
 	// Initialize state manager and indexer
 	stateManager := namespace.NewStateManager(store)
-	indexer := idxr.New(store, stateManager, idxr.DefaultConfig(), nil)
+	indexerConfig := idxr.DefaultConfig()
+	if cfg.Indexer.WriteWALVersion != 0 {
+		indexerConfig.WriteWALVersion = cfg.Indexer.WriteWALVersion
+	}
+	if cfg.Indexer.WriteManifestVersion != 0 {
+		indexerConfig.WriteManifestVersion = cfg.Indexer.WriteManifestVersion
+	}
+	if err := indexerConfig.ValidateVersionConfig(); err != nil {
+		log.Fatalf("Invalid indexer format version config: %v", err)
+	}
+
+	indexer := idxr.New(store, stateManager, indexerConfig, nil)
 
 	// Start the indexer
 	indexer.Start()

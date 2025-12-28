@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -26,6 +27,17 @@ type IndexerConfig struct {
 	PollInterval time.Duration
 	// NamespacePollInterval is how often to scan for new namespaces.
 	NamespacePollInterval time.Duration
+
+	// Format version configuration for upgrade strategy support.
+	// These allow the indexer to be configured to write old format versions
+	// during a rolling upgrade for N-1 compatibility.
+
+	// WriteWALVersion specifies which WAL format version to write.
+	// 0 means use the current version.
+	WriteWALVersion int
+	// WriteManifestVersion specifies which manifest format version to write.
+	// 0 means use the current version.
+	WriteManifestVersion int
 }
 
 // DefaultConfig returns default indexer configuration.
@@ -33,7 +45,41 @@ func DefaultConfig() *IndexerConfig {
 	return &IndexerConfig{
 		PollInterval:          time.Second,
 		NamespacePollInterval: 10 * time.Second,
+		WriteWALVersion:       wal.FormatVersion,
+		WriteManifestVersion:  0, // 0 means use current
 	}
+}
+
+// GetWriteWALVersion returns the WAL format version to write.
+// If not set, returns the current version.
+func (c *IndexerConfig) GetWriteWALVersion() int {
+	if c.WriteWALVersion == 0 {
+		return wal.FormatVersion
+	}
+	return c.WriteWALVersion
+}
+
+// GetWriteManifestVersion returns the manifest format version to write.
+// If not set, returns the current version.
+func (c *IndexerConfig) GetWriteManifestVersion() int {
+	if c.WriteManifestVersion == 0 {
+		return index.CurrentManifestVersion
+	}
+	return c.WriteManifestVersion
+}
+
+// ValidateVersionConfig validates that the configured format versions are writable.
+func (c *IndexerConfig) ValidateVersionConfig() error {
+	walVersion := c.GetWriteWALVersion()
+	if err := wal.CheckWALFormatVersion(walVersion); err != nil {
+		return fmt.Errorf("invalid WriteWALVersion %d: %w", walVersion, err)
+	}
+
+	manifestVersion := c.GetWriteManifestVersion()
+	if err := index.CheckManifestFormatVersion(manifestVersion); err != nil {
+		return fmt.Errorf("invalid WriteManifestVersion %d: %w", manifestVersion, err)
+	}
+	return nil
 }
 
 // WALProcessor is called when WAL entries need to be processed.

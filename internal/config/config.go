@@ -24,6 +24,17 @@ type Config struct {
 	ObjectStore ObjectStoreConfig `json:"object_store"`
 	Cache       CacheConfig       `json:"cache"`
 	Membership  MembershipConfig  `json:"membership"`
+	Indexer     IndexerConfig     `json:"indexer"`
+}
+
+// IndexerConfig holds indexer-specific configuration.
+type IndexerConfig struct {
+	// WriteWALVersion specifies which WAL format version to write.
+	// 0 means use the current version. Use this for N-1 compatibility during upgrades.
+	WriteWALVersion int `json:"write_wal_version,omitempty"`
+	// WriteManifestVersion specifies which manifest format version to write.
+	// 0 means use the current version.
+	WriteManifestVersion int `json:"write_manifest_version,omitempty"`
 }
 
 type ObjectStoreConfig struct {
@@ -182,6 +193,18 @@ func Load(path string) (*Config, error) {
 
 	if env := os.Getenv("VEX_COMPAT_MODE"); env != "" {
 		cfg.CompatMode = env
+	}
+
+	// Indexer format version configuration
+	if env := os.Getenv("VEX_INDEXER_WRITE_WAL_VERSION"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Indexer.WriteWALVersion = n
+		}
+	}
+	if env := os.Getenv("VEX_INDEXER_WRITE_MANIFEST_VERSION"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Indexer.WriteManifestVersion = n
+		}
 	}
 
 	return cfg, nil
