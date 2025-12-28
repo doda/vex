@@ -1679,7 +1679,7 @@
       "Test max 64 byte IDs",
       "Verify max 128 char attribute names"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "logging-structured",
