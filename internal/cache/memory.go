@@ -96,6 +96,9 @@ type MemoryCache struct {
 
 	hits   int64
 	misses int64
+
+	// Temperature tracking
+	tempTracker *TemperatureTracker
 }
 
 // MemoryCacheConfig holds configuration for the memory cache.
@@ -124,6 +127,7 @@ func NewMemoryCache(cfg MemoryCacheConfig) *MemoryCache {
 		namespaceCaps:  make(map[string]int64),
 		defaultCap:     defaultCap,
 		defaultCapPct:  cfg.DefaultCapPct,
+		tempTracker:    NewTemperatureTracker(),
 	}
 }
 
@@ -148,11 +152,15 @@ func (mc *MemoryCache) Get(key MemoryCacheKey) ([]byte, error) {
 	if !ok {
 		mc.misses++
 		metrics.IncCacheMiss("ram")
+		mc.tempTracker.RecordMiss(key.Namespace)
+		mc.updateTemperatureMetrics(key.Namespace)
 		return nil, ErrRAMCacheMiss
 	}
 
 	mc.hits++
 	metrics.IncCacheHit("ram")
+	mc.tempTracker.RecordHit(key.Namespace)
+	mc.updateTemperatureMetrics(key.Namespace)
 
 	// Update access time
 	now := time.Now()
@@ -645,4 +653,33 @@ func (mc *MemoryCache) GetShardInfo(namespace, shardID string) (size int64, entr
 		return 0, 0, false
 	}
 	return s.totalSize, len(s.entries), true
+}
+
+// Temperature returns the overall cache temperature classification.
+func (mc *MemoryCache) Temperature() string {
+	return string(mc.tempTracker.Temperature())
+}
+
+// NamespaceTemperature returns the cache temperature for a specific namespace.
+func (mc *MemoryCache) NamespaceTemperature(namespace string) string {
+	return string(mc.tempTracker.NamespaceTemperature(namespace))
+}
+
+// TemperatureTracker returns the internal temperature tracker for advanced use.
+func (mc *MemoryCache) TemperatureTracker() *TemperatureTracker {
+	return mc.tempTracker
+}
+
+// TemperatureStats returns comprehensive temperature statistics.
+func (mc *MemoryCache) TemperatureStats() TemperatureStats {
+	return mc.tempTracker.Stats()
+}
+
+func (mc *MemoryCache) updateTemperatureMetrics(namespace string) {
+	stats := mc.tempTracker.Stats()
+	metrics.SetCacheTemperature("ram", string(stats.Temperature))
+	metrics.SetCacheHitRatio("ram", stats.HitRatio)
+	if namespace != "" {
+		metrics.SetNamespaceCacheTemperature(namespace, "ram", string(mc.tempTracker.NamespaceTemperature(namespace)))
+	}
 }

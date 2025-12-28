@@ -323,3 +323,99 @@ func TestQueryLatencyHistogram(t *testing.T) {
 		t.Error("expected histogram to have observations")
 	}
 }
+
+func TestCacheTemperatureMetric(t *testing.T) {
+	CacheTemperature.Reset()
+
+	// Test cold temperature
+	SetCacheTemperature("ram", "cold")
+	val := testutil.ToFloat64(CacheTemperature.WithLabelValues("ram"))
+	if val != 0 {
+		t.Errorf("expected 0 for cold, got %f", val)
+	}
+
+	// Test warm temperature
+	SetCacheTemperature("ram", "warm")
+	val = testutil.ToFloat64(CacheTemperature.WithLabelValues("ram"))
+	if val != 1 {
+		t.Errorf("expected 1 for warm, got %f", val)
+	}
+
+	// Test hot temperature
+	SetCacheTemperature("ram", "hot")
+	val = testutil.ToFloat64(CacheTemperature.WithLabelValues("ram"))
+	if val != 2 {
+		t.Errorf("expected 2 for hot, got %f", val)
+	}
+
+	// Test disk cache separately
+	SetCacheTemperature("disk", "warm")
+	diskVal := testutil.ToFloat64(CacheTemperature.WithLabelValues("disk"))
+	if diskVal != 1 {
+		t.Errorf("expected 1 for disk warm, got %f", diskVal)
+	}
+
+	// RAM should remain hot
+	ramVal := testutil.ToFloat64(CacheTemperature.WithLabelValues("ram"))
+	if ramVal != 2 {
+		t.Errorf("expected ram still 2, got %f", ramVal)
+	}
+}
+
+func TestCacheHitRatioMetric(t *testing.T) {
+	CacheHitRatio.Reset()
+
+	SetCacheHitRatio("ram", 0.85)
+	val := testutil.ToFloat64(CacheHitRatio.WithLabelValues("ram"))
+	if val != 0.85 {
+		t.Errorf("expected 0.85, got %f", val)
+	}
+
+	SetCacheHitRatio("disk", 0.65)
+	diskVal := testutil.ToFloat64(CacheHitRatio.WithLabelValues("disk"))
+	if diskVal != 0.65 {
+		t.Errorf("expected 0.65 for disk, got %f", diskVal)
+	}
+}
+
+func TestNamespaceCacheTemperatureMetric(t *testing.T) {
+	NamespaceCacheTemperature.Reset()
+
+	SetNamespaceCacheTemperature("ns1", "ram", "hot")
+	SetNamespaceCacheTemperature("ns2", "ram", "cold")
+	SetNamespaceCacheTemperature("ns1", "disk", "warm")
+
+	ns1Ram := testutil.ToFloat64(NamespaceCacheTemperature.WithLabelValues("ns1", "ram"))
+	ns2Ram := testutil.ToFloat64(NamespaceCacheTemperature.WithLabelValues("ns2", "ram"))
+	ns1Disk := testutil.ToFloat64(NamespaceCacheTemperature.WithLabelValues("ns1", "disk"))
+
+	if ns1Ram != 2 {
+		t.Errorf("expected ns1 ram hot (2), got %f", ns1Ram)
+	}
+	if ns2Ram != 0 {
+		t.Errorf("expected ns2 ram cold (0), got %f", ns2Ram)
+	}
+	if ns1Disk != 1 {
+		t.Errorf("expected ns1 disk warm (1), got %f", ns1Disk)
+	}
+}
+
+func TestTemperatureToValue(t *testing.T) {
+	tests := []struct {
+		temp     string
+		expected float64
+	}{
+		{"cold", 0},
+		{"warm", 1},
+		{"hot", 2},
+		{"unknown", 0},
+		{"", 0},
+	}
+
+	for _, tt := range tests {
+		result := TemperatureToValue(tt.temp)
+		if result != tt.expected {
+			t.Errorf("TemperatureToValue(%q) = %f, expected %f", tt.temp, result, tt.expected)
+		}
+	}
+}

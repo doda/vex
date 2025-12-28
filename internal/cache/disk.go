@@ -58,6 +58,9 @@ type DiskCache struct {
 	lruList *list.List        // LRU list (front = most recently used)
 
 	pinned map[string]struct{} // set of pinned namespace prefixes
+
+	// Temperature tracking
+	tempTracker *TemperatureTracker
 }
 
 // DiskCacheConfig holds configuration for the disk cache.
@@ -95,12 +98,13 @@ func NewDiskCache(cfg DiskCacheConfig) (*DiskCache, error) {
 	}
 
 	dc := &DiskCache{
-		rootPath:  cfg.RootPath,
-		maxBytes:  maxBytes,
-		budgetPct: cfg.BudgetPct,
-		entries:   make(map[string]*entry),
-		lruList:   list.New(),
-		pinned:    make(map[string]struct{}),
+		rootPath:    cfg.RootPath,
+		maxBytes:    maxBytes,
+		budgetPct:   cfg.BudgetPct,
+		entries:     make(map[string]*entry),
+		lruList:     list.New(),
+		pinned:      make(map[string]struct{}),
+		tempTracker: NewTemperatureTracker(),
 	}
 
 	// Load existing cached files
@@ -159,6 +163,9 @@ func (dc *DiskCache) Get(key CacheKey) (string, error) {
 	ent, ok := dc.entries[hash]
 	if !ok {
 		metrics.IncCacheMiss("disk")
+		namespace := extractNamespaceFromKey(key.ObjectKey)
+		dc.tempTracker.RecordMiss(namespace)
+		dc.updateTemperatureMetrics(namespace)
 		return "", ErrCacheMiss
 	}
 
@@ -171,7 +178,30 @@ func (dc *DiskCache) Get(key CacheKey) (string, error) {
 	os.Chtimes(ent.path, now, now)
 
 	metrics.IncCacheHit("disk")
+	namespace := extractNamespaceFromKey(key.ObjectKey)
+	dc.tempTracker.RecordHit(namespace)
+	dc.updateTemperatureMetrics(namespace)
 	return ent.path, nil
+}
+
+// extractNamespaceFromKey extracts the namespace from an object key.
+// Keys typically have format: namespace/... or /namespace/...
+func extractNamespaceFromKey(objectKey string) string {
+	if objectKey == "" {
+		return ""
+	}
+	// Strip leading slash if present
+	key := objectKey
+	if key[0] == '/' {
+		key = key[1:]
+	}
+	// Get first path component
+	for i := 0; i < len(key); i++ {
+		if key[i] == '/' {
+			return key[:i]
+		}
+	}
+	return key
 }
 
 // GetReader returns an io.ReadCloser for the cached object.
@@ -426,4 +456,33 @@ func getDiskSize(path string) (int64, error) {
 		return 0, err
 	}
 	return int64(stat.Blocks) * int64(stat.Bsize), nil
+}
+
+// Temperature returns the overall cache temperature classification.
+func (dc *DiskCache) Temperature() string {
+	return string(dc.tempTracker.Temperature())
+}
+
+// NamespaceTemperature returns the cache temperature for a specific namespace.
+func (dc *DiskCache) NamespaceTemperature(namespace string) string {
+	return string(dc.tempTracker.NamespaceTemperature(namespace))
+}
+
+// TemperatureTracker returns the internal temperature tracker for advanced use.
+func (dc *DiskCache) TemperatureTracker() *TemperatureTracker {
+	return dc.tempTracker
+}
+
+// TemperatureStats returns comprehensive temperature statistics.
+func (dc *DiskCache) TemperatureStats() TemperatureStats {
+	return dc.tempTracker.Stats()
+}
+
+func (dc *DiskCache) updateTemperatureMetrics(namespace string) {
+	stats := dc.tempTracker.Stats()
+	metrics.SetCacheTemperature("disk", string(stats.Temperature))
+	metrics.SetCacheHitRatio("disk", stats.HitRatio)
+	if namespace != "" {
+		metrics.SetNamespaceCacheTemperature(namespace, "disk", string(dc.tempTracker.NamespaceTemperature(namespace)))
+	}
 }

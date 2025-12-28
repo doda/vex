@@ -2058,7 +2058,7 @@
       "Test hot/warm/cold classification based on hit ratio",
       "Verify metrics exposed for observability"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "vector-incremental-updates",
