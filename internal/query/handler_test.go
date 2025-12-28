@@ -96,7 +96,7 @@ func TestParseQueryRequest(t *testing.T) {
 		{
 			name: "aggregate_by without rank_by",
 			body: map[string]any{
-				"aggregate_by": map[string]any{"field": "category"},
+				"aggregate_by": map[string]any{"count": []any{"Count"}},
 			},
 			check: func(t *testing.T, req *QueryRequest) {
 				if req.AggregateBy == nil {
@@ -160,7 +160,7 @@ func TestValidateRequest(t *testing.T) {
 		{
 			name: "aggregate_by allows no rank_by",
 			req: &QueryRequest{
-				AggregateBy: map[string]any{"field": "test"},
+				AggregateBy: map[string]any{"count": []any{"Count"}},
 			},
 			wantErr: nil,
 		},
@@ -644,18 +644,20 @@ func TestQueryHandler_Handle(t *testing.T) {
 		}
 	})
 
-	t.Run("aggregate_by without rank_by does not panic", func(t *testing.T) {
+	t.Run("aggregate_by without rank_by returns aggregations", func(t *testing.T) {
 		req := &QueryRequest{
-			AggregateBy: map[string]any{"field": "category"},
+			AggregateBy: map[string]any{"count": []any{"Count"}},
 			Limit:       10,
 		}
 		resp, err := h.Handle(ctx, "test-ns", req)
 		if err != nil {
 			t.Fatalf("Handle() error = %v", err)
 		}
-		// Aggregation not implemented yet, should return response without panic
 		if resp == nil {
 			t.Error("expected non-nil response")
+		}
+		if resp.Aggregations == nil {
+			t.Error("expected aggregations in response")
 		}
 	})
 }

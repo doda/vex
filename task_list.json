@@ -892,7 +892,7 @@
       "Test aggregate_by returns aggregations object",
       "Verify aggregations compute correctly over result set"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-group-by",

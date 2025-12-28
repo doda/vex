@@ -37,7 +37,22 @@ var (
 	ErrInvalidVectorEncoding = errors.New("vector_encoding must be 'float' or 'base64'")
 	ErrInvalidConsistency    = errors.New("consistency must be 'strong' or 'eventual'")
 	ErrSnapshotRefreshFailed = errors.New("failed to refresh snapshot for strong consistency")
+	ErrInvalidAggregation    = errors.New("invalid aggregation expression")
 )
+
+// AggregationType indicates the type of aggregation function.
+type AggregationType int
+
+const (
+	AggCount AggregationType = iota // ["Count"]
+	AggSum                          // ["Sum", "attribute_name"]
+)
+
+// ParsedAggregation holds a parsed aggregation function.
+type ParsedAggregation struct {
+	Type      AggregationType
+	Attribute string // For Sum, the attribute to sum
+}
 
 // QueryRequest represents a query request from the API.
 type QueryRequest struct {
@@ -55,9 +70,10 @@ type QueryRequest struct {
 
 // QueryResponse represents the response from a query.
 type QueryResponse struct {
-	Rows        []Row                  `json:"rows"`
-	Billing     BillingInfo            `json:"billing"`
-	Performance PerformanceInfo        `json:"performance"`
+	Rows         []Row                  `json:"rows,omitempty"`
+	Aggregations map[string]any         `json:"aggregations,omitempty"`
+	Billing      BillingInfo            `json:"billing"`
+	Performance  PerformanceInfo        `json:"performance"`
 }
 
 // Row represents a single result row.
@@ -174,6 +190,33 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		tailByteCap = EventualTailCapBytes
 	}
 
+	// Check if this is an aggregation query
+	if req.AggregateBy != nil {
+		// Parse aggregations
+		aggregations, err := parseAggregateBy(req.AggregateBy)
+		if err != nil {
+			return nil, err
+		}
+
+		// Execute aggregation query
+		aggResults, err := h.executeAggregationQuery(ctx, ns, f, aggregations, tailByteCap)
+		if err != nil {
+			return nil, err
+		}
+
+		return &QueryResponse{
+			Aggregations: aggResults,
+			Billing: BillingInfo{
+				BillableLogicalBytesQueried:  0,
+				BillableLogicalBytesReturned: 0,
+			},
+			Performance: PerformanceInfo{
+				CacheTemperature: "cold",
+				ServerTotalMs:    0,
+			},
+		}, nil
+	}
+
 	// Execute the query based on rank_by type
 	var rows []Row
 	if parsed != nil {
@@ -189,8 +232,6 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 			return nil, err
 		}
 	}
-	// If parsed is nil, it means aggregate_by is set without rank_by
-	// Aggregation is not yet implemented, so return empty rows
 
 	// Apply attribute filtering
 	rows = filterAttributes(rows, req.IncludeAttributes, req.ExcludeAttributes)
@@ -680,4 +721,131 @@ func buildSchemaChecker(schema *namespace.Schema) filter.SchemaChecker {
 		}
 	}
 	return filter.NewNamespaceSchemaAdapter(regexAttrs)
+}
+
+// parseAggregateBy parses the aggregate_by field into a map of label -> ParsedAggregation.
+// The aggregate_by field is an object mapping labels to aggregation functions:
+// {"my_count": ["Count"], "my_sum": ["Sum", "price"]}
+func parseAggregateBy(aggregateBy any) (map[string]*ParsedAggregation, error) {
+	aggMap, ok := aggregateBy.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: aggregate_by must be an object", ErrInvalidAggregation)
+	}
+
+	result := make(map[string]*ParsedAggregation)
+	for label, aggExpr := range aggMap {
+		parsed, err := parseAggregationExpr(aggExpr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %v", ErrInvalidAggregation, label, err)
+		}
+		result[label] = parsed
+	}
+
+	return result, nil
+}
+
+// parseAggregationExpr parses a single aggregation expression like ["Count"] or ["Sum", "price"].
+func parseAggregationExpr(expr any) (*ParsedAggregation, error) {
+	arr, ok := expr.([]any)
+	if !ok {
+		return nil, errors.New("aggregation must be an array")
+	}
+
+	if len(arr) < 1 {
+		return nil, errors.New("aggregation array must have at least one element")
+	}
+
+	funcName, ok := arr[0].(string)
+	if !ok {
+		return nil, errors.New("aggregation function name must be a string")
+	}
+
+	switch funcName {
+	case "Count":
+		if len(arr) != 1 {
+			return nil, errors.New("Count takes no arguments")
+		}
+		return &ParsedAggregation{Type: AggCount}, nil
+	case "Sum":
+		if len(arr) != 2 {
+			return nil, errors.New("Sum requires exactly one attribute argument")
+		}
+		attr, ok := arr[1].(string)
+		if !ok {
+			return nil, errors.New("Sum attribute must be a string")
+		}
+		return &ParsedAggregation{Type: AggSum, Attribute: attr}, nil
+	default:
+		return nil, fmt.Errorf("unknown aggregation function: %s", funcName)
+	}
+}
+
+// executeAggregationQuery executes an aggregation query over the result set.
+func (h *Handler) executeAggregationQuery(ctx context.Context, ns string, f *filter.Filter, aggregations map[string]*ParsedAggregation, tailByteCap int64) (map[string]any, error) {
+	if h.tailStore == nil {
+		// Return zeros when no tail store available
+		result := make(map[string]any)
+		for label, agg := range aggregations {
+			switch agg.Type {
+			case AggCount:
+				result[label] = int64(0)
+			case AggSum:
+				result[label] = float64(0)
+			}
+		}
+		return result, nil
+	}
+
+	// Scan all documents matching the filter
+	var docs []*tail.Document
+	var err error
+	if tailByteCap > 0 {
+		docs, err = h.tailStore.ScanWithByteLimit(ctx, ns, f, tailByteCap)
+	} else {
+		docs, err = h.tailStore.Scan(ctx, ns, f)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Compute aggregations over the documents
+	result := make(map[string]any)
+	for label, agg := range aggregations {
+		switch agg.Type {
+		case AggCount:
+			result[label] = int64(len(docs))
+		case AggSum:
+			sum := computeSum(docs, agg.Attribute)
+			result[label] = sum
+		}
+	}
+
+	return result, nil
+}
+
+// computeSum computes the sum of a numeric attribute across all documents.
+func computeSum(docs []*tail.Document, attr string) float64 {
+	var sum float64
+	for _, doc := range docs {
+		if doc.Attributes == nil {
+			continue
+		}
+		val := doc.Attributes[attr]
+		if val == nil {
+			continue
+		}
+		switch v := val.(type) {
+		case int:
+			sum += float64(v)
+		case int64:
+			sum += float64(v)
+		case uint64:
+			sum += float64(v)
+		case float64:
+			sum += v
+		case float32:
+			sum += float64(v)
+		}
+	}
+	return sum
 }

@@ -551,18 +551,16 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrServiceUnavailable("failed to refresh snapshot for strong consistency query"))
 				return
 			}
+			if errors.Is(err, query.ErrInvalidAggregation) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
 			r.writeAPIError(w, ErrInternalServer(err.Error()))
 			return
 		}
 
-		// Convert rows to JSON-serializable format
-		rows := make([]interface{}, 0, len(resp.Rows))
-		for _, row := range resp.Rows {
-			rows = append(rows, query.RowToJSON(row))
-		}
-
-		r.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"rows": rows,
+		// Build response based on whether it's an aggregation or rank_by query
+		responseBody := map[string]interface{}{
 			"billing": map[string]int64{
 				"billable_logical_bytes_queried":  resp.Billing.BillableLogicalBytesQueried,
 				"billable_logical_bytes_returned": resp.Billing.BillableLogicalBytesReturned,
@@ -571,7 +569,21 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 				"cache_temperature": resp.Performance.CacheTemperature,
 				"server_total_ms":   resp.Performance.ServerTotalMs,
 			},
-		})
+		}
+
+		if resp.Aggregations != nil {
+			// Aggregation query response
+			responseBody["aggregations"] = resp.Aggregations
+		} else {
+			// Normal rank_by query response
+			rows := make([]interface{}, 0, len(resp.Rows))
+			for _, row := range resp.Rows {
+				rows = append(rows, query.RowToJSON(row))
+			}
+			responseBody["rows"] = rows
+		}
+
+		r.writeJSON(w, http.StatusOK, responseBody)
 		return
 	}
 
@@ -592,8 +604,8 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	r.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"rows": []interface{}{},
+	// Build appropriate response for fallback mode
+	fallbackResponse := map[string]interface{}{
 		"billing": map[string]int{
 			"billable_logical_bytes_queried":  0,
 			"billable_logical_bytes_returned": 0,
@@ -602,7 +614,16 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 			"cache_temperature": "cold",
 			"server_total_ms":   0,
 		},
-	})
+	}
+
+	if queryReq.AggregateBy != nil {
+		// Return empty aggregations for fallback mode
+		fallbackResponse["aggregations"] = map[string]interface{}{}
+	} else {
+		fallbackResponse["rows"] = []interface{}{}
+	}
+
+	r.writeJSON(w, http.StatusOK, fallbackResponse)
 }
 
 func (r *Router) handleDeleteNamespace(w http.ResponseWriter, req *http.Request) {
