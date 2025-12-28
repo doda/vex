@@ -1030,7 +1030,7 @@
       "Verify periodic compaction merges segments into L1/L2",
       "Test query reads across all segments + tail"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "index-publish-protocol",

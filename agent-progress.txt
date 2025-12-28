@@ -339,3 +339,12 @@ KEY DEPENDENCIES:
 - No correctness issues found in implementation or tests.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T06:10:00.000Z] Completed index-lsm-model: Review LSM-like incremental indexing model
+- Reviewed new files `internal/index/lsm.go` and `internal/index/lsm_test.go`.
+- Verified LSM tree supports L0/L1/L2 segments, compaction planning, and manifest updates.
+- Verified L0 segment builder tracks WAL ranges, tombstones, and size thresholds.
+- Verified compaction plan validation helpers and stats reporting.
+- Fixed tail iteration bug in `QuerySegmentIterator.Next` so it returns all tail docs.
+- No other correctness issues found in core flow; segment read/merge remains placeholder.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
