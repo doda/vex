@@ -641,3 +641,11 @@ KEY DEPENDENCIES:
 - Issues found: indexer config defaults and wiring bug (fixed).
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T19:20:58.000Z] Completed gc-orphan-objects: Review orphan GC implementation
+- Reviewed new orphan GC collector and tests in `internal/gc/orphan.go` and `internal/gc/orphan_test.go`.
+- Verified orphan scanning covers segments and manifests with retention enforcement and scan marker tracking.
+- Fixed unsafe behavior when active manifest cannot be loaded; GC now aborts deletes on reference lookup errors.
+- Verified tombstoned namespaces are skipped and dry-run/delete paths behave as expected.
+- Issues found: unsafe deletion on manifest load error (fixed).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

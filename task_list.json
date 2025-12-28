@@ -1769,7 +1769,7 @@
       "Verify minimum retention time (24h) before deletion",
       "Test gc/orphan_scan_marker.json tracking"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-unit-schema",
