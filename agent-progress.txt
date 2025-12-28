@@ -313,3 +313,11 @@ KEY DEPENDENCIES:
 - No correctness issues found in implementation.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T05:38:14.000Z] Completed indexer-process: Review indexer watcher and WAL processing
+- Reviewed staged changes in `cmd/vex/indexer/indexer.go`, `internal/indexer/indexer.go`, and `internal/indexer/indexer_test.go`.
+- Verified indexer process initializes object store, state manager, and starts/stops watcher loop.
+- Verified WAL range processing advances indexed_wal_seq and handles zero-byte processors.
+- Verified namespace discovery watches namespaces with state.json and handles deletions.
+- Checked for new issues and complexity; no correctness regressions found.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

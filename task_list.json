@@ -978,7 +978,7 @@
       "Verify indexer processes WAL range (indexed_wal_seq+1 .. head_seq]",
       "Test indexer runs asynchronously after WAL commit"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "index-manifest-format",

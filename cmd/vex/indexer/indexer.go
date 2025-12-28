@@ -10,6 +10,9 @@ import (
 	"syscall"
 
 	"github.com/vexsearch/vex/internal/config"
+	idxr "github.com/vexsearch/vex/internal/indexer"
+	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 func Run(args []string) {
@@ -28,14 +31,36 @@ func Run(args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Initialize object store
+	store, err := objectstore.New(objectstore.Config{
+		Type:      cfg.ObjectStore.Type,
+		Endpoint:  cfg.ObjectStore.Endpoint,
+		Bucket:    cfg.ObjectStore.Bucket,
+		AccessKey: cfg.ObjectStore.AccessKey,
+		SecretKey: cfg.ObjectStore.SecretKey,
+		Region:    cfg.ObjectStore.Region,
+		UseSSL:    cfg.ObjectStore.UseSSL,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create object store: %v", err)
+	}
+
+	// Initialize state manager and indexer
+	stateManager := namespace.NewStateManager(store)
+	indexer := idxr.New(store, stateManager, idxr.DefaultConfig(), nil)
+
+	// Start the indexer
+	indexer.Start()
+	fmt.Println("Indexer started, watching for namespaces...")
+
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
-	// TODO: Start indexer loop watching for WAL changes
 	_ = ctx
 
 	<-done
 	fmt.Println("\nShutting down indexer...")
+	indexer.Stop()
 	cancel()
 	fmt.Println("Indexer stopped")
 }
