@@ -906,6 +906,566 @@ func TestArrayOperators(t *testing.T) {
 	}
 }
 
+// TestArrayOps_TaskVerification tests exactly the verification steps for the filter-array-ops task.
+func TestArrayOps_TaskVerification(t *testing.T) {
+	t.Run("Contains_operator", func(t *testing.T) {
+		// Test Contains operator - checks if array attribute contains a value
+
+		// Contains with string array
+		f, err := Parse([]any{"tags", "Contains", "foo"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when array contains the value
+		if !f.Eval(Document{"tags": []any{"foo", "bar", "baz"}}) {
+			t.Error("Contains should match when array contains the value")
+		}
+
+		// Should match when value is at different positions
+		if !f.Eval(Document{"tags": []any{"foo"}}) {
+			t.Error("Contains should match with single element array")
+		}
+		if !f.Eval(Document{"tags": []any{"bar", "foo", "baz"}}) {
+			t.Error("Contains should match when value is in middle")
+		}
+		if !f.Eval(Document{"tags": []any{"bar", "baz", "foo"}}) {
+			t.Error("Contains should match when value is at end")
+		}
+
+		// Should not match when value is absent
+		if f.Eval(Document{"tags": []any{"bar", "baz"}}) {
+			t.Error("Contains should not match when value is absent")
+		}
+		if f.Eval(Document{"tags": []any{}}) {
+			t.Error("Contains should not match on empty array")
+		}
+
+		// Should not match for missing attribute
+		if f.Eval(Document{"other": []any{"foo"}}) {
+			t.Error("Contains should not match when attribute is missing")
+		}
+
+		// Should not match for non-array attribute
+		if f.Eval(Document{"tags": "foo"}) {
+			t.Error("Contains should not match when attribute is not an array")
+		}
+
+		// Test Contains with numeric values
+		fNum, err := Parse([]any{"nums", "Contains", float64(42)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fNum.Eval(Document{"nums": []any{float64(1), float64(42), float64(100)}}) {
+			t.Error("Contains should match numeric value in array")
+		}
+		if fNum.Eval(Document{"nums": []any{float64(1), float64(2), float64(3)}}) {
+			t.Error("Contains should not match when numeric value is absent")
+		}
+
+		// Test with typed slices ([]float64, []string, []int, etc.)
+		if !fNum.Eval(Document{"nums": []float64{1, 42, 100}}) {
+			t.Error("Contains should work with []float64 typed arrays")
+		}
+		if !fNum.Eval(Document{"nums": []int{1, 42, 100}}) {
+			t.Error("Contains should work with []int typed arrays")
+		}
+
+		// Test Contains with string typed slice
+		if !f.Eval(Document{"tags": []string{"foo", "bar", "baz"}}) {
+			t.Error("Contains should work with []string typed arrays")
+		}
+	})
+
+	t.Run("NotContains_operator", func(t *testing.T) {
+		// Test NotContains operator - negation of Contains
+
+		f, err := Parse([]any{"tags", "NotContains", "foo"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when value is absent from array
+		if !f.Eval(Document{"tags": []any{"bar", "baz", "qux"}}) {
+			t.Error("NotContains should match when value is absent")
+		}
+		if !f.Eval(Document{"tags": []any{}}) {
+			t.Error("NotContains should match for empty array")
+		}
+
+		// Should not match when value is present
+		if f.Eval(Document{"tags": []any{"foo", "bar"}}) {
+			t.Error("NotContains should not match when value is present")
+		}
+		if f.Eval(Document{"tags": []any{"foo"}}) {
+			t.Error("NotContains should not match with single matching element")
+		}
+
+		// Missing attribute behavior - NotContains should match
+		// (since Contains returns false for missing, NotContains returns !false = true)
+		if !f.Eval(Document{"other": []any{"foo"}}) {
+			t.Error("NotContains should match when attribute is missing (not contained)")
+		}
+
+		// Non-array attribute - should match (Contains returns false, NotContains returns true)
+		if !f.Eval(Document{"tags": "foo"}) {
+			t.Error("NotContains should match when attribute is not an array")
+		}
+
+		// Test with numeric values
+		fNum, err := Parse([]any{"nums", "NotContains", float64(99)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fNum.Eval(Document{"nums": []any{float64(1), float64(2), float64(3)}}) {
+			t.Error("NotContains should match when numeric value is absent")
+		}
+		if fNum.Eval(Document{"nums": []any{float64(99), float64(100)}}) {
+			t.Error("NotContains should not match when numeric value is present")
+		}
+	})
+
+	t.Run("ContainsAny_operator", func(t *testing.T) {
+		// Test ContainsAny operator - checks if array contains any value from a set
+
+		f, err := Parse([]any{"tags", "ContainsAny", []any{"foo", "qux", "xyz"}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when array contains first value from set
+		if !f.Eval(Document{"tags": []any{"foo", "bar", "baz"}}) {
+			t.Error("ContainsAny should match when array contains first set value")
+		}
+
+		// Should match when array contains middle value from set
+		if !f.Eval(Document{"tags": []any{"bar", "qux", "baz"}}) {
+			t.Error("ContainsAny should match when array contains middle set value")
+		}
+
+		// Should match when array contains last value from set
+		if !f.Eval(Document{"tags": []any{"bar", "baz", "xyz"}}) {
+			t.Error("ContainsAny should match when array contains last set value")
+		}
+
+		// Should match when array contains multiple values from set
+		if !f.Eval(Document{"tags": []any{"foo", "qux", "xyz"}}) {
+			t.Error("ContainsAny should match when array contains multiple set values")
+		}
+
+		// Should not match when array contains no values from set
+		if f.Eval(Document{"tags": []any{"bar", "baz", "other"}}) {
+			t.Error("ContainsAny should not match when no set values are present")
+		}
+		if f.Eval(Document{"tags": []any{}}) {
+			t.Error("ContainsAny should not match for empty array")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": []any{"foo"}}) {
+			t.Error("ContainsAny should not match when attribute is missing")
+		}
+
+		// Test with numeric values
+		fNum, err := Parse([]any{"nums", "ContainsAny", []any{float64(5), float64(10), float64(15)}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fNum.Eval(Document{"nums": []any{float64(1), float64(5), float64(9)}}) {
+			t.Error("ContainsAny should match numeric value in array")
+		}
+		if fNum.Eval(Document{"nums": []any{float64(1), float64(2), float64(3)}}) {
+			t.Error("ContainsAny should not match when no numeric values match")
+		}
+
+		// Test with typed slices
+		if !fNum.Eval(Document{"nums": []float64{1, 10, 20}}) {
+			t.Error("ContainsAny should work with []float64 typed arrays")
+		}
+	})
+
+	t.Run("NotContainsAny_operator", func(t *testing.T) {
+		// Test NotContainsAny operator - negation of ContainsAny
+
+		f, err := Parse([]any{"tags", "NotContainsAny", []any{"deleted", "spam", "archived"}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when array contains none of the set values
+		if !f.Eval(Document{"tags": []any{"active", "published", "featured"}}) {
+			t.Error("NotContainsAny should match when no set values are present")
+		}
+		if !f.Eval(Document{"tags": []any{}}) {
+			t.Error("NotContainsAny should match for empty array")
+		}
+
+		// Should not match when array contains any value from set
+		if f.Eval(Document{"tags": []any{"active", "deleted", "other"}}) {
+			t.Error("NotContainsAny should not match when first set value is present")
+		}
+		if f.Eval(Document{"tags": []any{"spam"}}) {
+			t.Error("NotContainsAny should not match when middle set value is present")
+		}
+		if f.Eval(Document{"tags": []any{"active", "archived"}}) {
+			t.Error("NotContainsAny should not match when last set value is present")
+		}
+
+		// Should not match when multiple set values are present
+		if f.Eval(Document{"tags": []any{"deleted", "spam", "archived"}}) {
+			t.Error("NotContainsAny should not match when all set values are present")
+		}
+
+		// Missing attribute - should match (ContainsAny returns false, so NotContainsAny returns true)
+		if !f.Eval(Document{"other": []any{"deleted"}}) {
+			t.Error("NotContainsAny should match when attribute is missing")
+		}
+
+		// Test with numeric values
+		fNum, err := Parse([]any{"scores", "NotContainsAny", []any{float64(0), float64(-1)}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fNum.Eval(Document{"scores": []any{float64(100), float64(95), float64(80)}}) {
+			t.Error("NotContainsAny should match when no numeric values match")
+		}
+		if fNum.Eval(Document{"scores": []any{float64(100), float64(0), float64(80)}}) {
+			t.Error("NotContainsAny should not match when numeric value is present")
+		}
+	})
+
+	t.Run("AnyLt_operator", func(t *testing.T) {
+		// Test AnyLt operator - checks if any array element is less than value
+
+		f, err := Parse([]any{"scores", "AnyLt", float64(50)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when any element is less than value
+		if !f.Eval(Document{"scores": []any{float64(10), float64(60), float64(70)}}) {
+			t.Error("AnyLt should match when first element is less")
+		}
+		if !f.Eval(Document{"scores": []any{float64(60), float64(30), float64(70)}}) {
+			t.Error("AnyLt should match when middle element is less")
+		}
+		if !f.Eval(Document{"scores": []any{float64(60), float64(70), float64(40)}}) {
+			t.Error("AnyLt should match when last element is less")
+		}
+
+		// Should match when multiple elements are less
+		if !f.Eval(Document{"scores": []any{float64(10), float64(20), float64(30)}}) {
+			t.Error("AnyLt should match when all elements are less")
+		}
+
+		// Should not match when no element is less
+		if f.Eval(Document{"scores": []any{float64(50), float64(60), float64(70)}}) {
+			t.Error("AnyLt should not match when no element is less (equal doesn't count)")
+		}
+		if f.Eval(Document{"scores": []any{float64(100), float64(200), float64(300)}}) {
+			t.Error("AnyLt should not match when all elements are greater")
+		}
+		if f.Eval(Document{"scores": []any{}}) {
+			t.Error("AnyLt should not match for empty array")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": []any{float64(10)}}) {
+			t.Error("AnyLt should not match when attribute is missing")
+		}
+
+		// Test with typed arrays
+		if !f.Eval(Document{"scores": []float64{10, 60, 70}}) {
+			t.Error("AnyLt should work with []float64 typed arrays")
+		}
+		if !f.Eval(Document{"scores": []int{10, 60, 70}}) {
+			t.Error("AnyLt should work with []int typed arrays")
+		}
+
+		// Test with string comparison (lexicographic)
+		fStr, err := Parse([]any{"names", "AnyLt", "banana"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fStr.Eval(Document{"names": []any{"cherry", "apple", "date"}}) {
+			t.Error("AnyLt should match lexicographically for strings")
+		}
+		if fStr.Eval(Document{"names": []any{"cherry", "banana", "date"}}) {
+			t.Error("AnyLt should not match when no string is less (equal doesn't count)")
+		}
+	})
+
+	t.Run("AnyLte_operator", func(t *testing.T) {
+		// Test AnyLte operator - checks if any array element is less than or equal to value
+
+		f, err := Parse([]any{"scores", "AnyLte", float64(50)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when any element is less than value
+		if !f.Eval(Document{"scores": []any{float64(10), float64(60), float64(70)}}) {
+			t.Error("AnyLte should match when element is less")
+		}
+
+		// Should match when any element is equal to value
+		if !f.Eval(Document{"scores": []any{float64(60), float64(50), float64(70)}}) {
+			t.Error("AnyLte should match when element is equal")
+		}
+
+		// Should match with multiple qualifying elements
+		if !f.Eval(Document{"scores": []any{float64(40), float64(50), float64(30)}}) {
+			t.Error("AnyLte should match when multiple elements qualify")
+		}
+
+		// Should not match when all elements are greater
+		if f.Eval(Document{"scores": []any{float64(51), float64(60), float64(70)}}) {
+			t.Error("AnyLte should not match when all elements are greater")
+		}
+		if f.Eval(Document{"scores": []any{}}) {
+			t.Error("AnyLte should not match for empty array")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": []any{float64(10)}}) {
+			t.Error("AnyLte should not match when attribute is missing")
+		}
+
+		// Test with typed arrays
+		if !f.Eval(Document{"scores": []float64{50, 60, 70}}) {
+			t.Error("AnyLte should work with []float64 typed arrays (equal case)")
+		}
+
+		// Test with string comparison
+		fStr, err := Parse([]any{"names", "AnyLte", "banana"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fStr.Eval(Document{"names": []any{"cherry", "banana", "date"}}) {
+			t.Error("AnyLte should match when string is equal")
+		}
+		if !fStr.Eval(Document{"names": []any{"cherry", "apple", "date"}}) {
+			t.Error("AnyLte should match when string is less")
+		}
+	})
+
+	t.Run("AnyGt_operator", func(t *testing.T) {
+		// Test AnyGt operator - checks if any array element is greater than value
+
+		f, err := Parse([]any{"scores", "AnyGt", float64(50)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when any element is greater than value
+		if !f.Eval(Document{"scores": []any{float64(100), float64(30), float64(40)}}) {
+			t.Error("AnyGt should match when first element is greater")
+		}
+		if !f.Eval(Document{"scores": []any{float64(30), float64(100), float64(40)}}) {
+			t.Error("AnyGt should match when middle element is greater")
+		}
+		if !f.Eval(Document{"scores": []any{float64(30), float64(40), float64(100)}}) {
+			t.Error("AnyGt should match when last element is greater")
+		}
+
+		// Should match when multiple elements are greater
+		if !f.Eval(Document{"scores": []any{float64(60), float64(70), float64(80)}}) {
+			t.Error("AnyGt should match when all elements are greater")
+		}
+
+		// Should not match when no element is greater
+		if f.Eval(Document{"scores": []any{float64(50), float64(40), float64(30)}}) {
+			t.Error("AnyGt should not match when no element is greater (equal doesn't count)")
+		}
+		if f.Eval(Document{"scores": []any{float64(10), float64(20), float64(30)}}) {
+			t.Error("AnyGt should not match when all elements are less")
+		}
+		if f.Eval(Document{"scores": []any{}}) {
+			t.Error("AnyGt should not match for empty array")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": []any{float64(100)}}) {
+			t.Error("AnyGt should not match when attribute is missing")
+		}
+
+		// Test with typed arrays
+		if !f.Eval(Document{"scores": []float64{100, 30, 40}}) {
+			t.Error("AnyGt should work with []float64 typed arrays")
+		}
+		if !f.Eval(Document{"scores": []int64{100, 30, 40}}) {
+			t.Error("AnyGt should work with []int64 typed arrays")
+		}
+
+		// Test with string comparison (lexicographic)
+		fStr, err := Parse([]any{"names", "AnyGt", "banana"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fStr.Eval(Document{"names": []any{"apple", "cherry", "aardvark"}}) {
+			t.Error("AnyGt should match lexicographically for strings")
+		}
+		if fStr.Eval(Document{"names": []any{"apple", "banana", "aardvark"}}) {
+			t.Error("AnyGt should not match when no string is greater (equal doesn't count)")
+		}
+	})
+
+	t.Run("AnyGte_operator", func(t *testing.T) {
+		// Test AnyGte operator - checks if any array element is greater than or equal to value
+
+		f, err := Parse([]any{"scores", "AnyGte", float64(50)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		// Should match when any element is greater than value
+		if !f.Eval(Document{"scores": []any{float64(100), float64(30), float64(40)}}) {
+			t.Error("AnyGte should match when element is greater")
+		}
+
+		// Should match when any element is equal to value
+		if !f.Eval(Document{"scores": []any{float64(30), float64(50), float64(40)}}) {
+			t.Error("AnyGte should match when element is equal")
+		}
+
+		// Should match with multiple qualifying elements
+		if !f.Eval(Document{"scores": []any{float64(50), float64(60), float64(70)}}) {
+			t.Error("AnyGte should match when multiple elements qualify")
+		}
+
+		// Should not match when all elements are less
+		if f.Eval(Document{"scores": []any{float64(49), float64(40), float64(30)}}) {
+			t.Error("AnyGte should not match when all elements are less")
+		}
+		if f.Eval(Document{"scores": []any{}}) {
+			t.Error("AnyGte should not match for empty array")
+		}
+
+		// Missing attribute should not match
+		if f.Eval(Document{"other": []any{float64(100)}}) {
+			t.Error("AnyGte should not match when attribute is missing")
+		}
+
+		// Test with typed arrays
+		if !f.Eval(Document{"scores": []float64{30, 50, 40}}) {
+			t.Error("AnyGte should work with []float64 typed arrays (equal case)")
+		}
+
+		// Test with string comparison
+		fStr, err := Parse([]any{"names", "AnyGte", "banana"})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fStr.Eval(Document{"names": []any{"apple", "banana", "aardvark"}}) {
+			t.Error("AnyGte should match when string is equal")
+		}
+		if !fStr.Eval(Document{"names": []any{"apple", "cherry", "aardvark"}}) {
+			t.Error("AnyGte should match when string is greater")
+		}
+		if fStr.Eval(Document{"names": []any{"apple", "aardvark", "avocado"}}) {
+			t.Error("AnyGte should not match when all strings are less")
+		}
+	})
+
+	t.Run("mixed_type_arrays", func(t *testing.T) {
+		// Test operators with arrays containing mixed types
+
+		// Contains with mixed numeric types
+		fContains, err := Parse([]any{"values", "Contains", float64(42)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		// JSON numbers are always float64, but Go-native arrays can have int
+		if !fContains.Eval(Document{"values": []any{int(42), "hello", true}}) {
+			t.Error("Contains should match int value with float64 filter due to numeric coercion")
+		}
+
+		// ContainsAny with mixed types
+		fContainsAny, err := Parse([]any{"values", "ContainsAny", []any{float64(100), "hello"}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fContainsAny.Eval(Document{"values": []any{int(42), "hello", true}}) {
+			t.Error("ContainsAny should match string value in mixed array")
+		}
+
+		// AnyLt with mixed comparable types (only numerics will compare)
+		fAnyLt, err := Parse([]any{"values", "AnyLt", float64(50)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		// String and bool elements are skipped, only numeric is compared
+		if !fAnyLt.Eval(Document{"values": []any{int(10), "hello", true}}) {
+			t.Error("AnyLt should match numeric element, ignoring incompatible types")
+		}
+	})
+
+	t.Run("nil_and_null_handling", func(t *testing.T) {
+		// Test operators with nil/null values in arrays
+
+		// Contains with nil value
+		fContainsNil, err := Parse([]any{"values", "Contains", nil})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fContainsNil.Eval(Document{"values": []any{nil, "hello", float64(42)}}) {
+			t.Error("Contains should match nil value in array")
+		}
+		if fContainsNil.Eval(Document{"values": []any{"hello", float64(42)}}) {
+			t.Error("Contains should not match when nil is not in array")
+		}
+
+		// ContainsAny with nil in set
+		fContainsAnyNil, err := Parse([]any{"values", "ContainsAny", []any{nil, "special"}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fContainsAnyNil.Eval(Document{"values": []any{nil, "hello"}}) {
+			t.Error("ContainsAny should match nil value")
+		}
+		if !fContainsAnyNil.Eval(Document{"values": []any{"special", "hello"}}) {
+			t.Error("ContainsAny should match 'special' value")
+		}
+
+		// AnyLt with nil elements should skip them
+		fAnyLt, err := Parse([]any{"values", "AnyLt", float64(50)})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		// nil elements should be skipped in comparison
+		if !fAnyLt.Eval(Document{"values": []any{nil, float64(10), nil}}) {
+			t.Error("AnyLt should match, skipping nil elements")
+		}
+	})
+
+	t.Run("boolean_arrays", func(t *testing.T) {
+		// Test operators with boolean arrays
+
+		fContains, err := Parse([]any{"flags", "Contains", true})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fContains.Eval(Document{"flags": []any{false, true, false}}) {
+			t.Error("Contains should match boolean value in array")
+		}
+		if !fContains.Eval(Document{"flags": []bool{false, true, false}}) {
+			t.Error("Contains should match boolean value in typed []bool array")
+		}
+		if fContains.Eval(Document{"flags": []any{false, false}}) {
+			t.Error("Contains should not match when boolean value is absent")
+		}
+
+		// ContainsAny with booleans
+		fContainsAny, err := Parse([]any{"flags", "ContainsAny", []any{true}})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if !fContainsAny.Eval(Document{"flags": []any{false, true}}) {
+			t.Error("ContainsAny should match boolean value")
+		}
+	})
+}
+
 // TestComparison_TaskVerification tests exactly the verification steps for the filter-comparisons task.
 func TestComparison_TaskVerification(t *testing.T) {
 	t.Run("Lt_numeric_comparison", func(t *testing.T) {
