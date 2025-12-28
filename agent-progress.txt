@@ -297,3 +297,12 @@ KEY DEPENDENCIES:
 - No additional correctness issues found after fixes.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T05:12:30.000Z] Completed query-response-format: Review query response formatting
+- Reviewed staged changes in `internal/query/response_format_test.go` and `pkg/api/query_response_format_test.go`.
+- Verified response format includes rows with id/$dist merging, billing object, and performance object.
+- Verified aggregation responses omit rows and include billing/performance.
+- Verified multi-query responses include results array with billing/performance.
+- Verified fallback and 202 responses include billing/performance and expected rows behavior.
+- No correctness issues found in implementation or tests.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

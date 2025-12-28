@@ -943,7 +943,7 @@
       "Test billing object is present (can be zeros)",
       "Test performance object with cache metrics and timing"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-concurrency-limit",
