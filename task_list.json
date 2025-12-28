@@ -1917,7 +1917,7 @@
       "Test response field presence/shape",
       "Verify Eq null matches missing semantics"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-compat-harness-turbopuffer",

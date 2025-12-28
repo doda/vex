@@ -706,3 +706,10 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T21:16:42Z] Completed test-compat-suite: Review turbopuffer compatibility tests
+- Reviewed new compatibility suite in `tests/compat/compat_test.go` for request shapes, status codes, response formats, Eq-null semantics, and extra compatibility cases.
+- Verified coverage aligns with task description: documented write/query shapes, status code handling, response field presence, and null filter semantics.
+- Fixed API error handling to return 400 for duplicate IDs in patch_columns (mapped ErrDuplicateIDColumn to ErrDuplicateIDs).
+- Simplicity check: tests are direct and grouped by compatibility concerns with minimal helpers.
+- Issues found: duplicate IDs in patch_columns would have returned 500; resolved by mapping to 400.
+- Tests not re-run (per instruction to trust existing runs).
