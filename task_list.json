@@ -1820,7 +1820,7 @@
       "Verify filter boost yields 1 or 0",
       "Test BM25 score computation"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-unit-vector-encoding",

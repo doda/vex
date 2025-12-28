@@ -664,3 +664,12 @@ KEY DEPENDENCIES:
 - No other correctness issues found after review.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T19:36:43Z] Completed test-unit-rankby: Review rank_by evaluation unit tests
+- Reviewed new tests in `internal/query/rankby_eval_test.go`.
+- Verified coverage for Sum/Max/Product operators, filter boost scoring, and BM25 computation behaviors.
+- Checked edge cases: empty clause lists, zero/negative weights, missing fields, deleted docs.
+- Verified composite operator combinations exercise nested clauses.
+- Simplicity check: tests are direct and readable; no unnecessary scaffolding.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
