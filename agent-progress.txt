@@ -145,3 +145,11 @@ KEY DEPENDENCIES:
 - No other correctness issues found after the fix.
 - Tests not re-run (per instruction to trust prior runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T02:05:35.000Z] Completed write-backpressure: Review write backpressure implementation
+- Reviewed staged changes in `internal/write/handler.go`, `internal/write/batcher.go`, `internal/namespace/manager.go`, `internal/write/backpressure_test.go`, and `pkg/api/router.go`.
+- Verified backpressure checks reject writes when unindexed bytes exceed 2GB unless disable_backpressure is set.
+- Verified bytes_unindexed_est is tracked in state and disable_backpressure flag is persisted when used above threshold.
+- Verified API maps ErrBackpressure to 429 responses.
+- No correctness issues found.
+- Tests not re-run (per instruction to trust prior runs).
+- Marked task as passing in `task_list.json`.

@@ -432,6 +432,10 @@ func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 			r.writeAPIError(w, ErrNamespaceDeleted(ns))
 			return
 		}
+		if errors.Is(err, write.ErrBackpressure) {
+			r.writeAPIError(w, ErrBackpressure())
+			return
+		}
 		if errors.Is(err, write.ErrInvalidID) || errors.Is(err, write.ErrInvalidAttribute) || errors.Is(err, write.ErrInvalidRequest) || errors.Is(err, write.ErrInvalidFilter) || errors.Is(err, write.ErrDeleteByFilterTooMany) || errors.Is(err, write.ErrPatchByFilterTooMany) || errors.Is(err, write.ErrVectorPatchForbidden) || errors.Is(err, write.ErrSchemaTypeChange) || errors.Is(err, write.ErrInvalidSchema) {
 			r.writeAPIError(w, ErrBadRequest(err.Error()))
 			return

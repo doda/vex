@@ -26,6 +26,11 @@ const (
 	MaxPatchByFilterRows = 500_000
 )
 
+const (
+	// MaxUnindexedBytes is the threshold for backpressure (2GB).
+	MaxUnindexedBytes = 2 * 1024 * 1024 * 1024
+)
+
 var (
 	ErrInvalidRequest          = errors.New("invalid write request")
 	ErrInvalidID               = errors.New("invalid document ID")
@@ -38,6 +43,7 @@ var (
 	ErrSourceNamespaceNotFound = errors.New("source namespace not found")
 	ErrSchemaTypeChange        = errors.New("changing attribute type is not allowed")
 	ErrInvalidSchema           = errors.New("invalid schema")
+	ErrBackpressure            = errors.New("write rejected: unindexed data exceeds 2GB threshold")
 )
 
 // DeleteByFilterRequest represents a delete_by_filter operation.
@@ -68,17 +74,18 @@ type AttributeSchemaUpdate struct {
 
 // WriteRequest represents a write request from the API.
 type WriteRequest struct {
-	RequestID         string
-	UpsertRows        []map[string]any
-	PatchRows         []map[string]any
-	Deletes           []any
-	DeleteByFilter    *DeleteByFilterRequest // Optional delete_by_filter operation
-	PatchByFilter     *PatchByFilterRequest  // Optional patch_by_filter operation
-	CopyFromNamespace string                 // Optional: source namespace for server-side bulk copy
-	Schema            *SchemaUpdate          // Optional: explicit schema changes
-	UpsertCondition   any                    // Optional: condition evaluated against current doc for upserts
-	PatchCondition    any                    // Optional: condition evaluated against current doc for patches
-	DeleteCondition   any                    // Optional: condition evaluated against current doc for deletes
+	RequestID          string
+	UpsertRows         []map[string]any
+	PatchRows          []map[string]any
+	Deletes            []any
+	DeleteByFilter     *DeleteByFilterRequest // Optional delete_by_filter operation
+	PatchByFilter      *PatchByFilterRequest  // Optional patch_by_filter operation
+	CopyFromNamespace  string                 // Optional: source namespace for server-side bulk copy
+	Schema             *SchemaUpdate          // Optional: explicit schema changes
+	UpsertCondition    any                    // Optional: condition evaluated against current doc for upserts
+	PatchCondition     any                    // Optional: condition evaluated against current doc for patches
+	DeleteCondition    any                    // Optional: condition evaluated against current doc for deletes
+	DisableBackpressure bool                  // If true, bypass the 2GB unindexed threshold check
 }
 
 // ColumnarData represents columnar format data with ids and attribute arrays.
@@ -187,6 +194,12 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 			return nil, err
 		}
 		return nil, fmt.Errorf("failed to load namespace state: %w", err)
+	}
+
+	// Check backpressure: reject writes when unindexed data > 2GB unless disable_backpressure is set
+	if !req.DisableBackpressure && loaded.State.WAL.BytesUnindexedEst > MaxUnindexedBytes {
+		releaseOnError(ErrBackpressure)
+		return nil, ErrBackpressure
 	}
 
 	// Validate and convert schema update if provided
@@ -323,8 +336,11 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		return nil, err
 	}
 
-	// Update namespace state to advance WAL head with schema delta
-	_, err = h.stateMan.AdvanceWAL(ctx, ns, loaded.ETag, walKey, int64(len(result.Data)), schemaDelta)
+	// Update namespace state to advance WAL head with schema delta and disable_backpressure flag
+	_, err = h.stateMan.AdvanceWALWithOptions(ctx, ns, loaded.ETag, walKey, int64(len(result.Data)), namespace.AdvanceWALOptions{
+		SchemaDelta:        schemaDelta,
+		DisableBackpressure: req.DisableBackpressure,
+	})
 	if err != nil {
 		err = fmt.Errorf("failed to update namespace state: %w", err)
 		releaseOnError(err)
@@ -1231,6 +1247,13 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 	// Parse delete_condition
 	if cond, ok := body["delete_condition"]; ok {
 		req.DeleteCondition = cond
+	}
+
+	// Parse disable_backpressure
+	if dbp, ok := body["disable_backpressure"]; ok {
+		if b, ok := dbp.(bool); ok {
+			req.DisableBackpressure = b
+		}
 	}
 
 	return req, nil

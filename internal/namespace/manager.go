@@ -239,9 +239,21 @@ func validateSchemaTypeImmutability(old, new *Schema) error {
 	return nil
 }
 
+// AdvanceWALOptions contains optional parameters for AdvanceWAL.
+type AdvanceWALOptions struct {
+	SchemaDelta        *Schema
+	DisableBackpressure bool
+}
+
 // AdvanceWAL advances the WAL head sequence by 1 and updates related fields.
 // This is a helper that enforces the strict +1 increment invariant.
 func (m *StateManager) AdvanceWAL(ctx context.Context, namespace string, etag string, walKey string, bytesWritten int64, schemaDelta *Schema) (*LoadedState, error) {
+	return m.AdvanceWALWithOptions(ctx, namespace, etag, walKey, bytesWritten, AdvanceWALOptions{SchemaDelta: schemaDelta})
+}
+
+// AdvanceWALWithOptions advances the WAL head sequence by 1 and updates related fields.
+// Supports additional options like disabling backpressure tracking.
+func (m *StateManager) AdvanceWALWithOptions(ctx context.Context, namespace string, etag string, walKey string, bytesWritten int64, opts AdvanceWALOptions) (*LoadedState, error) {
 	return m.Update(ctx, namespace, etag, func(state *State) error {
 		state.WAL.HeadSeq++
 		state.WAL.HeadKey = walKey
@@ -250,15 +262,20 @@ func (m *StateManager) AdvanceWAL(ctx context.Context, namespace string, etag st
 			state.WAL.Status = "updating"
 		}
 
+		// Track if disable_backpressure was used while above threshold
+		if opts.DisableBackpressure && state.WAL.BytesUnindexedEst > 2*1024*1024*1024 {
+			state.NamespaceFlags.DisableBackpressure = true
+		}
+
 		// Apply schema delta if provided
-		if schemaDelta != nil {
+		if opts.SchemaDelta != nil {
 			if state.Schema == nil {
 				state.Schema = &Schema{Attributes: make(map[string]AttributeSchema)}
 			}
 			if state.Schema.Attributes == nil {
 				state.Schema.Attributes = make(map[string]AttributeSchema)
 			}
-			for name, attr := range schemaDelta.Attributes {
+			for name, attr := range opts.SchemaDelta.Attributes {
 				state.Schema.Attributes[name] = attr
 			}
 		}

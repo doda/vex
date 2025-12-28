@@ -539,7 +539,7 @@
       "Verify disable_backpressure=true allows writes above threshold",
       "Test bytes_unindexed_est is tracked in state"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-max-batch-size",

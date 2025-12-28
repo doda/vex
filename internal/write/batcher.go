@@ -296,9 +296,10 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	nextSeq := loaded.State.WAL.HeadSeq + 1
 	walEntry := wal.NewWalEntry(batch.namespace, nextSeq)
 
-	// Track results and aggregate schema delta
+	// Track results, aggregate schema delta, and track disable_backpressure usage
 	results := make([]*WriteResponse, len(batch.writes))
 	var schemaDelta *namespace.Schema
+	var anyDisableBackpressure bool
 
 	// Process each write request into its own sub-batch
 	// Use each write's own context for its processing
@@ -334,6 +335,11 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 
 		results[i] = resp
 		walEntry.SubBatches = append(walEntry.SubBatches, subBatch)
+
+		// Track if any write in batch used disable_backpressure
+		if pw.req.DisableBackpressure {
+			anyDisableBackpressure = true
+		}
 
 		// Merge schema deltas
 		if writeSchemaDelta != nil {
@@ -404,7 +410,10 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	}
 
 	// Update namespace state (use batchCtx for durability)
-	_, err = b.stateMan.AdvanceWAL(batchCtx, batch.namespace, loaded.ETag, walKey, int64(len(result.Data)), schemaDelta)
+	_, err = b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, loaded.ETag, walKey, int64(len(result.Data)), namespace.AdvanceWALOptions{
+		SchemaDelta:        schemaDelta,
+		DisableBackpressure: anyDisableBackpressure,
+	})
 	if err != nil {
 		// Fail all pending writes and release reservations
 		batchErr := fmt.Errorf("failed to update namespace state: %w", err)
@@ -434,6 +443,11 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 // processWrite processes a single write request and returns its sub-batch.
 // This is similar to Handler.Handle but returns the sub-batch instead of committing.
 func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.State, req *WriteRequest) (*WriteResponse, *wal.WriteSubBatch, *namespace.Schema, error) {
+	// Check backpressure: reject writes when unindexed data > 2GB unless disable_backpressure is set
+	if !req.DisableBackpressure && state.WAL.BytesUnindexedEst > MaxUnindexedBytes {
+		return nil, nil, nil, ErrBackpressure
+	}
+
 	// Validate and convert schema update if provided
 	var schemaDelta *namespace.Schema
 	var err error
