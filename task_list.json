@@ -1936,7 +1936,7 @@
       "Verify rows_remaining behavior",
       "Allow recall tolerance for ANN comparisons"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "single-binary-subcommands",

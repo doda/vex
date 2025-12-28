@@ -713,3 +713,10 @@ KEY DEPENDENCIES:
 - Simplicity check: tests are direct and grouped by compatibility concerns with minimal helpers.
 - Issues found: duplicate IDs in patch_columns would have returned 500; resolved by mapping to 400.
 - Tests not re-run (per instruction to trust existing runs).
+[2025-12-28T21:23:27Z] Completed test-compat-harness-turbopuffer: Review turbopuffer compatibility harness
+- Reviewed new tests in `tests/compat/turbopuffer_test.go` covering golden write/query flows, status codes, ordering semantics, rows_remaining, ANN recall tolerance, aggregation, filters, conditional upsert, namespace lifecycle, and patch_rows.
+- Verified harness is optional via TURBOPUFFER_API_KEY and uses TURBOPUFFER_API_URL override.
+- Simplicity check: helper client is minimal; tests are direct and grouped by behavior.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
