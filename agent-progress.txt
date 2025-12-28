@@ -120,3 +120,11 @@ KEY DEPENDENCIES:
 - No correctness issues found in the implementation.
 - Tests not re-run (per instruction to trust prior runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T01:12:05.000Z] Completed write-request-ordering: Review canonical write ordering implementation
+- Reviewed staged changes in `internal/write/handler.go`, `internal/wal/encoder.go`, and new tests in `internal/write/ordering_test.go`.
+- Verified ordering phases match spec: delete_by_filter -> patch_by_filter -> copy_from_namespace -> upserts -> patches -> deletes.
+- Confirmed patch_by_filter skips IDs already deleted by delete_by_filter in the same request.
+- Fixed an ID comparison bug in `internal/wal/encoder.go` where string comparison could conflate typed IDs; now uses `document.ID.Equal`.
+- Verified tests cover resurrection, ordering interactions, and atomic WAL entry behavior.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

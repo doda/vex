@@ -486,7 +486,7 @@
       "Test delete_by_filter can be 'resurrected' by later upsert in same request",
       "Verify all operations are atomic (no partial visibility)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-batching",

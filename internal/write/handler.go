@@ -437,6 +437,12 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 	// This implements "Read Committed" semantics - docs that newly qualify between
 	// phases can be missed, and docs that no longer qualify are not patched
 	for _, id := range candidateIDs {
+		// Skip if this document was already deleted by delete_by_filter in this request
+		// per spec: patch_by_filter runs AFTER delete_by_filter
+		if batch.HasPendingDelete(id) {
+			continue
+		}
+
 		// Get the document again to re-evaluate
 		doc, err := h.tailStore.GetDocument(ctx, ns, id)
 		if err != nil {

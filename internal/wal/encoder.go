@@ -282,6 +282,24 @@ func (b *WriteSubBatch) AddDelete(id *DocumentID) {
 	b.Stats.RowsAffected++
 }
 
+// HasPendingDelete checks if a document ID has been marked for deletion in this batch.
+// This is used to check for deletions from delete_by_filter before applying patch_by_filter.
+func (b *WriteSubBatch) HasPendingDelete(id document.ID) bool {
+	for _, m := range b.Mutations {
+		if m.Type != MutationType_MUTATION_TYPE_DELETE {
+			continue
+		}
+		mutationID, err := DocumentIDToID(m.Id)
+		if err != nil {
+			continue
+		}
+		if mutationID.Equal(id) {
+			return true
+		}
+	}
+	return false
+}
+
 func StringValue(s string) *AttributeValue {
 	return &AttributeValue{Value: &AttributeValue_StringVal{StringVal: s}}
 }
