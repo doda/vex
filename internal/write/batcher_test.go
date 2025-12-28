@@ -2,6 +2,7 @@ package write
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -653,5 +654,91 @@ func TestBatcherIndependentContexts(t *testing.T) {
 	}
 	if state.State.WAL.HeadSeq == 0 {
 		t.Error("expected HeadSeq > 0")
+	}
+}
+
+// TestBatcher_CompatModeRejectsDotProduct verifies that dot_product is rejected in turbopuffer mode.
+func TestBatcher_CompatModeRejectsDotProduct(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	// Create batcher with turbopuffer compat mode (default)
+	batcher, err := NewBatcherWithCompatMode(store, stateMan, nil, "turbopuffer")
+	if err != nil {
+		t.Fatalf("failed to create batcher: %v", err)
+	}
+	defer batcher.Close()
+
+	// Try to submit with dot_product distance metric
+	req := &WriteRequest{
+		RequestID: "test-req-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "test"},
+		},
+		DistanceMetric: "dot_product",
+	}
+
+	_, err = batcher.Submit(ctx, "test-ns", req)
+	if err == nil {
+		t.Fatal("expected error for dot_product in turbopuffer mode, got nil")
+	}
+	if !errors.Is(err, ErrDotProductNotAllowed) {
+		t.Errorf("expected ErrDotProductNotAllowed, got: %v", err)
+	}
+}
+
+// TestBatcher_VexModeAllowsDotProduct verifies that dot_product is allowed in vex mode.
+func TestBatcher_VexModeAllowsDotProduct(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	// Create batcher with vex compat mode
+	batcher, err := NewBatcherWithCompatMode(store, stateMan, nil, "vex")
+	if err != nil {
+		t.Fatalf("failed to create batcher: %v", err)
+	}
+	defer batcher.Close()
+
+	// Try to submit with dot_product distance metric - should succeed
+	req := &WriteRequest{
+		RequestID: "test-req-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "test"},
+		},
+		DistanceMetric: "dot_product",
+	}
+
+	_, err = batcher.Submit(ctx, "test-ns", req)
+	if err != nil {
+		t.Errorf("expected no error for dot_product in vex mode, got: %v", err)
+	}
+}
+
+// TestBatcher_CompatMode verifies the compat mode getter.
+func TestBatcher_CompatMode(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	tests := []struct {
+		compatMode string
+	}{
+		{"turbopuffer"},
+		{"vex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.compatMode, func(t *testing.T) {
+			batcher, err := NewBatcherWithCompatMode(store, stateMan, nil, tt.compatMode)
+			if err != nil {
+				t.Fatalf("failed to create batcher: %v", err)
+			}
+			defer batcher.Close()
+
+			if batcher.CompatMode() != tt.compatMode {
+				t.Errorf("Batcher.CompatMode() = %q, want %q", batcher.CompatMode(), tt.compatMode)
+			}
+		})
 	}
 }

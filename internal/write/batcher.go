@@ -82,6 +82,7 @@ type Batcher struct {
 	canon         *wal.Canonicalizer
 	tailStore     tail.Store
 	idempotency   *IdempotencyStore
+	compatMode    string // Compatibility mode: "turbopuffer" or "vex"
 
 	mu       sync.Mutex
 	batches  map[string]*namespaceBatch // namespace -> pending batch
@@ -94,8 +95,18 @@ func NewBatcher(store objectstore.Store, stateMan *namespace.StateManager, tailS
 	return NewBatcherWithConfig(store, stateMan, tailStore, DefaultBatcherConfig())
 }
 
+// NewBatcherWithCompatMode creates a new write batcher with a specific compatibility mode.
+func NewBatcherWithCompatMode(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store, compatMode string) (*Batcher, error) {
+	return NewBatcherWithConfigAndCompatMode(store, stateMan, tailStore, DefaultBatcherConfig(), compatMode)
+}
+
 // NewBatcherWithConfig creates a new write batcher with custom configuration.
 func NewBatcherWithConfig(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store, cfg BatcherConfig) (*Batcher, error) {
+	return NewBatcherWithConfigAndCompatMode(store, stateMan, tailStore, cfg, "turbopuffer")
+}
+
+// NewBatcherWithConfigAndCompatMode creates a new write batcher with custom configuration and compat mode.
+func NewBatcherWithConfigAndCompatMode(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store, cfg BatcherConfig, compatMode string) (*Batcher, error) {
 	if cfg.BatchWindow <= 0 {
 		cfg.BatchWindow = DefaultBatchWindow
 	}
@@ -111,7 +122,13 @@ func NewBatcherWithConfig(store objectstore.Store, stateMan *namespace.StateMana
 		tailStore:   tailStore,
 		idempotency: NewIdempotencyStore(),
 		batches:     make(map[string]*namespaceBatch),
+		compatMode:  compatMode,
 	}, nil
+}
+
+// CompatMode returns the compatibility mode of the batcher.
+func (b *Batcher) CompatMode() string {
+	return b.compatMode
 }
 
 // Close shuts down the batcher, flushing any pending batches.
@@ -447,6 +464,13 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	// Check backpressure: reject writes when unindexed data > 2GB unless disable_backpressure is set
 	if !req.DisableBackpressure && state.WAL.BytesUnindexedEst > MaxUnindexedBytes {
 		return nil, nil, nil, ErrBackpressure
+	}
+
+	// Validate distance_metric against compat mode if specified
+	if req.DistanceMetric != "" {
+		if err := ValidateDistanceMetric(req.DistanceMetric, b.compatMode); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
 	// Validate and convert schema update if provided

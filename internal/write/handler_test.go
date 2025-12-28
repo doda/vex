@@ -2600,3 +2600,132 @@ func TestHandler_SchemaUpdateWithNoData(t *testing.T) {
 		t.Error("expected filterable to be updated")
 	}
 }
+
+// TestValidateDistanceMetric tests the distance metric validation against compat mode.
+func TestValidateDistanceMetric(t *testing.T) {
+	tests := []struct {
+		name       string
+		metric     string
+		compatMode string
+		wantErr    bool
+		errType    error
+	}{
+		// Valid cases
+		{"cosine_distance in turbopuffer", "cosine_distance", "turbopuffer", false, nil},
+		{"cosine_distance in vex", "cosine_distance", "vex", false, nil},
+		{"euclidean_squared in turbopuffer", "euclidean_squared", "turbopuffer", false, nil},
+		{"euclidean_squared in vex", "euclidean_squared", "vex", false, nil},
+		{"dot_product in vex", "dot_product", "vex", false, nil},
+
+		// Invalid: dot_product in turbopuffer mode
+		{"dot_product in turbopuffer", "dot_product", "turbopuffer", true, ErrDotProductNotAllowed},
+		{"dot_product with empty compat", "dot_product", "", true, ErrDotProductNotAllowed},
+
+		// Invalid: unknown metric
+		{"unknown metric", "unknown", "vex", true, ErrInvalidDistanceMetric},
+		{"empty metric", "", "vex", true, ErrInvalidDistanceMetric},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateDistanceMetric(tt.metric, tt.compatMode)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateDistanceMetric(%q, %q) error = %v, wantErr %v",
+					tt.metric, tt.compatMode, err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errType != nil {
+				if !errors.Is(err, tt.errType) {
+					t.Errorf("ValidateDistanceMetric(%q, %q) error = %v, want %v",
+						tt.metric, tt.compatMode, err, tt.errType)
+				}
+			}
+		})
+	}
+}
+
+// TestHandler_CompatModeRejectsDotProduct verifies that dot_product is rejected in turbopuffer mode.
+func TestHandler_CompatModeRejectsDotProduct(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	// Create handler with turbopuffer compat mode (default)
+	handler, err := NewHandlerWithOptions(store, stateMan, nil, "turbopuffer")
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	// Try to write with dot_product distance metric
+	req := &WriteRequest{
+		RequestID: "test-req-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "vector": []float64{1.0, 2.0, 3.0}},
+		},
+		DistanceMetric: "dot_product",
+	}
+
+	_, err = handler.Handle(ctx, "test-ns", req)
+	if err == nil {
+		t.Fatal("expected error for dot_product in turbopuffer mode, got nil")
+	}
+	if !errors.Is(err, ErrDotProductNotAllowed) {
+		t.Errorf("expected ErrDotProductNotAllowed, got: %v", err)
+	}
+}
+
+// TestHandler_VexModeAllowsDotProduct verifies that dot_product is allowed in vex mode.
+func TestHandler_VexModeAllowsDotProduct(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	// Create handler with vex compat mode
+	handler, err := NewHandlerWithOptions(store, stateMan, nil, "vex")
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	// Try to write with dot_product distance metric - should succeed
+	req := &WriteRequest{
+		RequestID: "test-req-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "vector": []float64{1.0, 2.0, 3.0}},
+		},
+		DistanceMetric: "dot_product",
+	}
+
+	_, err = handler.Handle(ctx, "test-ns", req)
+	if err != nil {
+		t.Errorf("expected no error for dot_product in vex mode, got: %v", err)
+	}
+}
+
+// TestHandler_CompatMode verifies the compat mode getter.
+func TestHandler_CompatMode(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	tests := []struct {
+		compatMode string
+	}{
+		{"turbopuffer"},
+		{"vex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.compatMode, func(t *testing.T) {
+			handler, err := NewHandlerWithOptions(store, stateMan, nil, tt.compatMode)
+			if err != nil {
+				t.Fatalf("failed to create handler: %v", err)
+			}
+			defer handler.Close()
+
+			if handler.CompatMode() != tt.compatMode {
+				t.Errorf("Handler.CompatMode() = %q, want %q", handler.CompatMode(), tt.compatMode)
+			}
+		})
+	}
+}

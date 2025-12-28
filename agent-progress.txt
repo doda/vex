@@ -729,3 +729,12 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in task_list.json.
+[2025-12-28T22:25:14Z] Completed compat-mode-flag: Review compat_mode flag implementation
+- Reviewed compat mode typing/defaulting in `internal/config/config.go` and routing propagation in `pkg/api/router.go`.
+- Reviewed write handler/batcher compat mode wiring and dot_product validation in `internal/write/handler.go` and `internal/write/batcher.go`.
+- Verified tests added for compat mode behavior and distance metric validation in `internal/config/config_test.go`, `internal/write/handler_test.go`, and `internal/write/batcher_test.go`.
+- Fixed write request parsing to reject non-string or empty `distance_metric` values for consistency with other request fields.
+- Simplicity check: changes are localized; constructor options remain straightforward.
+- Issues found: none after parse validation fix.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

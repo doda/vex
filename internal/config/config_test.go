@@ -470,3 +470,80 @@ func TestPartialConfigMerge(t *testing.T) {
 		t.Errorf("expected default budget pct to be preserved, got %d", cfg.Cache.BudgetPct)
 	}
 }
+
+func TestCompatModeType(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      CompatMode
+		wantValid bool
+	}{
+		{"turbopuffer mode", CompatModeTurbopuffer, true},
+		{"vex mode", CompatModeVex, true},
+		{"empty mode", CompatMode(""), false},
+		{"unknown mode", CompatMode("unknown"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.mode.IsValid(); got != tt.wantValid {
+				t.Errorf("CompatMode(%q).IsValid() = %v, want %v", tt.mode, got, tt.wantValid)
+			}
+		})
+	}
+}
+
+func TestCompatModeIsTurbopuffer(t *testing.T) {
+	tests := []struct {
+		mode   CompatMode
+		expect bool
+	}{
+		{CompatModeTurbopuffer, true},
+		{CompatModeVex, false},
+		{CompatMode(""), false},
+	}
+
+	for _, tt := range tests {
+		if got := tt.mode.IsTurbopuffer(); got != tt.expect {
+			t.Errorf("CompatMode(%q).IsTurbopuffer() = %v, want %v", tt.mode, got, tt.expect)
+		}
+	}
+}
+
+func TestCompatModeAllowsDotProduct(t *testing.T) {
+	tests := []struct {
+		mode   CompatMode
+		expect bool
+	}{
+		{CompatModeTurbopuffer, false},
+		{CompatModeVex, true},
+		{CompatMode(""), false},
+	}
+
+	for _, tt := range tests {
+		if got := tt.mode.AllowsDotProduct(); got != tt.expect {
+			t.Errorf("CompatMode(%q).AllowsDotProduct() = %v, want %v", tt.mode, got, tt.expect)
+		}
+	}
+}
+
+func TestConfig_GetCompatMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		compatMode string
+		expect     CompatMode
+	}{
+		{"empty defaults to turbopuffer", "", DefaultCompatMode},
+		{"turbopuffer", "turbopuffer", CompatModeTurbopuffer},
+		{"vex", "vex", CompatModeVex},
+		{"invalid defaults to turbopuffer", "invalid", DefaultCompatMode},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{CompatMode: tt.compatMode}
+			if got := cfg.GetCompatMode(); got != tt.expect {
+				t.Errorf("Config.GetCompatMode() = %v, want %v", got, tt.expect)
+			}
+		})
+	}
+}

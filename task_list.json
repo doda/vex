@@ -2007,7 +2007,7 @@
       "Test compat_mode=turbopuffer rejects dot_product metric",
       "Verify Vex-only extensions disabled in compat mode"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "guardrails-per-namespace",

@@ -134,12 +134,14 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 	if store != nil {
 		r.stateManager = namespace.NewStateManager(store)
 		r.tailStore = tail.New(tail.DefaultConfig(), store, nil, nil)
-		writeHandler, err := write.NewHandlerWithTail(store, r.stateManager, r.tailStore)
+		// Get compat mode from config, defaulting to turbopuffer
+		compatMode := string(cfg.GetCompatMode())
+		writeHandler, err := write.NewHandlerWithOptions(store, r.stateManager, r.tailStore, compatMode)
 		if err == nil {
 			r.writeHandler = writeHandler
 		}
 		// Create write batcher for 1/sec batching per namespace
-		writeBatcher, err := write.NewBatcher(store, r.stateManager, r.tailStore)
+		writeBatcher, err := write.NewBatcherWithCompatMode(store, r.stateManager, r.tailStore, compatMode)
 		if err == nil {
 			r.writeBatcher = writeBatcher
 		}
@@ -1535,13 +1537,15 @@ func (r *Router) SetStore(store objectstore.Store) error {
 	if store != nil {
 		r.stateManager = namespace.NewStateManager(store)
 		r.tailStore = tail.New(tail.DefaultConfig(), store, nil, nil)
-		writeHandler, err := write.NewHandlerWithTail(store, r.stateManager, r.tailStore)
+		// Get compat mode from config, defaulting to turbopuffer
+		compatMode := string(r.cfg.GetCompatMode())
+		writeHandler, err := write.NewHandlerWithOptions(store, r.stateManager, r.tailStore, compatMode)
 		if err != nil {
 			return err
 		}
 		r.writeHandler = writeHandler
-		// Initialize the batcher for 1/sec batching
-		writeBatcher, err := write.NewBatcher(store, r.stateManager, r.tailStore)
+		// Initialize the batcher for 1/sec batching with compat mode
+		writeBatcher, err := write.NewBatcherWithCompatMode(store, r.stateManager, r.tailStore, compatMode)
 		if err != nil {
 			return err
 		}

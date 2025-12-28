@@ -15,6 +15,44 @@ const (
 	ModeIndexer Mode = "indexer"
 )
 
+// CompatMode represents the compatibility mode for the server.
+type CompatMode string
+
+const (
+	// CompatModeTurbopuffer enforces strict turbopuffer API compatibility.
+	// - Rejects dot_product distance metric
+	// - Disables Vex-only extensions
+	CompatModeTurbopuffer CompatMode = "turbopuffer"
+
+	// CompatModeVex enables Vex-only extensions.
+	// - Allows dot_product distance metric
+	// - Enables all Vex-specific features
+	CompatModeVex CompatMode = "vex"
+)
+
+// DefaultCompatMode is the default compatibility mode when not specified.
+const DefaultCompatMode = CompatModeTurbopuffer
+
+// IsValid returns true if the compat mode is a recognized value.
+func (m CompatMode) IsValid() bool {
+	switch m {
+	case CompatModeTurbopuffer, CompatModeVex:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTurbopuffer returns true if the compat mode is turbopuffer.
+func (m CompatMode) IsTurbopuffer() bool {
+	return m == CompatModeTurbopuffer
+}
+
+// AllowsDotProduct returns true if dot_product distance metric is allowed.
+func (m CompatMode) AllowsDotProduct() bool {
+	return m == CompatModeVex
+}
+
 type Config struct {
 	Mode        Mode              `json:"mode"`
 	ListenAddr  string            `json:"listen_addr"`
@@ -25,6 +63,19 @@ type Config struct {
 	Cache       CacheConfig       `json:"cache"`
 	Membership  MembershipConfig  `json:"membership"`
 	Indexer     IndexerConfig     `json:"indexer"`
+}
+
+// GetCompatMode returns the compatibility mode as a typed CompatMode.
+// Returns DefaultCompatMode if the stored value is empty or invalid.
+func (c *Config) GetCompatMode() CompatMode {
+	if c.CompatMode == "" {
+		return DefaultCompatMode
+	}
+	mode := CompatMode(c.CompatMode)
+	if !mode.IsValid() {
+		return DefaultCompatMode
+	}
+	return mode
 }
 
 // IndexerConfig holds indexer-specific configuration.

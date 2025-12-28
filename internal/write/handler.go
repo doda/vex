@@ -32,18 +32,20 @@ const (
 )
 
 var (
-	ErrInvalidRequest          = errors.New("invalid write request")
-	ErrInvalidID               = errors.New("invalid document ID")
-	ErrInvalidAttribute        = errors.New("invalid attribute")
-	ErrDuplicateIDColumn       = errors.New("duplicate IDs in columnar format")
-	ErrVectorPatchForbidden    = errors.New("vector attribute cannot be patched")
-	ErrDeleteByFilterTooMany   = errors.New("delete_by_filter exceeds maximum rows limit")
-	ErrPatchByFilterTooMany    = errors.New("patch_by_filter exceeds maximum rows limit")
-	ErrInvalidFilter           = errors.New("invalid filter expression")
-	ErrSourceNamespaceNotFound = errors.New("source namespace not found")
-	ErrSchemaTypeChange        = errors.New("changing attribute type is not allowed")
-	ErrInvalidSchema           = errors.New("invalid schema")
-	ErrBackpressure            = errors.New("write rejected: unindexed data exceeds 2GB threshold")
+	ErrInvalidRequest            = errors.New("invalid write request")
+	ErrInvalidID                 = errors.New("invalid document ID")
+	ErrInvalidAttribute          = errors.New("invalid attribute")
+	ErrDuplicateIDColumn         = errors.New("duplicate IDs in columnar format")
+	ErrVectorPatchForbidden      = errors.New("vector attribute cannot be patched")
+	ErrDeleteByFilterTooMany     = errors.New("delete_by_filter exceeds maximum rows limit")
+	ErrPatchByFilterTooMany      = errors.New("patch_by_filter exceeds maximum rows limit")
+	ErrInvalidFilter             = errors.New("invalid filter expression")
+	ErrSourceNamespaceNotFound   = errors.New("source namespace not found")
+	ErrSchemaTypeChange          = errors.New("changing attribute type is not allowed")
+	ErrInvalidSchema             = errors.New("invalid schema")
+	ErrBackpressure              = errors.New("write rejected: unindexed data exceeds 2GB threshold")
+	ErrInvalidDistanceMetric     = errors.New("invalid distance_metric")
+	ErrDotProductNotAllowed      = errors.New("dot_product distance metric is not supported in turbopuffer compatibility mode")
 )
 
 // DeleteByFilterRequest represents a delete_by_filter operation.
@@ -74,18 +76,19 @@ type AttributeSchemaUpdate struct {
 
 // WriteRequest represents a write request from the API.
 type WriteRequest struct {
-	RequestID          string
-	UpsertRows         []map[string]any
-	PatchRows          []map[string]any
-	Deletes            []any
-	DeleteByFilter     *DeleteByFilterRequest // Optional delete_by_filter operation
-	PatchByFilter      *PatchByFilterRequest  // Optional patch_by_filter operation
-	CopyFromNamespace  string                 // Optional: source namespace for server-side bulk copy
-	Schema             *SchemaUpdate          // Optional: explicit schema changes
-	UpsertCondition    any                    // Optional: condition evaluated against current doc for upserts
-	PatchCondition     any                    // Optional: condition evaluated against current doc for patches
-	DeleteCondition    any                    // Optional: condition evaluated against current doc for deletes
-	DisableBackpressure bool                  // If true, bypass the 2GB unindexed threshold check
+	RequestID           string
+	UpsertRows          []map[string]any
+	PatchRows           []map[string]any
+	Deletes             []any
+	DeleteByFilter      *DeleteByFilterRequest // Optional delete_by_filter operation
+	PatchByFilter       *PatchByFilterRequest  // Optional patch_by_filter operation
+	CopyFromNamespace   string                 // Optional: source namespace for server-side bulk copy
+	Schema              *SchemaUpdate          // Optional: explicit schema changes
+	UpsertCondition     any                    // Optional: condition evaluated against current doc for upserts
+	PatchCondition      any                    // Optional: condition evaluated against current doc for patches
+	DeleteCondition     any                    // Optional: condition evaluated against current doc for deletes
+	DisableBackpressure bool                   // If true, bypass the 2GB unindexed threshold check
+	DistanceMetric      string                 // Optional: distance metric for vectors (cosine_distance, euclidean_squared, dot_product)
 }
 
 // ColumnarData represents columnar format data with ids and attribute arrays.
@@ -111,6 +114,7 @@ type Handler struct {
 	canon       *wal.Canonicalizer
 	tailStore   tail.Store         // Optional tail store for filter evaluation
 	idempotency *IdempotencyStore  // Optional idempotency store for de-duplication
+	compatMode  string             // Compatibility mode: "turbopuffer" or "vex"
 }
 
 // NewHandler creates a new write handler.
@@ -120,6 +124,11 @@ func NewHandler(store objectstore.Store, stateMan *namespace.StateManager) (*Han
 
 // NewHandlerWithTail creates a new write handler with an optional tail store for filter operations.
 func NewHandlerWithTail(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store) (*Handler, error) {
+	return NewHandlerWithOptions(store, stateMan, tailStore, "turbopuffer")
+}
+
+// NewHandlerWithOptions creates a new write handler with all options including compat mode.
+func NewHandlerWithOptions(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store, compatMode string) (*Handler, error) {
 	encoder, err := wal.NewEncoder()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create WAL encoder: %w", err)
@@ -132,7 +141,13 @@ func NewHandlerWithTail(store objectstore.Store, stateMan *namespace.StateManage
 		canon:       wal.NewCanonicalizer(),
 		tailStore:   tailStore,
 		idempotency: NewIdempotencyStore(),
+		compatMode:  compatMode,
 	}, nil
+}
+
+// CompatMode returns the compatibility mode of the handler.
+func (h *Handler) CompatMode() string {
+	return h.compatMode
 }
 
 // Close releases resources held by the handler.
@@ -200,6 +215,14 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	if !req.DisableBackpressure && loaded.State.WAL.BytesUnindexedEst > MaxUnindexedBytes {
 		releaseOnError(ErrBackpressure)
 		return nil, ErrBackpressure
+	}
+
+	// Validate distance_metric against compat mode if specified
+	if req.DistanceMetric != "" {
+		if err := ValidateDistanceMetric(req.DistanceMetric, h.compatMode); err != nil {
+			releaseOnError(err)
+			return nil, err
+		}
 	}
 
 	// Validate and convert schema update if provided
@@ -1290,6 +1313,18 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 		}
 	}
 
+	// Parse distance_metric
+	if dm, ok := body["distance_metric"]; ok {
+		dmStr, ok := dm.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: distance_metric must be a string", ErrInvalidRequest)
+		}
+		if dmStr == "" {
+			return nil, fmt.Errorf("%w: distance_metric must be non-empty", ErrInvalidDistanceMetric)
+		}
+		req.DistanceMetric = dmStr
+	}
+
 	return req, nil
 }
 
@@ -1593,4 +1628,22 @@ func buildSchemaChecker(schema *namespace.Schema) filter.SchemaChecker {
 		}
 	}
 	return filter.NewNamespaceSchemaAdapter(regexAttrs)
+}
+
+// ValidateDistanceMetric validates a distance_metric value against the compatibility mode.
+// Returns an error if the metric is not allowed in the given compat mode.
+func ValidateDistanceMetric(metric string, compatMode string) error {
+	// Valid metrics: cosine_distance, euclidean_squared, dot_product (Vex-only)
+	switch metric {
+	case "cosine_distance", "euclidean_squared":
+		return nil
+	case "dot_product":
+		// dot_product is only allowed in "vex" compat mode
+		if compatMode == "turbopuffer" || compatMode == "" {
+			return ErrDotProductNotAllowed
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: %q is not a valid distance metric", ErrInvalidDistanceMetric, metric)
+	}
 }
