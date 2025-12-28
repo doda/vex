@@ -24,14 +24,16 @@ const (
 )
 
 var (
-	ErrRankByRequired       = errors.New("rank_by is required unless aggregate_by is specified")
-	ErrInvalidRankBy        = errors.New("invalid rank_by expression")
-	ErrInvalidLimit         = errors.New("limit/top_k must be between 1 and 10,000")
-	ErrInvalidFilter        = errors.New("invalid filter expression")
-	ErrInvalidRequest       = errors.New("invalid query request")
-	ErrNamespaceNotFound    = errors.New("namespace not found")
-	ErrAttributeConflict    = errors.New("cannot specify both include_attributes and exclude_attributes")
+	ErrRankByRequired        = errors.New("rank_by is required unless aggregate_by is specified")
+	ErrInvalidRankBy         = errors.New("invalid rank_by expression")
+	ErrInvalidLimit          = errors.New("limit/top_k must be between 1 and 10,000")
+	ErrInvalidFilter         = errors.New("invalid filter expression")
+	ErrInvalidRequest        = errors.New("invalid query request")
+	ErrNamespaceNotFound     = errors.New("namespace not found")
+	ErrAttributeConflict     = errors.New("cannot specify both include_attributes and exclude_attributes")
 	ErrInvalidVectorEncoding = errors.New("vector_encoding must be 'float' or 'base64'")
+	ErrInvalidConsistency    = errors.New("consistency must be 'strong' or 'eventual'")
+	ErrSnapshotRefreshFailed = errors.New("failed to refresh snapshot for strong consistency")
 )
 
 // QueryRequest represents a query request from the API.
@@ -126,14 +128,15 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		return nil, err
 	}
 
-	// Refresh tail to WAL head for strong consistency
-	if req.Consistency != "eventual" {
+	// Strong consistency is the default: refresh tail to WAL head to include all committed writes
+	isStrongConsistency := req.Consistency != "eventual"
+	if isStrongConsistency {
 		if h.tailStore != nil {
 			headSeq := loaded.State.WAL.HeadSeq
 			indexedSeq := loaded.State.Index.IndexedWALSeq
 			if headSeq > indexedSeq {
 				if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
-					return nil, err
+					return nil, fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
 				}
 			}
 		}
@@ -211,6 +214,11 @@ func (h *Handler) validateRequest(req *QueryRequest) error {
 	// Validate vector_encoding if specified
 	if req.VectorEncoding != "" && req.VectorEncoding != "float" && req.VectorEncoding != "base64" {
 		return ErrInvalidVectorEncoding
+	}
+
+	// Validate consistency if specified
+	if req.Consistency != "" && req.Consistency != "strong" && req.Consistency != "eventual" {
+		return ErrInvalidConsistency
 	}
 
 	return nil

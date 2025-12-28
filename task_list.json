@@ -674,7 +674,7 @@
       "Verify cache is refreshed for strong queries",
       "Test strong query fails if snapshot cannot be refreshed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-consistency-eventual",

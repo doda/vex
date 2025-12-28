@@ -187,3 +187,12 @@ KEY DEPENDENCIES:
 - No correctness issues found.
 - Tests not re-run (per instruction to trust prior runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T03:07:35.000Z] Completed query-consistency-strong: Review strong consistency default implementation
+- Reviewed staged changes in `internal/query/handler.go`, `pkg/api/router.go`, and new tests in `internal/query/consistency_test.go`.
+- Verified strong consistency is default (empty consistency treated as strong) and validation accepts strong/eventual only.
+- Verified strong queries refresh tail to WAL head and include all committed WAL entries.
+- Verified refresh errors are wrapped as ErrSnapshotRefreshFailed and mapped to 503 in API.
+- Verified eventual consistency skips refresh and remains available when refresh fails.
+- No correctness issues found.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

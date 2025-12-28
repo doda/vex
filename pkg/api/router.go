@@ -530,7 +530,7 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrBadRequest("limit/top_k must be between 1 and 10,000"))
 				return
 			}
-			if errors.Is(err, query.ErrInvalidRankBy) || errors.Is(err, query.ErrInvalidFilter) || errors.Is(err, query.ErrAttributeConflict) || errors.Is(err, query.ErrInvalidVectorEncoding) {
+			if errors.Is(err, query.ErrInvalidRankBy) || errors.Is(err, query.ErrInvalidFilter) || errors.Is(err, query.ErrAttributeConflict) || errors.Is(err, query.ErrInvalidVectorEncoding) || errors.Is(err, query.ErrInvalidConsistency) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
 				return
 			}
@@ -540,6 +540,10 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 			}
 			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
 				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			if errors.Is(err, query.ErrSnapshotRefreshFailed) {
+				r.writeAPIError(w, ErrServiceUnavailable("failed to refresh snapshot for strong consistency query"))
 				return
 			}
 			r.writeAPIError(w, ErrInternalServer(err.Error()))
