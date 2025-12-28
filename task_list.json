@@ -1483,7 +1483,7 @@
       "Verify WAL and index objects cleaned up",
       "Test tombstone preserved for fast rejection"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "recall-debug-endpoint",
