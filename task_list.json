@@ -1622,7 +1622,7 @@
       "Verify strong queries fail when snapshot cannot be refreshed",
       "Test eventual queries may serve from cache if not too stale"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "failure-partial-wal-commit",

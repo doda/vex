@@ -584,3 +584,13 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T17:37:08.000Z] Completed failure-object-store-unavailable: Review object store unavailable handling tests
+- Reviewed new tests in `pkg/api/object_store_unavailable_test.go`.
+- Verified write path test exercises 503 when object store state marked unavailable.
+- Verified strong consistency query tests expect ErrSnapshotRefreshFailed on refresh failure.
+- Verified eventual consistency queries read from cached tail data when refresh fails.
+- Verified vector eventual query includes $dist and uses cached docs.
+- Simplicity check: mock tail store is minimal and covers interface needs.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
