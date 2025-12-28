@@ -295,7 +295,7 @@ func TestParseRankBy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseRankBy(tt.rankBy)
+			got, err := parseRankBy(tt.rankBy, "")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseRankBy() error = %v, wantErr %v", err, tt.wantErr)
 				return

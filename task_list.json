@@ -637,7 +637,7 @@
       "Verify cosine_distance metric works correctly",
       "Verify euclidean_squared metric works correctly"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-order-by-attribute",

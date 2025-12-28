@@ -10,6 +10,7 @@ import (
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
+	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
@@ -137,7 +138,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 	}
 
 	// Parse the rank_by expression
-	parsed, err := parseRankBy(req.RankBy)
+	parsed, err := parseRankBy(req.RankBy, req.VectorEncoding)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +157,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 	if parsed != nil {
 		switch parsed.Type {
 		case RankByVector:
-			rows, err = h.executeVectorQuery(ctx, ns, parsed, f, req)
+			rows, err = h.executeVectorQuery(ctx, ns, loaded, parsed, f, req)
 		case RankByAttr:
 			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req)
 		case RankByBM25:
@@ -214,7 +215,7 @@ func (h *Handler) validateRequest(req *QueryRequest) error {
 }
 
 // parseRankBy parses the rank_by expression.
-func parseRankBy(rankBy any) (*ParsedRankBy, error) {
+func parseRankBy(rankBy any, vectorEncoding string) (*ParsedRankBy, error) {
 	if rankBy == nil {
 		return nil, nil
 	}
@@ -242,7 +243,7 @@ func parseRankBy(rankBy any) (*ParsedRankBy, error) {
 		if !ok || op != "ANN" {
 			return nil, ErrInvalidRankBy
 		}
-		vec, err := parseVector(arr[2])
+		vec, err := parseVector(arr[2], vectorEncoding)
 		if err != nil {
 			return nil, err
 		}
@@ -276,46 +277,57 @@ func parseRankBy(rankBy any) (*ParsedRankBy, error) {
 }
 
 // parseVector parses a vector from the query (float array or base64).
-func parseVector(v any) ([]float32, error) {
-	switch vec := v.(type) {
-	case []any:
-		result := make([]float32, len(vec))
-		for i, val := range vec {
-			switch n := val.(type) {
-			case float64:
-				result[i] = float32(n)
-			case float32:
-				result[i] = n
-			case int:
-				result[i] = float32(n)
-			case int64:
-				result[i] = float32(n)
-			default:
-				return nil, ErrInvalidRankBy
-			}
+func parseVector(v any, vectorEncoding string) ([]float32, error) {
+	if vectorEncoding == "" {
+		vectorEncoding = string(vector.DefaultEncoding)
+	}
+
+	switch vectorEncoding {
+	case "base64":
+		decoded, err := vector.DecodeVectorWithEncoding(v, 0, vector.EncodingBase64)
+		if err != nil {
+			return nil, ErrInvalidRankBy
 		}
-		return result, nil
-	case []float64:
-		result := make([]float32, len(vec))
-		for i, val := range vec {
-			result[i] = float32(val)
+		return decoded, nil
+	case "float":
+		if _, ok := v.(string); ok {
+			return nil, ErrInvalidRankBy
 		}
-		return result, nil
-	case []float32:
-		return vec, nil
+		decoded, err := vector.DecodeVectorWithEncoding(v, 0, vector.EncodingFloat)
+		if err != nil {
+			return nil, ErrInvalidRankBy
+		}
+		return decoded, nil
 	default:
-		return nil, ErrInvalidRankBy
+		decoded, err := vector.DecodeVector(v, 0)
+		if err != nil {
+			return nil, ErrInvalidRankBy
+		}
+		return decoded, nil
 	}
 }
 
 // executeVectorQuery executes a vector ANN query.
-func (h *Handler) executeVectorQuery(ctx context.Context, ns string, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
+func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
 	if h.tailStore == nil {
 		return nil, nil
 	}
 
+	// Determine distance metric from namespace config or use default
+	metric := tail.MetricCosineDistance
+	if loaded.State.Vector != nil && loaded.State.Vector.DistanceMetric != "" {
+		switch loaded.State.Vector.DistanceMetric {
+		case string(vector.MetricCosineDistance):
+			metric = tail.MetricCosineDistance
+		case string(vector.MetricEuclideanSquared):
+			metric = tail.MetricEuclideanSquared
+		case string(vector.MetricDotProduct):
+			metric = tail.MetricDotProduct
+		}
+	}
+
 	// Perform exhaustive vector scan on tail (no ANN index yet)
-	results, err := h.tailStore.VectorScan(ctx, ns, parsed.QueryVector, req.Limit, tail.MetricCosineDistance, f)
+	results, err := h.tailStore.VectorScan(ctx, ns, parsed.QueryVector, req.Limit, metric, f)
 	if err != nil {
 		return nil, err
 	}

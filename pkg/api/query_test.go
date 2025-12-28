@@ -117,6 +117,24 @@ func TestQueryAPI(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			name:      "vector ANN query with base64 encoding",
+			namespace: "test-ns",
+			body: map[string]any{
+				"rank_by":         []any{"vector", "ANN", "AACAPwAAAEAAAEBA"}, // [1.0, 2.0, 3.0] as base64
+				"vector_encoding": "base64",
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:      "vector ANN query with float encoding",
+			namespace: "test-ns",
+			body: map[string]any{
+				"rank_by":         []any{"vector", "ANN", []any{1.0, 2.0, 3.0}},
+				"vector_encoding": "float",
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
 			name:      "namespace not found",
 			namespace: "nonexistent",
 			body: map[string]any{
