@@ -412,3 +412,287 @@ func TestBM25ScoreComputation(t *testing.T) {
 		// This is verified by the ranking behavior in execution tests
 	})
 }
+
+func TestBM25PrefixQuery(t *testing.T) {
+	ctx := context.Background()
+
+	// Create test documents for typeahead/prefix matching
+	docs := []*tail.Document{
+		{
+			ID: document.NewU64ID(1),
+			Attributes: map[string]any{
+				"title": "The quick brown fox",
+			},
+			WalSeq: 1,
+		},
+		{
+			ID: document.NewU64ID(2),
+			Attributes: map[string]any{
+				"title": "Hello world example",
+			},
+			WalSeq: 1,
+		},
+		{
+			ID: document.NewU64ID(3),
+			Attributes: map[string]any{
+				"title": "Another document here",
+			},
+			WalSeq: 1,
+		},
+		{
+			ID: document.NewU64ID(4),
+			Attributes: map[string]any{
+				"title": "Quick start guide",
+			},
+			WalSeq: 1,
+		},
+	}
+
+	mockTail := &mockTailStoreForBM25{docs: docs}
+	mockStore := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(mockStore)
+	handler := NewHandler(mockStore, stateMan, mockTail)
+
+	ftsConfig := map[string]any{
+		"tokenizer":        "word_v3",
+		"case_sensitive":   false,
+		"remove_stopwords": true,
+	}
+	ftsJSON, _ := json.Marshal(ftsConfig)
+
+	t.Run("last_as_prefix parsing - string format", func(t *testing.T) {
+		// Test that string format still works
+		parsed, err := parseRankBy([]any{"title", "BM25", "quick"}, "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if parsed.Type != RankByBM25 {
+			t.Errorf("expected RankByBM25, got %v", parsed.Type)
+		}
+		if parsed.QueryText != "quick" {
+			t.Errorf("expected query 'quick', got %q", parsed.QueryText)
+		}
+		if parsed.LastAsPrefix {
+			t.Error("expected LastAsPrefix to be false for string format")
+		}
+	})
+
+	t.Run("last_as_prefix parsing - object format with prefix true", func(t *testing.T) {
+		parsed, err := parseRankBy([]any{"title", "BM25", map[string]any{
+			"query":          "qui",
+			"last_as_prefix": true,
+		}}, "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if parsed.Type != RankByBM25 {
+			t.Errorf("expected RankByBM25, got %v", parsed.Type)
+		}
+		if parsed.QueryText != "qui" {
+			t.Errorf("expected query 'qui', got %q", parsed.QueryText)
+		}
+		if !parsed.LastAsPrefix {
+			t.Error("expected LastAsPrefix to be true")
+		}
+	})
+
+	t.Run("last_as_prefix parsing - object format with prefix false", func(t *testing.T) {
+		parsed, err := parseRankBy([]any{"title", "BM25", map[string]any{
+			"query":          "quick",
+			"last_as_prefix": false,
+		}}, "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if parsed.LastAsPrefix {
+			t.Error("expected LastAsPrefix to be false")
+		}
+	})
+
+	t.Run("prefix matching finds documents", func(t *testing.T) {
+		loadedState := &namespace.LoadedState{
+			State: &namespace.State{
+				Schema: &namespace.Schema{
+					Attributes: map[string]namespace.AttributeSchema{
+						"title": {
+							Type:           "string",
+							FullTextSearch: ftsJSON,
+						},
+					},
+				},
+			},
+		}
+
+		// Search for "qui" as prefix - should match "quick" in docs 1 and 4
+		parsed := &ParsedRankBy{
+			Type:         RankByBM25,
+			Field:        "title",
+			QueryText:    "qui",
+			LastAsPrefix: true,
+		}
+
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Should return docs containing words starting with "qui"
+		if len(rows) != 2 {
+			t.Errorf("expected 2 results for prefix 'qui', got %d", len(rows))
+		}
+	})
+
+	t.Run("prefix matches score 1.0", func(t *testing.T) {
+		loadedState := &namespace.LoadedState{
+			State: &namespace.State{
+				Schema: &namespace.Schema{
+					Attributes: map[string]namespace.AttributeSchema{
+						"title": {
+							Type:           "string",
+							FullTextSearch: ftsJSON,
+						},
+					},
+				},
+			},
+		}
+
+		// Search for just "bro" as prefix - should match "brown" in doc 1
+		parsed := &ParsedRankBy{
+			Type:         RankByBM25,
+			Field:        "title",
+			QueryText:    "bro",
+			LastAsPrefix: true,
+		}
+
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(rows) != 1 {
+			t.Fatalf("expected 1 result for prefix 'bro', got %d", len(rows))
+		}
+
+		// The prefix match should score 1.0
+		if rows[0].Dist == nil {
+			t.Error("expected $dist to be set")
+		} else if *rows[0].Dist != 1.0 {
+			t.Errorf("expected prefix match score 1.0, got %f", *rows[0].Dist)
+		}
+	})
+
+	t.Run("multi-token with prefix on last token", func(t *testing.T) {
+		loadedState := &namespace.LoadedState{
+			State: &namespace.State{
+				Schema: &namespace.Schema{
+					Attributes: map[string]namespace.AttributeSchema{
+						"title": {
+							Type:           "string",
+							FullTextSearch: ftsJSON,
+						},
+					},
+				},
+			},
+		}
+
+		// Search for "quick bro" - "quick" exact, "bro" as prefix
+		// Doc 1 has "quick brown" - matches both quick (BM25 score) and bro* prefix (1.0)
+		// Doc 4 has "Quick" - only prefix "bro" doesn't match anything
+		parsed := &ParsedRankBy{
+			Type:         RankByBM25,
+			Field:        "title",
+			QueryText:    "quick bro",
+			LastAsPrefix: true,
+		}
+
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Doc 1 should match (has both "quick" and "brown")
+		// Doc 4 has "quick" but no "bro*" prefix match
+		// So only doc 1 should be returned
+		if len(rows) != 1 {
+			t.Errorf("expected 1 result for 'quick bro', got %d", len(rows))
+			for _, r := range rows {
+				t.Logf("  got doc %v with score %v", r.ID, r.Dist)
+			}
+		}
+		if len(rows) > 0 && rows[0].ID != uint64(1) {
+			t.Errorf("expected doc 1, got %v", rows[0].ID)
+		}
+	})
+
+	t.Run("typeahead scenario simulation", func(t *testing.T) {
+		loadedState := &namespace.LoadedState{
+			State: &namespace.State{
+				Schema: &namespace.Schema{
+					Attributes: map[string]namespace.AttributeSchema{
+						"title": {
+							Type:           "string",
+							FullTextSearch: ftsJSON,
+						},
+					},
+				},
+			},
+		}
+
+		// Simulate typing "hel" -> should match "hello" in doc 2
+		parsed1 := &ParsedRankBy{
+			Type:         RankByBM25,
+			Field:        "title",
+			QueryText:    "hel",
+			LastAsPrefix: true,
+		}
+		rows1, _ := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed1, nil, &QueryRequest{Limit: 10})
+		if len(rows1) != 1 {
+			t.Errorf("expected 1 result for 'hel', got %d", len(rows1))
+		}
+
+		// Simulate typing "hello wor" -> should match "hello world" in doc 2
+		parsed2 := &ParsedRankBy{
+			Type:         RankByBM25,
+			Field:        "title",
+			QueryText:    "hello wor",
+			LastAsPrefix: true,
+		}
+		rows2, _ := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed2, nil, &QueryRequest{Limit: 10})
+		if len(rows2) != 1 {
+			t.Errorf("expected 1 result for 'hello wor', got %d", len(rows2))
+		}
+	})
+
+	t.Run("without prefix - exact match required", func(t *testing.T) {
+		loadedState := &namespace.LoadedState{
+			State: &namespace.State{
+				Schema: &namespace.Schema{
+					Attributes: map[string]namespace.AttributeSchema{
+						"title": {
+							Type:           "string",
+							FullTextSearch: ftsJSON,
+						},
+					},
+				},
+			},
+		}
+
+		// Search for "qui" without prefix - should NOT match since "qui" != "quick"
+		parsed := &ParsedRankBy{
+			Type:         RankByBM25,
+			Field:        "title",
+			QueryText:    "qui",
+			LastAsPrefix: false,
+		}
+
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Should return no results since "qui" is not an exact token
+		if len(rows) != 0 {
+			t.Errorf("expected 0 results for exact 'qui', got %d", len(rows))
+		}
+	})
+}

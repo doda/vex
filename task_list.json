@@ -1248,7 +1248,7 @@
       "Test last_as_prefix: true for typeahead",
       "Verify prefix matches score 1.0"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "schema-index-rebuild",

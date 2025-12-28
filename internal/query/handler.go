@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/document"
@@ -135,12 +136,13 @@ const (
 
 // ParsedRankBy holds the parsed rank_by expression.
 type ParsedRankBy struct {
-	Type        RankByType
-	Field       string       // For attribute or BM25 ranking
-	Direction   string       // "asc" or "desc" for attribute ranking
-	QueryVector []float32    // For vector ANN
-	QueryText   string       // For BM25 text search
-	Clause      *RankClause  // For composite rank_by expressions (Sum, Max, Product, Filter)
+	Type         RankByType
+	Field        string      // For attribute or BM25 ranking
+	Direction    string      // "asc" or "desc" for attribute ranking
+	QueryVector  []float32   // For vector ANN
+	QueryText    string      // For BM25 text search
+	LastAsPrefix bool        // For BM25: treat last token as prefix for typeahead
+	Clause       *RankClause // For composite rank_by expressions (Sum, Max, Product, Filter)
 }
 
 // DefaultNProbe is the default number of centroids to probe in ANN search.
@@ -453,18 +455,19 @@ func parseRankBy(rankBy any, vectorEncoding string) (*ParsedRankBy, error) {
 		}, nil
 	}
 
-	// Check for BM25: ["field", "BM25", "query"]
+	// Check for BM25: ["field", "BM25", "query"] or ["field", "BM25", {"query": "...", "last_as_prefix": true}]
 	if len(arr) >= 3 {
 		op, ok := arr[1].(string)
 		if ok && op == "BM25" {
-			queryText, ok := arr[2].(string)
-			if !ok {
-				return nil, ErrInvalidRankBy
+			queryText, lastAsPrefix, err := parseBM25QueryArg(arr[2])
+			if err != nil {
+				return nil, err
 			}
 			return &ParsedRankBy{
-				Type:      RankByBM25,
-				Field:     field,
-				QueryText: queryText,
+				Type:         RankByBM25,
+				Field:        field,
+				QueryText:    queryText,
+				LastAsPrefix: lastAsPrefix,
 			}, nil
 		}
 	}
@@ -479,6 +482,27 @@ func parseRankBy(rankBy any, vectorEncoding string) (*ParsedRankBy, error) {
 		Field:     field,
 		Direction: dir,
 	}, nil
+}
+
+// parseBM25QueryArg parses the BM25 query argument which can be:
+// 1. A string: "hello world"
+// 2. An object: {"query": "hello wor", "last_as_prefix": true}
+func parseBM25QueryArg(v any) (queryText string, lastAsPrefix bool, err error) {
+	switch val := v.(type) {
+	case string:
+		return val, false, nil
+	case map[string]any:
+		q, ok := val["query"].(string)
+		if !ok {
+			return "", false, ErrInvalidRankBy
+		}
+		if lap, ok := val["last_as_prefix"].(bool); ok {
+			lastAsPrefix = lap
+		}
+		return q, lastAsPrefix, nil
+	default:
+		return "", false, ErrInvalidRankBy
+	}
 }
 
 // parseVector parses a vector from the query (float array or base64).
@@ -760,6 +784,8 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *Parse
 // executeBM25Query executes a BM25 full-text search query.
 // It searches the tail for documents matching the query and ranks them by BM25 score.
 // Documents with zero score are excluded from results.
+// When LastAsPrefix is true, the last token is matched as a prefix for typeahead support,
+// and prefix matches score 1.0 (as per turbopuffer spec).
 func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
 	if h.tailStore == nil {
 		return nil, nil
@@ -820,7 +846,7 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 		return []Row{}, nil
 	}
 
-	// Score documents using BM25
+	// Score documents using BM25 (with optional prefix matching for last token)
 	type scoredDoc struct {
 		doc   *tail.Document
 		score float64
@@ -828,7 +854,7 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 	var scored []scoredDoc
 
 	for docID, doc := range docIDMap {
-		score := computeBM25Score(index, docID, queryTokens)
+		score := computeBM25ScoreWithPrefix(index, docID, queryTokens, parsed.LastAsPrefix, ftsCfg)
 		if score > 0 {
 			scored = append(scored, scoredDoc{doc: doc, score: score})
 		}
@@ -931,6 +957,90 @@ func computeBM25Score(idx *fts.Index, docID uint32, queryTokens []string) float6
 	}
 
 	return score
+}
+
+// computeBM25ScoreWithPrefix computes the BM25 score with optional prefix matching for the last token.
+// When lastAsPrefix is true:
+// - The last query token is matched as a prefix and scores 1.0 if it matches
+// - ALL non-prefix tokens must be present in the document (typeahead requires all tokens)
+// - ALL matches are required for a non-zero score (consistent with ContainsAllTokens filter)
+// This supports typeahead/autocomplete scenarios where users type partial words.
+func computeBM25ScoreWithPrefix(idx *fts.Index, docID uint32, queryTokens []string, lastAsPrefix bool, ftsCfg *fts.Config) float64 {
+	if len(queryTokens) == 0 {
+		return 0
+	}
+
+	// For non-prefix mode, use standard BM25
+	if !lastAsPrefix {
+		return computeBM25Score(idx, docID, queryTokens)
+	}
+
+	// Prefix mode: require ALL tokens to match for typeahead behavior
+	k1 := idx.Config.K1
+	b := idx.Config.B
+	avgDL := idx.AvgDocLength
+	docLen := float64(idx.GetDocLength(docID))
+	n := float64(idx.TotalDocs)
+
+	var score float64
+
+	// Determine how many tokens to process with normal BM25
+	normalTokenCount := len(queryTokens) - 1
+
+	// Score non-prefix tokens using standard BM25, but require ALL to be present
+	for i := 0; i < normalTokenCount; i++ {
+		term := queryTokens[i]
+		tf := float64(idx.GetTermFrequency(term, docID))
+		if tf == 0 {
+			// Required token not found - no match for typeahead
+			return 0
+		}
+
+		df := float64(idx.GetDocumentFrequency(term))
+		if df == 0 {
+			return 0
+		}
+
+		// IDF: log((N - df + 0.5) / (df + 0.5) + 1)
+		idf := math.Log((n-df+0.5)/(df+0.5) + 1)
+
+		// BM25 term score: IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docLen / avgDL)))
+		denominator := tf + k1*(1-b+b*(docLen/avgDL))
+		if denominator > 0 {
+			score += idf * (tf * (k1 + 1)) / denominator
+		}
+	}
+
+	// Handle the last token with prefix matching
+	lastToken := queryTokens[len(queryTokens)-1]
+	prefixMatched := docHasPrefixMatch(idx, docID, lastToken)
+	if !prefixMatched {
+		// Prefix token didn't match - no match for typeahead
+		return 0
+	}
+	// Prefix matches score 1.0 as per spec
+	score += 1.0
+
+	return score
+}
+
+// docHasPrefixMatch checks if a document contains any term that starts with the given prefix.
+func docHasPrefixMatch(idx *fts.Index, docID uint32, prefix string) bool {
+	// First check for exact match (which is also a valid prefix match)
+	if idx.GetTermFrequency(prefix, docID) > 0 {
+		return true
+	}
+
+	// Check all terms in the index for prefix matches
+	// This could be optimized with a trie or sorted term list, but for now iterate
+	for term := range idx.TermPostings {
+		if strings.HasPrefix(term, prefix) {
+			if idx.GetTermFrequency(term, docID) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // executeCompositeQuery executes a composite rank_by query.

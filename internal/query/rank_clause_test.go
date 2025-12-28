@@ -931,3 +931,150 @@ func TestZeroScoreExclusion(t *testing.T) {
 		t.Errorf("expected doc 1 to be the only result, got %v", rows[0].ID)
 	}
 }
+
+func TestRankClausePrefixMatching(t *testing.T) {
+	docs := []*tail.Document{
+		{
+			ID:         document.NewU64ID(1),
+			Attributes: map[string]any{"title": "hello world"},
+		},
+		{
+			ID:         document.NewU64ID(2),
+			Attributes: map[string]any{"title": "hello there"},
+		},
+		{
+			ID:         document.NewU64ID(3),
+			Attributes: map[string]any{"title": "goodbye world"},
+		},
+	}
+
+	configs := map[string]*fts.Config{
+		"title": fts.DefaultConfig(),
+	}
+
+	t.Run("BM25 clause with last_as_prefix parsing", func(t *testing.T) {
+		// Test parsing BM25 clause with last_as_prefix in object format
+		clause, err := ParseRankClause([]any{"title", "BM25", map[string]any{
+			"query":          "hel",
+			"last_as_prefix": true,
+		}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if clause.Type != RankClauseBM25 {
+			t.Errorf("expected RankClauseBM25, got %v", clause.Type)
+		}
+		if clause.QueryText != "hel" {
+			t.Errorf("expected query 'hel', got %q", clause.QueryText)
+		}
+		if !clause.LastAsPrefix {
+			t.Error("expected LastAsPrefix to be true")
+		}
+	})
+
+	t.Run("BM25 clause with prefix matching scores correctly", func(t *testing.T) {
+		clause := &RankClause{
+			Type:         RankClauseBM25,
+			Field:        "title",
+			QueryText:    "hel",
+			LastAsPrefix: true,
+		}
+
+		scorer := NewRankScorer(clause, configs)
+		scorer.BuildIndexes(docs)
+
+		// Docs 1 and 2 have "hello" which matches prefix "hel"
+		score1 := scorer.Score(docs[0], 0)
+		score2 := scorer.Score(docs[1], 1)
+		// Doc 3 has "goodbye" which doesn't match prefix "hel"
+		score3 := scorer.Score(docs[2], 2)
+
+		// Docs 1 and 2 should have score 1.0 (prefix match score)
+		if score1 != 1.0 {
+			t.Errorf("expected score 1.0 for prefix match, got %f", score1)
+		}
+		if score2 != 1.0 {
+			t.Errorf("expected score 1.0 for prefix match, got %f", score2)
+		}
+		if score3 != 0 {
+			t.Errorf("expected score 0 for non-matching doc, got %f", score3)
+		}
+	})
+
+	t.Run("multi-token prefix matching requires all tokens", func(t *testing.T) {
+		clause := &RankClause{
+			Type:         RankClauseBM25,
+			Field:        "title",
+			QueryText:    "hello wor",
+			LastAsPrefix: true,
+		}
+
+		scorer := NewRankScorer(clause, configs)
+		scorer.BuildIndexes(docs)
+
+		// Doc 1 has "hello world" - matches "hello" exact and "wor" prefix
+		score1 := scorer.Score(docs[0], 0)
+		// Doc 2 has "hello there" - matches "hello" but not "wor" prefix
+		score2 := scorer.Score(docs[1], 1)
+		// Doc 3 has "goodbye world" - doesn't match "hello"
+		score3 := scorer.Score(docs[2], 2)
+
+		if score1 <= 0 {
+			t.Errorf("expected positive score for doc 1, got %f", score1)
+		}
+		if score2 != 0 {
+			t.Errorf("expected score 0 for doc 2 (no 'wor' prefix), got %f", score2)
+		}
+		if score3 != 0 {
+			t.Errorf("expected score 0 for doc 3 (no 'hello'), got %f", score3)
+		}
+	})
+
+	t.Run("prefix in Sum composite", func(t *testing.T) {
+		clause := &RankClause{
+			Type: RankClauseSum,
+			Clauses: []*RankClause{
+				{Type: RankClauseBM25, Field: "title", QueryText: "hel", LastAsPrefix: true},
+				{Type: RankClauseBM25, Field: "title", QueryText: "wor", LastAsPrefix: true},
+			},
+		}
+
+		scorer := NewRankScorer(clause, configs)
+		scorer.BuildIndexes(docs)
+
+		// Doc 1 has "hello world" - matches both prefixes
+		score1 := scorer.Score(docs[0], 0)
+		// Doc 2 has "hello there" - matches only "hel"
+		score2 := scorer.Score(docs[1], 1)
+		// Doc 3 has "goodbye world" - matches only "wor"
+		score3 := scorer.Score(docs[2], 2)
+
+		// Sum of two 1.0 scores = 2.0
+		if score1 != 2.0 {
+			t.Errorf("expected score 2.0 for doc 1 (both prefixes), got %f", score1)
+		}
+		if score2 != 1.0 {
+			t.Errorf("expected score 1.0 for doc 2 (one prefix), got %f", score2)
+		}
+		if score3 != 1.0 {
+			t.Errorf("expected score 1.0 for doc 3 (one prefix), got %f", score3)
+		}
+	})
+
+	t.Run("prefix in Product composite", func(t *testing.T) {
+		clause := &RankClause{
+			Type:   RankClauseProduct,
+			Weight: 5.0,
+			Clause: &RankClause{Type: RankClauseBM25, Field: "title", QueryText: "hel", LastAsPrefix: true},
+		}
+
+		scorer := NewRankScorer(clause, configs)
+		scorer.BuildIndexes(docs)
+
+		// Doc 1 matches prefix - score should be 5.0 (5 * 1.0)
+		score1 := scorer.Score(docs[0], 0)
+		if score1 != 5.0 {
+			t.Errorf("expected score 5.0 (5 * prefix score), got %f", score1)
+		}
+	})
+}

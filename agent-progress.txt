@@ -449,3 +449,13 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T13:59:00.000Z] Completed bm25-prefix-query: Review BM25 prefix matching with last_as_prefix
+- Reviewed BM25 prefix parsing and execution in `internal/query/handler.go` and `internal/query/rank_clause.go`.
+- Reviewed prefix-specific tests in `internal/query/bm25_query_test.go` and `internal/query/rank_clause_test.go`.
+- Verified last_as_prefix parsing accepts string and object formats and propagates into scoring.
+- Verified prefix matching requires all tokens, scores prefix token as 1.0, and excludes non-matching docs.
+- Verified composite rank clauses pass LastAsPrefix into scoring.
+- Simplicity check: logic is straightforward and consistent with existing BM25 scoring.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

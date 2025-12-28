@@ -25,8 +25,9 @@ type RankClause struct {
 	Type RankClauseType
 
 	// For BM25
-	Field     string
-	QueryText string
+	Field        string
+	QueryText    string
+	LastAsPrefix bool // Treat last token as prefix for typeahead
 
 	// For Sum/Max
 	Clauses []*RankClause
@@ -154,7 +155,7 @@ func parseProductClause(arr []any) (*RankClause, error) {
 	}, nil
 }
 
-// parseBM25Clause parses ["field", "BM25", "query"]
+// parseBM25Clause parses ["field", "BM25", "query"] or ["field", "BM25", {"query": "...", "last_as_prefix": true}]
 func parseBM25Clause(arr []any) (*RankClause, error) {
 	if len(arr) < 3 {
 		return nil, ErrInvalidRankBy
@@ -165,15 +166,30 @@ func parseBM25Clause(arr []any) (*RankClause, error) {
 		return nil, ErrInvalidRankBy
 	}
 
-	queryText, ok := arr[2].(string)
-	if !ok {
+	var queryText string
+	var lastAsPrefix bool
+
+	switch v := arr[2].(type) {
+	case string:
+		queryText = v
+	case map[string]any:
+		q, ok := v["query"].(string)
+		if !ok {
+			return nil, ErrInvalidRankBy
+		}
+		queryText = q
+		if lap, ok := v["last_as_prefix"].(bool); ok {
+			lastAsPrefix = lap
+		}
+	default:
 		return nil, ErrInvalidRankBy
 	}
 
 	return &RankClause{
-		Type:      RankClauseBM25,
-		Field:     field,
-		QueryText: queryText,
+		Type:         RankClauseBM25,
+		Field:        field,
+		QueryText:    queryText,
+		LastAsPrefix: lastAsPrefix,
 	}, nil
 }
 
@@ -325,6 +341,7 @@ func (s *RankScorer) scoreClause(c *RankClause, doc *tail.Document, internalDocI
 }
 
 // scoreBM25 computes BM25 score for a document.
+// When LastAsPrefix is true, the last token is matched as a prefix and scores 1.0.
 func (s *RankScorer) scoreBM25(c *RankClause, doc *tail.Document, internalDocID uint32) float64 {
 	idx := s.ftsIndexes[c.Field]
 	if idx == nil || idx.TotalDocs == 0 {
@@ -347,7 +364,7 @@ func (s *RankScorer) scoreBM25(c *RankClause, doc *tail.Document, internalDocID 
 		return 0
 	}
 
-	return computeBM25Score(idx, internalDocID, queryTokens)
+	return computeBM25ScoreWithPrefix(idx, internalDocID, queryTokens, c.LastAsPrefix, cfg)
 }
 
 // scoreSum sums the scores from all sub-clauses.
