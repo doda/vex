@@ -488,3 +488,13 @@ KEY DEPENDENCIES:
 - Issues found: invalid self API address fallback (resolved).
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T15:05:12.000Z] Completed metadata-endpoint: Review GET /v1/namespaces/:namespace/metadata
+- Reviewed metadata response construction in `pkg/api/router.go`.
+- Reviewed new endpoint tests in `pkg/api/metadata_test.go`.
+- Verified namespace existence/tombstone handling maps to 404s.
+- Verified response includes schema, approx stats, created_at/updated_at, encryption, and index status.
+- Verified index status uses WAL/index seqs and includes unindexed_bytes when updating.
+- Simplicity check: logic follows existing state manager patterns with fallback test state.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

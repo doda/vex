@@ -318,7 +318,62 @@ func (r *Router) handleGetMetadata(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Metadata requires the namespace to exist
+	// Try to load state from the real state manager first
+	if r.stateManager != nil {
+		loaded, err := r.stateManager.Load(req.Context(), ns)
+		if err != nil {
+			if errors.Is(err, namespace.ErrStateNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+
+		state := loaded.State
+
+		// Build response from real namespace state
+		indexStatus := "up-to-date"
+		if state.Index.Status != "" {
+			indexStatus = state.Index.Status
+		}
+		if state.WAL.HeadSeq > state.Index.IndexedWALSeq {
+			indexStatus = "updating"
+		}
+
+		indexObj := map[string]interface{}{
+			"status": indexStatus,
+		}
+		if indexStatus == "updating" && state.WAL.BytesUnindexedEst > 0 {
+			indexObj["unindexed_bytes"] = state.WAL.BytesUnindexedEst
+		}
+
+		response := map[string]interface{}{
+			"namespace":            ns,
+			"approx_row_count":     int64(0),
+			"approx_logical_bytes": int64(0),
+			"created_at":           state.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
+			"updated_at":           state.UpdatedAt.Format("2006-01-02T15:04:05.000Z"),
+			"encryption": map[string]interface{}{
+				"sse": true,
+			},
+			"index": indexObj,
+		}
+
+		// Include schema if present
+		if state.Schema != nil && len(state.Schema.Attributes) > 0 {
+			response["schema"] = state.Schema
+		}
+
+		r.writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	// Fallback to test-mode state for backward compatibility
 	if err := r.checkNamespaceExists(ns, true); err != nil {
 		r.writeAPIError(w, err)
 		return
@@ -332,18 +387,23 @@ func (r *Router) handleGetMetadata(w http.ResponseWriter, req *http.Request) {
 		unindexedBytes = nsState.UnindexedBytes
 	}
 
-	response := map[string]interface{}{
-		"namespace":            ns,
-		"approx_row_count":     0,
-		"approx_logical_bytes": 0,
-		"created_at":           nil,
-		"updated_at":           nil,
-		"index": map[string]interface{}{
-			"status": indexStatus,
-		},
+	indexObj := map[string]interface{}{
+		"status": indexStatus,
 	}
 	if unindexedBytes != nil {
-		response["index"].(map[string]interface{})["unindexed_bytes"] = unindexedBytes
+		indexObj["unindexed_bytes"] = unindexedBytes
+	}
+
+	response := map[string]interface{}{
+		"namespace":            ns,
+		"approx_row_count":     int64(0),
+		"approx_logical_bytes": int64(0),
+		"created_at":           nil,
+		"updated_at":           nil,
+		"encryption": map[string]interface{}{
+			"sse": true,
+		},
+		"index": indexObj,
 	}
 	r.writeJSON(w, http.StatusOK, response)
 }

@@ -1408,7 +1408,7 @@
       "Verify index.status (updating or up-to-date)",
       "Test unindexed_bytes shown when updating"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "warm-cache-endpoint",
