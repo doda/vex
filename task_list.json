@@ -428,7 +428,7 @@
       "Test $ref_new references inside conditions",
       "Verify conditions are atomic with writing"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-conditional-patch",

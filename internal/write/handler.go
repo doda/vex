@@ -76,6 +76,7 @@ type WriteRequest struct {
 	PatchByFilter     *PatchByFilterRequest  // Optional patch_by_filter operation
 	CopyFromNamespace string                 // Optional: source namespace for server-side bulk copy
 	Schema            *SchemaUpdate          // Optional: explicit schema changes
+	UpsertCondition   any                    // Optional: condition evaluated against current doc for upserts
 }
 
 // ColumnarData represents columnar format data with ids and attribute arrays.
@@ -201,9 +202,17 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	if err != nil {
 		return nil, err
 	}
-	for _, row := range dedupedUpserts {
-		if err := h.processUpsertRow(row, subBatch); err != nil {
+
+	// If upsert_condition is specified, process conditionally
+	if req.UpsertCondition != nil {
+		if err := h.processConditionalUpserts(ctx, ns, loaded.State.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch); err != nil {
 			return nil, err
+		}
+	} else {
+		for _, row := range dedupedUpserts {
+			if err := h.processUpsertRow(row, subBatch); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -489,6 +498,109 @@ func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string,
 	}
 
 	return nil
+}
+
+// processConditionalUpserts processes upserts with a condition.
+// Conditional upsert semantics:
+//   - If doc missing → apply unconditionally
+//   - If doc exists and condition met → apply upsert
+//   - If doc exists and condition not met → skip
+//
+// The condition can contain $ref_new references that are resolved
+// to values from the new document being upserted.
+func (h *Handler) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch) error {
+	// We need a tail store to read existing documents
+	// If no tail store, we cannot evaluate conditions against existing docs
+	// In this case, treat all upserts as unconditional (applying them all)
+	if h.tailStore == nil {
+		for _, row := range rows {
+			if err := h.processUpsertRow(row, batch); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Refresh tail to ensure we have current data
+	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
+		return fmt.Errorf("failed to refresh tail for conditional upsert: %w", err)
+	}
+
+	for _, row := range rows {
+		// Extract and parse ID
+		rawID, ok := row["id"]
+		if !ok {
+			return fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
+		}
+		docID, err := document.ParseID(rawID)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidID, err)
+		}
+
+		// Get existing document
+		existingDoc, err := h.tailStore.GetDocument(ctx, ns, docID)
+		if err != nil {
+			return fmt.Errorf("failed to get existing document: %w", err)
+		}
+
+		// Build new doc attributes for $ref_new resolution (exclude id and vector)
+		newDocAttrs := make(map[string]any)
+		for k, v := range row {
+			if k == "id" || k == "vector" {
+				continue
+			}
+			newDocAttrs[k] = v
+		}
+
+		// Apply upsert based on conditional semantics
+		shouldApply, err := h.shouldApplyConditionalUpsert(existingDoc, condition, newDocAttrs)
+		if err != nil {
+			return err
+		}
+		if shouldApply {
+			if err := h.processUpsertRow(row, batch); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// shouldApplyConditionalUpsert determines whether an upsert should be applied.
+// Conditional upsert semantics:
+//   - doc missing → apply unconditionally (return true)
+//   - doc exists + condition met → apply (return true)
+//   - doc exists + condition not met → skip (return false)
+func (h *Handler) shouldApplyConditionalUpsert(existingDoc *tail.Document, condition any, newDocAttrs map[string]any) (bool, error) {
+	// If document doesn't exist, apply unconditionally
+	if existingDoc == nil {
+		return true, nil
+	}
+
+	// Document exists - evaluate condition
+	// Resolve $ref_new references in condition using new doc attributes
+	resolvedCondition := filter.ResolveRefNew(condition, newDocAttrs)
+
+	// Parse the resolved condition
+	f, err := filter.Parse(resolvedCondition)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
+	}
+
+	// If no filter (nil condition), apply unconditionally
+	if f == nil {
+		return true, nil
+	}
+
+	// Build filter document from existing doc attributes
+	filterDoc := make(filter.Document)
+	for k, v := range existingDoc.Attributes {
+		filterDoc[k] = v
+	}
+
+	// Evaluate condition against existing document
+	return f.Eval(filterDoc), nil
 }
 
 // vectorToBytes converts a float32 slice to bytes (little-endian).
@@ -822,6 +934,11 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 			return nil, err
 		}
 		req.Schema = schemaUpdate
+	}
+
+	// Parse upsert_condition
+	if cond, ok := body["upsert_condition"]; ok {
+		req.UpsertCondition = cond
 	}
 
 	return req, nil

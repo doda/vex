@@ -95,3 +95,11 @@ KEY DEPENDENCIES:
 - Ensured type immutability enforcement remains intact for existing attributes.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T00:34:12.321Z] Completed write-conditional-upsert: Review conditional upsert implementation
+- Reviewed staged changes in `internal/write/handler.go`, `internal/filter/ref_new.go`, and new tests in `internal/write/conditional_upsert_test.go` and `internal/filter/ref_new_test.go`.
+- Verified upsert_condition parsing and conditional evaluation against existing docs with tail refresh at WAL head.
+- Verified missing doc applies unconditionally, existing doc applies only when condition matches, and $ref_new values resolve from new row attributes.
+- Issue found: invalid upsert_condition filters were silently skipped; updated to return ErrInvalidFilter on parse errors.
+- No other correctness issues found in conditional upsert flow.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
