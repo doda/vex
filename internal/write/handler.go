@@ -336,8 +336,11 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		return nil, err
 	}
 
+	// Detect schema changes that require index rebuilds before updating state
+	rebuildChanges := DetectSchemaRebuildChanges(req.Schema, loaded.State.Schema)
+
 	// Update namespace state to advance WAL head with schema delta and disable_backpressure flag
-	_, err = h.stateMan.AdvanceWALWithOptions(ctx, ns, loaded.ETag, walKey, int64(len(result.Data)), namespace.AdvanceWALOptions{
+	updatedState, err := h.stateMan.AdvanceWALWithOptions(ctx, ns, loaded.ETag, walKey, int64(len(result.Data)), namespace.AdvanceWALOptions{
 		SchemaDelta:        schemaDelta,
 		DisableBackpressure: req.DisableBackpressure,
 	})
@@ -345,6 +348,20 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		err = fmt.Errorf("failed to update namespace state: %w", err)
 		releaseOnError(err)
 		return nil, err
+	}
+
+	// Add pending rebuilds for detected schema changes
+	if len(rebuildChanges) > 0 {
+		currentETag := updatedState.ETag
+		for _, change := range rebuildChanges {
+			updated, rebuildErr := h.stateMan.AddPendingRebuild(ctx, ns, currentETag, change.Kind, change.Attribute)
+			if rebuildErr != nil {
+				// Log but don't fail the write - the rebuild tracking is best-effort
+				// The indexer will still reindex based on schema changes
+				break
+			}
+			currentETag = updated.ETag
+		}
 	}
 
 	resp := &WriteResponse{

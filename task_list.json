@@ -1267,7 +1267,7 @@
       "Test FTS parameter changes rebuild in background",
       "Verify queries use old settings until new ready"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "nvme-cache",

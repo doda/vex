@@ -459,3 +459,14 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T14:14:17.000Z] Completed schema-index-rebuild: Review schema index rebuild gating
+- Reviewed schema change detection and pending rebuild tracking in `internal/write/handler.go` and `internal/write/schema_rebuild.go`.
+- Reviewed pending rebuild readiness handling in `internal/indexer/indexer.go`.
+- Reviewed query gating logic and new helpers/tests in `internal/query/pending_rebuild.go` and `internal/query/pending_rebuild_test.go`.
+- Reviewed filter attribute collection in `internal/filter/filter.go`.
+- Verified HTTP 202 handling for pending rebuild errors in `pkg/api/router.go`.
+- Verified pending rebuilds added on filterable/FTS schema changes and readiness set after WAL catch-up.
+- Simplicity check: implementation aligns with existing patterns; no unnecessary abstraction.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

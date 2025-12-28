@@ -570,6 +570,23 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
 				return
 			}
+			if errors.Is(err, query.ErrIndexRebuilding) {
+				// Return 202 Accepted when query depends on index still being rebuilt
+				r.writeJSON(w, http.StatusAccepted, map[string]interface{}{
+					"status":  "accepted",
+					"message": "query depends on index still being rebuilt",
+					"rows":    []interface{}{},
+					"billing": map[string]int{
+						"billable_logical_bytes_queried":  0,
+						"billable_logical_bytes_returned": 0,
+					},
+					"performance": map[string]interface{}{
+						"cache_temperature": "cold",
+						"server_total_ms":   0,
+					},
+				})
+				return
+			}
 			r.writeAPIError(w, ErrInternalServer(err.Error()))
 			return
 		}
@@ -724,6 +741,23 @@ func (r *Router) handleMultiQuery(w http.ResponseWriter, req *http.Request, ns s
 			}
 			if errors.Is(err, query.ErrGroupByWithoutAgg) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			if errors.Is(err, query.ErrIndexRebuilding) {
+				// Return 202 Accepted when query depends on index still being rebuilt
+				r.writeJSON(w, http.StatusAccepted, map[string]interface{}{
+					"status":  "accepted",
+					"message": "query depends on index still being rebuilt",
+					"results": []interface{}{},
+					"billing": map[string]int{
+						"billable_logical_bytes_queried":  0,
+						"billable_logical_bytes_returned": 0,
+					},
+					"performance": map[string]interface{}{
+						"cache_temperature": "cold",
+						"server_total_ms":   0,
+					},
+				})
 				return
 			}
 			r.writeAPIError(w, ErrInternalServer(err.Error()))

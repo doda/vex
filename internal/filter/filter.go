@@ -766,3 +766,43 @@ func (f *Filter) UsesRegexOperators() bool {
 	}
 	return false
 }
+
+// UsedAttributes returns a list of all attribute names used in the filter.
+// This is used to check for pending index rebuilds on filtered attributes.
+func (f *Filter) UsedAttributes() []string {
+	if f == nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	f.collectAttributes(seen)
+
+	attrs := make([]string, 0, len(seen))
+	for attr := range seen {
+		attrs = append(attrs, attr)
+	}
+	return attrs
+}
+
+// collectAttributes recursively collects all attribute names used in the filter.
+func (f *Filter) collectAttributes(seen map[string]bool) {
+	if f == nil {
+		return
+	}
+
+	switch f.Op {
+	case OpAnd, OpOr:
+		for _, child := range f.Children {
+			child.collectAttributes(seen)
+		}
+	case OpNot:
+		if f.Child != nil {
+			f.Child.collectAttributes(seen)
+		}
+	default:
+		// It's an attribute comparison - add the attribute name
+		if f.Attr != "" {
+			seen[f.Attr] = true
+		}
+	}
+}

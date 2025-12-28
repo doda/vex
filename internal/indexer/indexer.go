@@ -322,7 +322,7 @@ func (w *namespaceWatcher) checkAndProcess() {
 	// Always advance when processing succeeds, even if bytesIndexed is 0
 	// (e.g., empty WAL entries or already-processed data).
 	// Full index publishing is handled by later tasks.
-	_, _ = w.indexer.stateManager.AdvanceIndex(
+	updatedState, err := w.indexer.stateManager.AdvanceIndex(
 		ctx,
 		w.namespace,
 		loaded.ETag,
@@ -331,6 +331,51 @@ func (w *namespaceWatcher) checkAndProcess() {
 		endSeq,                  // Advance indexed_wal_seq
 		bytesIndexed,
 	)
+	if err != nil {
+		return
+	}
+
+	// Mark any pending rebuilds as ready now that we've caught up.
+	// A rebuild is considered ready when we've indexed up to the WAL head.
+	w.markPendingRebuildsReady(ctx, updatedState)
+}
+
+// markPendingRebuildsReady marks all not-ready pending rebuilds as ready.
+// This is called after the indexer has processed WAL entries, indicating
+// the index is now caught up with the current schema configuration.
+func (w *namespaceWatcher) markPendingRebuildsReady(ctx context.Context, loaded *namespace.LoadedState) {
+	if loaded == nil || loaded.State == nil {
+		return
+	}
+
+	pendingRebuilds := loaded.State.Index.PendingRebuilds
+	if len(pendingRebuilds) == 0 {
+		return
+	}
+
+	currentETag := loaded.ETag
+	version := int(loaded.State.Index.ManifestSeq)
+
+	for _, pr := range pendingRebuilds {
+		if pr.Ready {
+			continue // Already ready
+		}
+
+		// Mark this rebuild as ready
+		updated, err := w.indexer.stateManager.MarkRebuildReady(
+			ctx,
+			w.namespace,
+			currentETag,
+			pr.Kind,
+			pr.Attribute,
+			version,
+		)
+		if err != nil {
+			// Error marking ready - will retry on next poll
+			break
+		}
+		currentETag = updated.ETag
+	}
 }
 
 // ProcessWALRange reads WAL entries in the range (startSeq, endSeq] and returns total bytes.

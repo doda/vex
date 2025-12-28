@@ -258,6 +258,11 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		}
 	}
 
+	// Check for pending index rebuilds that affect this query
+	if err := CheckPendingRebuilds(loaded.State, f, parsed); err != nil {
+		return nil, err
+	}
+
 	// Determine byte limit for eventual consistency
 	var tailByteCap int64
 	if req.Consistency == "eventual" {
