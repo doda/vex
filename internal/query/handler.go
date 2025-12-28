@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/vector"
@@ -135,31 +137,48 @@ type ParsedRankBy struct {
 	QueryVector []float32  // For vector ANN
 }
 
+// DefaultNProbe is the default number of centroids to probe in ANN search.
+const DefaultNProbe = 16
+
 // Handler handles query operations.
 type Handler struct {
-	store     objectstore.Store
-	stateMan  *namespace.StateManager
-	tailStore tail.Store
-	limiter   *ConcurrencyLimiter
+	store       objectstore.Store
+	stateMan    *namespace.StateManager
+	tailStore   tail.Store
+	indexReader *index.Reader
+	limiter     *ConcurrencyLimiter
 }
 
 // NewHandler creates a new query handler.
 func NewHandler(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store) *Handler {
 	return &Handler{
-		store:     store,
-		stateMan:  stateMan,
-		tailStore: tailStore,
-		limiter:   NewConcurrencyLimiter(DefaultConcurrencyLimit),
+		store:       store,
+		stateMan:    stateMan,
+		tailStore:   tailStore,
+		indexReader: index.NewReader(store, nil, nil),
+		limiter:     NewConcurrencyLimiter(DefaultConcurrencyLimit),
 	}
 }
 
 // NewHandlerWithLimit creates a new query handler with a custom concurrency limit.
 func NewHandlerWithLimit(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store, limit int) *Handler {
 	return &Handler{
-		store:     store,
-		stateMan:  stateMan,
-		tailStore: tailStore,
-		limiter:   NewConcurrencyLimiter(limit),
+		store:       store,
+		stateMan:    stateMan,
+		tailStore:   tailStore,
+		indexReader: index.NewReader(store, nil, nil),
+		limiter:     NewConcurrencyLimiter(limit),
+	}
+}
+
+// NewHandlerWithCache creates a new query handler with caching support.
+func NewHandlerWithCache(store objectstore.Store, stateMan *namespace.StateManager, tailStore tail.Store, diskCache *cache.DiskCache, ramCache *cache.MemoryCache) *Handler {
+	return &Handler{
+		store:       store,
+		stateMan:    stateMan,
+		tailStore:   tailStore,
+		indexReader: index.NewReader(store, diskCache, ramCache),
+		limiter:     NewConcurrencyLimiter(DefaultConcurrencyLimit),
 	}
 }
 
@@ -457,47 +476,143 @@ func parseVector(v any, vectorEncoding string) ([]float32, error) {
 // executeVectorQuery executes a vector ANN query.
 // tailByteCap of 0 means no limit (strong consistency); >0 means eventual consistency byte cap.
 func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
-	if h.tailStore == nil {
-		return nil, nil
-	}
-
 	// Determine distance metric from namespace config or use default
 	metric := tail.MetricCosineDistance
+	vectorMetric := vector.MetricCosineDistance
 	if loaded.State.Vector != nil && loaded.State.Vector.DistanceMetric != "" {
 		switch loaded.State.Vector.DistanceMetric {
 		case string(vector.MetricCosineDistance):
 			metric = tail.MetricCosineDistance
+			vectorMetric = vector.MetricCosineDistance
 		case string(vector.MetricEuclideanSquared):
 			metric = tail.MetricEuclideanSquared
+			vectorMetric = vector.MetricEuclideanSquared
 		case string(vector.MetricDotProduct):
 			metric = tail.MetricDotProduct
+			vectorMetric = vector.MetricDotProduct
 		}
 	}
 
-	// Perform exhaustive vector scan on tail (no ANN index yet)
-	// Use byte-limited scan for eventual consistency
-	var results []tail.VectorScanResult
-	var err error
-	if tailByteCap > 0 {
-		results, err = h.tailStore.VectorScanWithByteLimit(ctx, ns, parsed.QueryVector, req.Limit, metric, f, tailByteCap)
-	} else {
-		results, err = h.tailStore.VectorScan(ctx, ns, parsed.QueryVector, req.Limit, metric, f)
-	}
-	if err != nil {
-		return nil, err
+	// Check if there's an IVF index available
+	// Note: When filters are present, we skip the IVF index because we don't have
+	// filter bitmaps yet. The IVF index only stores docID + vector, not attributes.
+	// Using the index with filters would return unfiltered results, which is incorrect.
+	// Once filter bitmaps are implemented (Phase 4), we can use recall-aware filtering.
+	var indexResults []vector.IVFSearchResult
+	indexedWALSeq := loaded.State.Index.IndexedWALSeq
+	if loaded.State.Index.ManifestKey != "" && h.indexReader != nil && f == nil {
+		ivfReader, clusterDataKey, err := h.indexReader.GetIVFReader(ctx, ns, loaded.State.Index.ManifestKey, loaded.State.Index.ManifestSeq)
+		if err != nil {
+			// Log error but fall back to exhaustive search
+			_ = err
+		} else if ivfReader != nil {
+			// Use IVF index for ANN search with nProbe centroids
+			nProbe := DefaultNProbe
+
+			indexResults, err = h.indexReader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, parsed.QueryVector, req.Limit, nProbe)
+			if err != nil {
+				// Fall back to exhaustive search on error
+				indexResults = nil
+			}
+		}
 	}
 
-	rows := make([]Row, 0, len(results))
-	for _, res := range results {
-		dist := res.Distance
-		rows = append(rows, Row{
-			ID:         docIDToAny(res.Doc.ID),
-			Dist:       &dist,
-			Attributes: res.Doc.Attributes,
+	// Get results from tail (unindexed data)
+	var tailResults []tail.VectorScanResult
+	if h.tailStore != nil {
+		var err error
+		// Only search tail for WAL entries after the indexed sequence
+		if tailByteCap > 0 {
+			tailResults, err = h.tailStore.VectorScanWithByteLimit(ctx, ns, parsed.QueryVector, req.Limit, metric, f, tailByteCap)
+		} else {
+			tailResults, err = h.tailStore.VectorScan(ctx, ns, parsed.QueryVector, req.Limit, metric, f)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// If we have no index results, just return tail results
+	if len(indexResults) == 0 {
+		rows := make([]Row, 0, len(tailResults))
+		for _, res := range tailResults {
+			dist := res.Distance
+			rows = append(rows, Row{
+				ID:         docIDToAny(res.Doc.ID),
+				Dist:       &dist,
+				Attributes: res.Doc.Attributes,
+			})
+		}
+		return rows, nil
+	}
+
+	// Merge index results with tail results
+	// Tail results are authoritative for deduplication (newer data)
+	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq)
+	return rows, nil
+}
+
+// mergeVectorResults merges IVF index results with tail results.
+// Tail results take precedence for deduplication since they contain newer data.
+// Note: This function is only called when no filter is present (filters skip the index path).
+func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64) []Row {
+	// Build a set of document IDs from tail for deduplication
+	tailDocIDs := make(map[uint64]bool)
+	for _, res := range tailResults {
+		// Use the document ID's u64 representation
+		if res.Doc.ID.Type() == document.IDTypeU64 {
+			tailDocIDs[res.Doc.ID.U64()] = true
+		}
+	}
+
+	// Filter out index results that are superseded by tail
+	type scoredDoc struct {
+		docID      any
+		dist       float64
+		attributes map[string]any
+	}
+	candidates := make([]scoredDoc, 0, len(indexResults)+len(tailResults))
+
+	// Add index results (excluding those in tail which have newer data)
+	for _, res := range indexResults {
+		if tailDocIDs[res.DocID] {
+			// This doc is in tail, skip index version
+			continue
+		}
+
+		candidates = append(candidates, scoredDoc{
+			docID:      res.DocID,
+			dist:       float64(res.Distance),
+			attributes: nil, // No attributes from index
 		})
 	}
 
-	return rows, nil
+	// Add tail results
+	for _, res := range tailResults {
+		candidates = append(candidates, scoredDoc{
+			docID:      docIDToAny(res.Doc.ID),
+			dist:       res.Distance,
+			attributes: res.Doc.Attributes,
+		})
+	}
+
+	// Sort by distance
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].dist < candidates[j].dist
+	})
+
+	// Build rows with limit
+	rows := make([]Row, 0, limit)
+	for i := 0; i < len(candidates) && len(rows) < limit; i++ {
+		dist := candidates[i].dist
+		rows = append(rows, Row{
+			ID:         candidates[i].docID,
+			Dist:       &dist,
+			Attributes: candidates[i].attributes,
+		})
+	}
+
+	return rows
 }
 
 // executeAttrQuery executes an order-by attribute query.

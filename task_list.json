@@ -1104,7 +1104,7 @@
       "Test multi-range GET for cluster data (object store optimization)",
       "Verify exact distances computed for final top_k"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "vector-recall-aware-filtering",

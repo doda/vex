@@ -374,3 +374,14 @@ KEY DEPENDENCIES:
 - No other correctness issues found in IVF search/format logic or tests.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T07:04:09.000Z] Completed vector-query-ann-path: Review ANN index query path
+- Reviewed IVF reader and multi-range fetcher additions in `internal/index/reader.go`.
+- Reviewed ANN query path changes and merge logic in `internal/query/handler.go`.
+- Reviewed new ANN query tests in `internal/query/vector_ann_test.go` and IVF reader tests.
+- Verified ANN path uses IVF index when available and skips index when filters are present.
+- Verified tail results merge with index results and preserve distance ordering.
+- Verified exact distance computation is applied after cluster fetch.
+- Simplicity check: no unnecessary abstractions found.
+- No correctness issues found in reviewed changes.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
