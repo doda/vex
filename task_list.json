@@ -655,7 +655,7 @@
       "Verify $dist is omitted for order-by queries",
       "Test 'per' diversification option"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-consistency-strong",

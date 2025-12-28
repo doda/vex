@@ -59,6 +59,15 @@ func ParseQueryRequest(body map[string]any) (*QueryRequest, error) {
 		req.Limit = limit
 	}
 
+	// Parse per (diversification for order-by queries)
+	if v, ok := body["per"]; ok {
+		perAttrs, err := parseStringSlice(v)
+		if err != nil {
+			return nil, fmt.Errorf("per: %w", err)
+		}
+		req.Per = perAttrs
+	}
+
 	// Parse aggregate_by
 	if v, ok := body["aggregate_by"]; ok {
 		req.AggregateBy = v

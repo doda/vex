@@ -4,6 +4,7 @@ package query
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/vexsearch/vex/internal/document"
@@ -40,6 +41,7 @@ type QueryRequest struct {
 	IncludeAttributes []string // Optional: attributes to include in response
 	ExcludeAttributes []string // Optional: attributes to exclude from response
 	Limit             int      // Alias: top_k - max results to return (default 10, max 10,000)
+	Per               []string // Optional: diversification attribute(s) for order-by queries
 	AggregateBy       any      // Optional: aggregation specification
 	GroupBy           any      // Optional: group-by specification
 	VectorEncoding    string   // Optional: "float" (default) or "base64"
@@ -359,8 +361,8 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *Parse
 
 	// Sort by the specified attribute
 	sort.Slice(docs, func(i, j int) bool {
-		vi := getAttrValue(docs[i].Attributes, parsed.Field)
-		vj := getAttrValue(docs[j].Attributes, parsed.Field)
+		vi := getDocAttrValue(docs[i], parsed.Field)
+		vj := getDocAttrValue(docs[j], parsed.Field)
 		cmp := compareValues(vi, vj)
 		if parsed.Direction == "desc" {
 			return cmp > 0
@@ -368,13 +370,22 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *Parse
 		return cmp < 0
 	})
 
-	// Apply limit
-	if len(docs) > req.Limit {
-		docs = docs[:req.Limit]
+	// Apply limit with optional per diversification
+	var selected []*tail.Document
+	if len(req.Per) > 0 {
+		// Diversification: limit N results per distinct value of the per attribute
+		selected = applyPerDiversification(docs, req.Per, req.Limit)
+	} else {
+		// Simple limit
+		if len(docs) > req.Limit {
+			selected = docs[:req.Limit]
+		} else {
+			selected = docs
+		}
 	}
 
-	rows := make([]Row, 0, len(docs))
-	for _, doc := range docs {
+	rows := make([]Row, 0, len(selected))
+	for _, doc := range selected {
 		rows = append(rows, Row{
 			ID:         docIDToAny(doc.ID),
 			Dist:       nil, // No $dist for order-by queries
@@ -411,6 +422,97 @@ func getAttrValue(attrs map[string]any, key string) any {
 		return nil
 	}
 	return attrs[key]
+}
+
+// getDocAttrValue gets an attribute value from a document, handling "id" specially.
+func getDocAttrValue(doc *tail.Document, key string) any {
+	if key == "id" {
+		return docIDToSortable(doc.ID)
+	}
+	if doc.Attributes == nil {
+		return nil
+	}
+	return doc.Attributes[key]
+}
+
+// docIDToSortable converts a document ID to a sortable value.
+func docIDToSortable(id document.ID) any {
+	switch id.Type() {
+	case document.IDTypeU64:
+		return id.U64()
+	case document.IDTypeUUID:
+		return id.UUID().String()
+	case document.IDTypeString:
+		return id.String()
+	default:
+		return id.String()
+	}
+}
+
+// applyPerDiversification applies the per diversification option to the sorted documents.
+// It returns at most limit documents per distinct value of the per attribute(s).
+func applyPerDiversification(docs []*tail.Document, perAttrs []string, limit int) []*tail.Document {
+	if len(perAttrs) == 0 || limit <= 0 {
+		return docs
+	}
+
+	// Track count per distinct value(s)
+	counts := make(map[string]int)
+	var result []*tail.Document
+
+	for _, doc := range docs {
+		// Build key from per attribute values
+		key := buildPerKey(doc, perAttrs)
+		if counts[key] < limit {
+			result = append(result, doc)
+			counts[key]++
+		}
+	}
+
+	return result
+}
+
+// buildPerKey builds a string key from the document's per attribute values.
+func buildPerKey(doc *tail.Document, perAttrs []string) string {
+	if len(perAttrs) == 1 {
+		v := getDocAttrValue(doc, perAttrs[0])
+		return formatKeyValue(v)
+	}
+
+	// Multiple attributes - concatenate their values
+	var key string
+	for i, attr := range perAttrs {
+		v := getDocAttrValue(doc, attr)
+		if i > 0 {
+			key += "|"
+		}
+		key += formatKeyValue(v)
+	}
+	return key
+}
+
+// formatKeyValue formats a value for use in a per-diversification key.
+func formatKeyValue(v any) string {
+	if v == nil {
+		return "<nil>"
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case uint64:
+		return fmt.Sprintf("%d", val)
+	case int64:
+		return fmt.Sprintf("%d", val)
+	case float64:
+		return fmt.Sprintf("%f", val)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // compareValues compares two values for sorting.
