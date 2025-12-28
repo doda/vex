@@ -926,7 +926,7 @@
       "Test response includes results array in same order",
       "Verify max 16 subqueries per request"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-response-format",

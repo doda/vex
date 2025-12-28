@@ -24,6 +24,9 @@ const (
 
 	// EventualTailCapBytes is the max tail bytes to search in eventual consistency mode (128 MiB).
 	EventualTailCapBytes = 128 * 1024 * 1024
+
+	// MaxMultiQuery is the maximum number of subqueries in a multi-query request.
+	MaxMultiQuery = 16
 )
 
 var (
@@ -40,6 +43,8 @@ var (
 	ErrInvalidAggregation    = errors.New("invalid aggregation expression")
 	ErrInvalidGroupBy        = errors.New("invalid group_by expression")
 	ErrGroupByWithoutAgg     = errors.New("group_by requires aggregate_by to be specified")
+	ErrTooManySubqueries     = errors.New("multi-query exceeds maximum of 16 subqueries")
+	ErrInvalidMultiQuery     = errors.New("invalid multi-query format")
 )
 
 // AggregationType indicates the type of aggregation function.
@@ -77,6 +82,20 @@ type QueryResponse struct {
 	AggregationGroups []map[string]any `json:"aggregation_groups,omitempty"`
 	Billing           BillingInfo      `json:"billing"`
 	Performance       PerformanceInfo  `json:"performance"`
+}
+
+// MultiQueryResponse represents the response from a multi-query request.
+type MultiQueryResponse struct {
+	Results     []SubQueryResult `json:"results"`
+	Billing     BillingInfo      `json:"billing"`
+	Performance PerformanceInfo  `json:"performance"`
+}
+
+// SubQueryResult represents a single subquery result within a multi-query response.
+type SubQueryResult struct {
+	Rows              []Row            `json:"rows,omitempty"`
+	Aggregations      map[string]any   `json:"aggregations,omitempty"`
+	AggregationGroups []map[string]any `json:"aggregation_groups,omitempty"`
 }
 
 // Row represents a single result row.
@@ -1006,4 +1025,173 @@ func sortAggregationGroups(groups []map[string]any, groupByAttrs []string) {
 		}
 		return false
 	})
+}
+
+// HandleMultiQuery executes multiple subqueries against the same snapshot.
+// All subqueries share the same snapshot for consistency (snapshot isolation).
+func (h *Handler) HandleMultiQuery(ctx context.Context, ns string, queries []map[string]any, consistency string) (*MultiQueryResponse, error) {
+	// Validate subquery count
+	if len(queries) == 0 {
+		return nil, ErrInvalidMultiQuery
+	}
+	if len(queries) > MaxMultiQuery {
+		return nil, ErrTooManySubqueries
+	}
+	if consistency != "" && consistency != "strong" && consistency != "eventual" {
+		return nil, ErrInvalidConsistency
+	}
+
+	// Load namespace state once for snapshot isolation
+	loaded, err := h.stateMan.Load(ctx, ns)
+	if err != nil {
+		if errors.Is(err, namespace.ErrStateNotFound) {
+			return nil, ErrNamespaceNotFound
+		}
+		if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+			return nil, namespace.ErrNamespaceTombstoned
+		}
+		return nil, err
+	}
+
+	// Determine consistency mode - strong is default
+	isStrongConsistency := consistency != "eventual"
+
+	// Refresh tail to WAL head once for all subqueries (snapshot isolation).
+	// This ensures all subqueries execute against the same consistent snapshot.
+	if isStrongConsistency && h.tailStore != nil {
+		headSeq := loaded.State.WAL.HeadSeq
+		indexedSeq := loaded.State.Index.IndexedWALSeq
+		if headSeq > indexedSeq {
+			if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
+			}
+		}
+	}
+
+	// Determine byte limit for eventual consistency
+	var tailByteCap int64
+	if !isStrongConsistency {
+		tailByteCap = EventualTailCapBytes
+	}
+
+	// Execute each subquery in order
+	results := make([]SubQueryResult, 0, len(queries))
+	for _, subQueryBody := range queries {
+		result, err := h.executeSubQuery(ctx, ns, loaded, subQueryBody, tailByteCap)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, *result)
+	}
+
+	return &MultiQueryResponse{
+		Results: results,
+		Billing: BillingInfo{
+			BillableLogicalBytesQueried:  0,
+			BillableLogicalBytesReturned: 0,
+		},
+		Performance: PerformanceInfo{
+			CacheTemperature: "cold",
+			ServerTotalMs:    0,
+		},
+	}, nil
+}
+
+// executeSubQuery executes a single subquery within a multi-query context.
+// It uses the pre-loaded namespace state and does not refresh the snapshot.
+func (h *Handler) executeSubQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, body map[string]any, tailByteCap int64) (*SubQueryResult, error) {
+	// Parse the subquery request
+	req, err := ParseQueryRequest(body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the request
+	if err := h.validateRequest(req); err != nil {
+		return nil, err
+	}
+
+	// Parse the rank_by expression
+	parsed, err := parseRankBy(req.RankBy, req.VectorEncoding)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse filters if provided
+	var f *filter.Filter
+	if req.Filters != nil {
+		f, err = filter.Parse(req.Filters)
+		if err != nil {
+			return nil, ErrInvalidFilter
+		}
+
+		// Validate regex filters against schema
+		if f.UsesRegexOperators() {
+			schemaChecker := buildSchemaChecker(loaded.State.Schema)
+			if err := f.ValidateWithSchema(schemaChecker); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
+			}
+		}
+	}
+
+	// Check if this is an aggregation query
+	if req.AggregateBy != nil {
+		// Parse aggregations
+		aggregations, err := parseAggregateBy(req.AggregateBy)
+		if err != nil {
+			return nil, err
+		}
+
+		// Check if this is a grouped aggregation
+		if req.GroupBy != nil {
+			// Parse group_by
+			groupByAttrs, err := parseGroupBy(req.GroupBy)
+			if err != nil {
+				return nil, err
+			}
+
+			// Execute grouped aggregation query
+			aggGroups, err := h.executeGroupedAggregationQuery(ctx, ns, f, aggregations, groupByAttrs, req.Limit, tailByteCap)
+			if err != nil {
+				return nil, err
+			}
+
+			return &SubQueryResult{
+				AggregationGroups: aggGroups,
+			}, nil
+		}
+
+		// Execute non-grouped aggregation query
+		aggResults, err := h.executeAggregationQuery(ctx, ns, f, aggregations, tailByteCap)
+		if err != nil {
+			return nil, err
+		}
+
+		return &SubQueryResult{
+			Aggregations: aggResults,
+		}, nil
+	}
+
+	// Execute the query based on rank_by type
+	var rows []Row
+	if parsed != nil {
+		switch parsed.Type {
+		case RankByVector:
+			rows, err = h.executeVectorQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
+		case RankByAttr:
+			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req, tailByteCap)
+		case RankByBM25:
+			rows, err = h.executeBM25Query(ctx, ns, parsed, f, req)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Apply attribute filtering
+	rows = filterAttributes(rows, req.IncludeAttributes, req.ExcludeAttributes)
+
+	return &SubQueryResult{
+		Rows: rows,
+	}, nil
 }

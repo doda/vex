@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -506,6 +507,12 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Check for multi-query (queries array)
+	if queriesRaw, ok := body["queries"]; ok {
+		r.handleMultiQuery(w, req, ns, body, queriesRaw)
+		return
+	}
+
 	// Parse the query request
 	queryReq, err := query.ParseQueryRequest(body)
 	if err != nil {
@@ -635,6 +642,157 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 	}
 
 	r.writeJSON(w, http.StatusOK, fallbackResponse)
+}
+
+// handleMultiQuery handles multi-query requests with snapshot isolation.
+func (r *Router) handleMultiQuery(w http.ResponseWriter, req *http.Request, ns string, body map[string]interface{}, queriesRaw interface{}) {
+	// Parse the queries array
+	queriesSlice, ok := queriesRaw.([]interface{})
+	if !ok {
+		r.writeAPIError(w, ErrBadRequest("queries must be an array"))
+		return
+	}
+
+	// Convert to []map[string]any
+	queries := make([]map[string]any, 0, len(queriesSlice))
+	for i, q := range queriesSlice {
+		qMap, ok := q.(map[string]interface{})
+		if !ok {
+			r.writeAPIError(w, ErrBadRequest(fmt.Sprintf("queries[%d] must be an object", i)))
+			return
+		}
+		queries = append(queries, qMap)
+	}
+
+	// Extract top-level consistency
+	consistency := ""
+	if c, ok := body["consistency"].(string); ok {
+		consistency = c
+	}
+
+	// Check for strong query with backpressure disabled and high unindexed data.
+	if consistency != "eventual" {
+		if err := r.checkStrongQueryBackpressure(ns); err != nil {
+			r.writeAPIError(w, err)
+			return
+		}
+	}
+
+	// Execute multi-query if handler is available
+	if r.queryHandler != nil {
+		resp, err := r.queryHandler.HandleMultiQuery(req.Context(), ns, queries, consistency)
+		if err != nil {
+			if errors.Is(err, query.ErrTooManySubqueries) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			if errors.Is(err, query.ErrInvalidMultiQuery) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			if errors.Is(err, query.ErrRankByRequired) {
+				r.writeAPIError(w, ErrBadRequest("rank_by is required unless aggregate_by is specified"))
+				return
+			}
+			if errors.Is(err, query.ErrInvalidLimit) {
+				r.writeAPIError(w, ErrBadRequest("limit/top_k must be between 1 and 10,000"))
+				return
+			}
+			if errors.Is(err, query.ErrInvalidRankBy) || errors.Is(err, query.ErrInvalidFilter) || errors.Is(err, query.ErrAttributeConflict) || errors.Is(err, query.ErrInvalidVectorEncoding) || errors.Is(err, query.ErrInvalidConsistency) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			if errors.Is(err, query.ErrNamespaceNotFound) {
+				r.writeAPIError(w, ErrNamespaceNotFound(ns))
+				return
+			}
+			if errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrNamespaceDeleted(ns))
+				return
+			}
+			if errors.Is(err, query.ErrSnapshotRefreshFailed) {
+				r.writeAPIError(w, ErrServiceUnavailable("failed to refresh snapshot for strong consistency query"))
+				return
+			}
+			if errors.Is(err, query.ErrInvalidAggregation) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			if errors.Is(err, query.ErrInvalidGroupBy) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			if errors.Is(err, query.ErrGroupByWithoutAgg) {
+				r.writeAPIError(w, ErrBadRequest(err.Error()))
+				return
+			}
+			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			return
+		}
+
+		// Build response with results array
+		resultsJSON := make([]interface{}, 0, len(resp.Results))
+		for _, result := range resp.Results {
+			resultMap := make(map[string]interface{})
+			if result.AggregationGroups != nil {
+				resultMap["aggregation_groups"] = result.AggregationGroups
+			} else if result.Aggregations != nil {
+				resultMap["aggregations"] = result.Aggregations
+			} else {
+				rows := make([]interface{}, 0, len(result.Rows))
+				for _, row := range result.Rows {
+					rows = append(rows, query.RowToJSON(row))
+				}
+				resultMap["rows"] = rows
+			}
+			resultsJSON = append(resultsJSON, resultMap)
+		}
+
+		responseBody := map[string]interface{}{
+			"results": resultsJSON,
+			"billing": map[string]int64{
+				"billable_logical_bytes_queried":  resp.Billing.BillableLogicalBytesQueried,
+				"billable_logical_bytes_returned": resp.Billing.BillableLogicalBytesReturned,
+			},
+			"performance": map[string]interface{}{
+				"cache_temperature": resp.Performance.CacheTemperature,
+				"server_total_ms":   resp.Performance.ServerTotalMs,
+			},
+		}
+
+		r.writeJSON(w, http.StatusOK, responseBody)
+		return
+	}
+
+	// Fallback mode for multi-query
+	if len(queries) > query.MaxMultiQuery {
+		r.writeAPIError(w, ErrBadRequest("multi-query exceeds maximum of 16 subqueries"))
+		return
+	}
+	if len(queries) == 0 {
+		r.writeAPIError(w, ErrBadRequest("invalid multi-query format"))
+		return
+	}
+
+	// Return empty results for each subquery in fallback mode
+	results := make([]interface{}, 0, len(queries))
+	for range queries {
+		results = append(results, map[string]interface{}{
+			"rows": []interface{}{},
+		})
+	}
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"results": results,
+		"billing": map[string]int{
+			"billable_logical_bytes_queried":  0,
+			"billable_logical_bytes_returned": 0,
+		},
+		"performance": map[string]interface{}{
+			"cache_temperature": "cold",
+			"server_total_ms":   0,
+		},
+	})
 }
 
 func (r *Router) handleDeleteNamespace(w http.ResponseWriter, req *http.Request) {

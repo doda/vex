@@ -289,3 +289,11 @@ KEY DEPENDENCIES:
 - No correctness issues found in implementation or tests.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T05:02:38.000Z] Completed query-multi-query: Review multi-query with snapshot isolation
+- Reviewed staged changes in `internal/query/handler.go`, `internal/query/multi_query_test.go`, `pkg/api/router.go`, and `pkg/api/multi_query_test.go`.
+- Verified multi-query executes subqueries in order and uses single snapshot refresh for strong consistency.
+- Verified subquery parsing/validation, max 16 limit enforcement, and aggregation/grouped aggregation responses.
+- Fixed consistency validation for multi-query and corrected subquery error formatting in API handler.
+- No additional correctness issues found after fixes.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
