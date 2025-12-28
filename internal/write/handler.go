@@ -5,6 +5,7 @@ package write
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -35,6 +36,8 @@ var (
 	ErrPatchByFilterTooMany    = errors.New("patch_by_filter exceeds maximum rows limit")
 	ErrInvalidFilter           = errors.New("invalid filter expression")
 	ErrSourceNamespaceNotFound = errors.New("source namespace not found")
+	ErrSchemaTypeChange        = errors.New("changing attribute type is not allowed")
+	ErrInvalidSchema           = errors.New("invalid schema")
 )
 
 // DeleteByFilterRequest represents a delete_by_filter operation.
@@ -50,6 +53,19 @@ type PatchByFilterRequest struct {
 	AllowPartial bool           // If true, allow partial patch when limit is exceeded
 }
 
+// SchemaUpdate represents an explicit schema change in a write request.
+type SchemaUpdate struct {
+	Attributes map[string]AttributeSchemaUpdate
+}
+
+// AttributeSchemaUpdate represents an update to a single attribute's schema.
+type AttributeSchemaUpdate struct {
+	Type           string // Required: the attribute type (string, int, uint, float, uuid, datetime, bool, or array variants)
+	Filterable     *bool  // Optional: whether the attribute is filterable
+	Regex          *bool  // Optional: whether regex is enabled
+	FullTextSearch any    // Optional: true, false, or config object
+}
+
 // WriteRequest represents a write request from the API.
 type WriteRequest struct {
 	RequestID         string
@@ -59,6 +75,7 @@ type WriteRequest struct {
 	DeleteByFilter    *DeleteByFilterRequest // Optional delete_by_filter operation
 	PatchByFilter     *PatchByFilterRequest  // Optional patch_by_filter operation
 	CopyFromNamespace string                 // Optional: source namespace for server-side bulk copy
+	Schema            *SchemaUpdate          // Optional: explicit schema changes
 }
 
 // ColumnarData represents columnar format data with ids and attribute arrays.
@@ -129,6 +146,15 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 			return nil, err
 		}
 		return nil, fmt.Errorf("failed to load namespace state: %w", err)
+	}
+
+	// Validate and convert schema update if provided
+	var schemaDelta *namespace.Schema
+	if req.Schema != nil {
+		schemaDelta, err = ValidateAndConvertSchemaUpdate(req.Schema, loaded.State.Schema)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Create WAL entry for the next sequence number
@@ -217,8 +243,8 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		return nil, fmt.Errorf("failed to write WAL entry: %w", err)
 	}
 
-	// Update namespace state to advance WAL head
-	_, err = h.stateMan.AdvanceWAL(ctx, ns, loaded.ETag, walKey, int64(len(result.Data)), nil)
+	// Update namespace state to advance WAL head with schema delta
+	_, err = h.stateMan.AdvanceWAL(ctx, ns, loaded.ETag, walKey, int64(len(result.Data)), schemaDelta)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update namespace state: %w", err)
 	}
@@ -789,7 +815,191 @@ func ParseWriteRequest(requestID string, body map[string]any) (*WriteRequest, er
 		req.CopyFromNamespace = cfnStr
 	}
 
+	// Parse schema
+	if schemaVal, ok := body["schema"]; ok {
+		schemaUpdate, err := ParseSchemaUpdate(schemaVal)
+		if err != nil {
+			return nil, err
+		}
+		req.Schema = schemaUpdate
+	}
+
 	return req, nil
+}
+
+// ParseSchemaUpdate parses a schema object from a write request.
+// The schema format is: {"attr_name": {"type": "string", "filterable": true, ...}, ...}
+func ParseSchemaUpdate(v any) (*SchemaUpdate, error) {
+	if v == nil {
+		return nil, nil
+	}
+
+	schemaMap, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: schema must be an object", ErrInvalidSchema)
+	}
+
+	update := &SchemaUpdate{
+		Attributes: make(map[string]AttributeSchemaUpdate),
+	}
+
+	for attrName, attrVal := range schemaMap {
+		// Validate attribute name
+		if err := schema.ValidateAttributeName(attrName); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidSchema, err)
+		}
+
+		attrMap, ok := attrVal.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: schema attribute %q must be an object", ErrInvalidSchema, attrName)
+		}
+
+		attrUpdate := AttributeSchemaUpdate{}
+
+		// Parse type (required)
+		if typeVal, ok := attrMap["type"]; ok {
+			typeStr, ok := typeVal.(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: schema attribute %q type must be a string", ErrInvalidSchema, attrName)
+			}
+			attrUpdate.Type = typeStr
+		}
+
+		// Parse filterable (optional)
+		if filterableVal, ok := attrMap["filterable"]; ok {
+			filterableBool, ok := filterableVal.(bool)
+			if !ok {
+				return nil, fmt.Errorf("%w: schema attribute %q filterable must be a boolean", ErrInvalidSchema, attrName)
+			}
+			attrUpdate.Filterable = &filterableBool
+		}
+
+		// Parse regex (optional)
+		if regexVal, ok := attrMap["regex"]; ok {
+			regexBool, ok := regexVal.(bool)
+			if !ok {
+				return nil, fmt.Errorf("%w: schema attribute %q regex must be a boolean", ErrInvalidSchema, attrName)
+			}
+			attrUpdate.Regex = &regexBool
+		}
+
+		// Parse full_text_search (optional) - can be bool or object
+		if ftsVal, ok := attrMap["full_text_search"]; ok {
+			attrUpdate.FullTextSearch = ftsVal
+		}
+
+		update.Attributes[attrName] = attrUpdate
+	}
+
+	return update, nil
+}
+
+// ValidateAndConvertSchemaUpdate validates the schema update against the existing schema
+// and converts it to a namespace.Schema for the state manager.
+// Returns ErrSchemaTypeChange if any attribute type changes are attempted.
+func ValidateAndConvertSchemaUpdate(update *SchemaUpdate, existingSchema *namespace.Schema) (*namespace.Schema, error) {
+	if update == nil || len(update.Attributes) == 0 {
+		return nil, nil
+	}
+
+	result := &namespace.Schema{
+		Attributes: make(map[string]namespace.AttributeSchema),
+	}
+
+	for name, attrUpdate := range update.Attributes {
+		// Validate type is valid if provided
+		if attrUpdate.Type != "" {
+			attrType := schema.AttrType(attrUpdate.Type)
+			if !attrType.IsValid() {
+				return nil, fmt.Errorf("%w: attribute %q has invalid type %q", ErrInvalidSchema, name, attrUpdate.Type)
+			}
+		}
+
+		// Check if attribute exists in current schema
+		var existingAttr *namespace.AttributeSchema
+		if existingSchema != nil && existingSchema.Attributes != nil {
+			if ea, exists := existingSchema.Attributes[name]; exists {
+				existingAttr = &ea
+			}
+		}
+
+		if existingAttr != nil {
+			// Attribute exists - validate type doesn't change
+			if attrUpdate.Type != "" && attrUpdate.Type != existingAttr.Type {
+				return nil, fmt.Errorf("%w: attribute %q has type %q, cannot change to %q",
+					ErrSchemaTypeChange, name, existingAttr.Type, attrUpdate.Type)
+			}
+
+			// Build the updated attribute from existing values.
+			newAttr := *existingAttr
+
+			// Apply updates
+			if attrUpdate.Filterable != nil {
+				newAttr.Filterable = attrUpdate.Filterable
+			}
+			if attrUpdate.Regex != nil {
+				newAttr.Regex = *attrUpdate.Regex
+			}
+			if attrUpdate.FullTextSearch != nil {
+				ftsBytes, err := encodeFullTextSearch(attrUpdate.FullTextSearch)
+				if err != nil {
+					return nil, fmt.Errorf("%w: attribute %q: %v", ErrInvalidSchema, name, err)
+				}
+				newAttr.FullTextSearch = ftsBytes
+			}
+
+			result.Attributes[name] = newAttr
+		} else {
+			// New attribute - type is required
+			if attrUpdate.Type == "" {
+				return nil, fmt.Errorf("%w: new attribute %q requires type", ErrInvalidSchema, name)
+			}
+
+			newAttr := namespace.AttributeSchema{
+				Type: attrUpdate.Type,
+			}
+
+			if attrUpdate.Filterable != nil {
+				newAttr.Filterable = attrUpdate.Filterable
+			}
+			if attrUpdate.Regex != nil {
+				newAttr.Regex = *attrUpdate.Regex
+			}
+			if attrUpdate.FullTextSearch != nil {
+				ftsBytes, err := encodeFullTextSearch(attrUpdate.FullTextSearch)
+				if err != nil {
+					return nil, fmt.Errorf("%w: attribute %q: %v", ErrInvalidSchema, name, err)
+				}
+				newAttr.FullTextSearch = ftsBytes
+			}
+
+			result.Attributes[name] = newAttr
+		}
+	}
+
+	return result, nil
+}
+
+// encodeFullTextSearch encodes the full_text_search value as JSON bytes.
+func encodeFullTextSearch(v any) (json.RawMessage, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch val := v.(type) {
+	case bool:
+		if val {
+			return json.RawMessage(`true`), nil
+		}
+		return nil, nil // false means disabled, don't set
+	case map[string]any:
+		data, err := json.Marshal(val)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode full_text_search: %w", err)
+		}
+		return data, nil
+	default:
+		return nil, fmt.Errorf("full_text_search must be a boolean or object, got %T", v)
+	}
 }
 
 // ValidateColumnarIDs checks for duplicate IDs in columnar format.

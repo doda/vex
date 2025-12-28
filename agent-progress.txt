@@ -86,3 +86,12 @@ KEY DEPENDENCIES:
 - No correctness issues found in the implementation.
 - Tests not re-run (per instruction to trust prior runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T00:25:31.132Z] Completed write-schema-updates: Review explicit schema updates in write requests
+- Reviewed staged changes in `internal/write/handler.go`, `internal/namespace/manager.go`, `pkg/api/router.go`, `internal/write/handler_test.go`, `pkg/api/write_test.go`.
+- Verified schema object parsing, validation, and WAL/state update wiring for explicit schema changes.
+- Verified atomic schema/WAL updates and 400 mapping for invalid schema and type change.
+- Issue found: regex updates to false (and full_text_search disable) could not be applied due to merge logic.
+- Resolved by carrying forward existing attribute values during validation and replacing attributes during schema delta apply.
+- Ensured type immutability enforcement remains intact for existing attributes.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

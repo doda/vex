@@ -1806,3 +1806,796 @@ func TestHandler_DeleteRecordedInWAL(t *testing.T) {
 		t.Errorf("expected WAL head_seq 1, got %d", loaded.State.WAL.HeadSeq)
 	}
 }
+
+// --- Schema Updates Tests (write-schema-updates task) ---
+
+// TestParseSchemaUpdate verifies schema parsing from write request body.
+func TestParseSchemaUpdate(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      any
+		wantErr    bool
+		errContain string
+		check      func(*testing.T, *SchemaUpdate)
+	}{
+		{
+			name:  "nil returns nil",
+			input: nil,
+			check: func(t *testing.T, s *SchemaUpdate) {
+				if s != nil {
+					t.Error("expected nil schema update")
+				}
+			},
+		},
+		{
+			name: "basic schema with type only",
+			input: map[string]any{
+				"name": map[string]any{
+					"type": "string",
+				},
+			},
+			check: func(t *testing.T, s *SchemaUpdate) {
+				if s == nil {
+					t.Fatal("expected non-nil schema update")
+				}
+				if attr, ok := s.Attributes["name"]; !ok {
+					t.Error("expected 'name' attribute")
+				} else if attr.Type != "string" {
+					t.Errorf("expected type 'string', got %q", attr.Type)
+				}
+			},
+		},
+		{
+			name: "schema with filterable",
+			input: map[string]any{
+				"category": map[string]any{
+					"type":       "string",
+					"filterable": true,
+				},
+			},
+			check: func(t *testing.T, s *SchemaUpdate) {
+				attr := s.Attributes["category"]
+				if attr.Filterable == nil || !*attr.Filterable {
+					t.Error("expected filterable to be true")
+				}
+			},
+		},
+		{
+			name: "schema with full_text_search boolean",
+			input: map[string]any{
+				"description": map[string]any{
+					"type":             "string",
+					"full_text_search": true,
+				},
+			},
+			check: func(t *testing.T, s *SchemaUpdate) {
+				attr := s.Attributes["description"]
+				if attr.FullTextSearch != true {
+					t.Error("expected full_text_search to be true")
+				}
+			},
+		},
+		{
+			name: "schema with full_text_search config object",
+			input: map[string]any{
+				"content": map[string]any{
+					"type": "string",
+					"full_text_search": map[string]any{
+						"tokenizer":      "word_v3",
+						"case_sensitive": false,
+					},
+				},
+			},
+			check: func(t *testing.T, s *SchemaUpdate) {
+				attr := s.Attributes["content"]
+				if attr.FullTextSearch == nil {
+					t.Error("expected full_text_search to be set")
+				}
+			},
+		},
+		{
+			name: "schema with regex",
+			input: map[string]any{
+				"pattern": map[string]any{
+					"type":  "string",
+					"regex": true,
+				},
+			},
+			check: func(t *testing.T, s *SchemaUpdate) {
+				attr := s.Attributes["pattern"]
+				if attr.Regex == nil || !*attr.Regex {
+					t.Error("expected regex to be true")
+				}
+			},
+		},
+		{
+			name:       "schema not an object",
+			input:      "not an object",
+			wantErr:    true,
+			errContain: "schema must be an object",
+		},
+		{
+			name: "schema attribute not an object",
+			input: map[string]any{
+				"name": "not an object",
+			},
+			wantErr:    true,
+			errContain: "must be an object",
+		},
+		{
+			name: "invalid attribute name (starts with $)",
+			input: map[string]any{
+				"$invalid": map[string]any{
+					"type": "string",
+				},
+			},
+			wantErr:    true,
+			errContain: "cannot start with '$'",
+		},
+		{
+			name: "filterable not a boolean",
+			input: map[string]any{
+				"name": map[string]any{
+					"type":       "string",
+					"filterable": "not-a-bool",
+				},
+			},
+			wantErr:    true,
+			errContain: "filterable must be a boolean",
+		},
+		{
+			name: "type not a string",
+			input: map[string]any{
+				"name": map[string]any{
+					"type": 123,
+				},
+			},
+			wantErr:    true,
+			errContain: "type must be a string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ParseSchemaUpdate(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				} else if tt.errContain != "" && !contains(err.Error(), tt.errContain) {
+					t.Errorf("expected error containing %q, got %q", tt.errContain, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.check != nil {
+				tt.check(t, result)
+			}
+		})
+	}
+}
+
+// TestParseWriteRequest_Schema verifies schema field in write request parsing.
+func TestParseWriteRequest_Schema(t *testing.T) {
+	body := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "name": "test"},
+		},
+		"schema": map[string]any{
+			"name": map[string]any{
+				"type":       "string",
+				"filterable": true,
+			},
+		},
+	}
+
+	req, err := ParseWriteRequest("test-req", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if req.Schema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	if len(req.Schema.Attributes) != 1 {
+		t.Errorf("expected 1 schema attribute, got %d", len(req.Schema.Attributes))
+	}
+	if attr, ok := req.Schema.Attributes["name"]; !ok {
+		t.Error("expected 'name' in schema")
+	} else {
+		if attr.Type != "string" {
+			t.Errorf("expected type 'string', got %q", attr.Type)
+		}
+		if attr.Filterable == nil || !*attr.Filterable {
+			t.Error("expected filterable to be true")
+		}
+	}
+}
+
+// TestValidateAndConvertSchemaUpdate verifies schema validation and conversion.
+func TestValidateAndConvertSchemaUpdate(t *testing.T) {
+	trueVal := true
+	falseVal := false
+
+	tests := []struct {
+		name           string
+		update         *SchemaUpdate
+		existingSchema *namespace.Schema
+		wantErr        bool
+		errContain     string
+		check          func(*testing.T, *namespace.Schema)
+	}{
+		{
+			name:   "nil update returns nil",
+			update: nil,
+			check: func(t *testing.T, s *namespace.Schema) {
+				if s != nil {
+					t.Error("expected nil result")
+				}
+			},
+		},
+		{
+			name: "new attribute with type",
+			update: &SchemaUpdate{
+				Attributes: map[string]AttributeSchemaUpdate{
+					"name": {Type: "string", Filterable: &trueVal},
+				},
+			},
+			check: func(t *testing.T, s *namespace.Schema) {
+				if s == nil {
+					t.Fatal("expected non-nil result")
+				}
+				attr := s.Attributes["name"]
+				if attr.Type != "string" {
+					t.Errorf("expected type 'string', got %q", attr.Type)
+				}
+				if attr.Filterable == nil || !*attr.Filterable {
+					t.Error("expected filterable true")
+				}
+			},
+		},
+		{
+			name: "update filterable on existing attribute",
+			update: &SchemaUpdate{
+				Attributes: map[string]AttributeSchemaUpdate{
+					"category": {Filterable: &trueVal},
+				},
+			},
+			existingSchema: &namespace.Schema{
+				Attributes: map[string]namespace.AttributeSchema{
+					"category": {Type: "string", Filterable: &falseVal},
+				},
+			},
+			check: func(t *testing.T, s *namespace.Schema) {
+				attr := s.Attributes["category"]
+				if attr.Type != "string" {
+					t.Errorf("expected existing type 'string', got %q", attr.Type)
+				}
+				if attr.Filterable == nil || !*attr.Filterable {
+					t.Error("expected updated filterable to be true")
+				}
+			},
+		},
+		{
+			name: "update full_text_search on existing attribute",
+			update: &SchemaUpdate{
+				Attributes: map[string]AttributeSchemaUpdate{
+					"description": {FullTextSearch: true},
+				},
+			},
+			existingSchema: &namespace.Schema{
+				Attributes: map[string]namespace.AttributeSchema{
+					"description": {Type: "string"},
+				},
+			},
+			check: func(t *testing.T, s *namespace.Schema) {
+				attr := s.Attributes["description"]
+				if len(attr.FullTextSearch) == 0 {
+					t.Error("expected full_text_search to be set")
+				}
+			},
+		},
+		{
+			name: "type change rejected",
+			update: &SchemaUpdate{
+				Attributes: map[string]AttributeSchemaUpdate{
+					"age": {Type: "string"}, // Was int
+				},
+			},
+			existingSchema: &namespace.Schema{
+				Attributes: map[string]namespace.AttributeSchema{
+					"age": {Type: "int"},
+				},
+			},
+			wantErr:    true,
+			errContain: "changing attribute type is not allowed",
+		},
+		{
+			name: "same type allowed",
+			update: &SchemaUpdate{
+				Attributes: map[string]AttributeSchemaUpdate{
+					"age": {Type: "int", Filterable: &trueVal},
+				},
+			},
+			existingSchema: &namespace.Schema{
+				Attributes: map[string]namespace.AttributeSchema{
+					"age": {Type: "int"},
+				},
+			},
+			check: func(t *testing.T, s *namespace.Schema) {
+				attr := s.Attributes["age"]
+				if attr.Type != "int" {
+					t.Errorf("expected type 'int', got %q", attr.Type)
+				}
+			},
+		},
+		{
+			name: "new attribute requires type",
+			update: &SchemaUpdate{
+				Attributes: map[string]AttributeSchemaUpdate{
+					"newfield": {Filterable: &trueVal}, // No type
+				},
+			},
+			wantErr:    true,
+			errContain: "requires type",
+		},
+		{
+			name: "invalid type rejected",
+			update: &SchemaUpdate{
+				Attributes: map[string]AttributeSchemaUpdate{
+					"field": {Type: "invalid_type"},
+				},
+			},
+			wantErr:    true,
+			errContain: "invalid type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ValidateAndConvertSchemaUpdate(tt.update, tt.existingSchema)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				} else if tt.errContain != "" && !contains(err.Error(), tt.errContain) {
+					t.Errorf("expected error containing %q, got %q", tt.errContain, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.check != nil {
+				tt.check(t, result)
+			}
+		})
+	}
+}
+
+// TestHandler_SchemaSpecifiedInWriteRequest verifies schema can be specified in write request.
+func TestHandler_SchemaSpecifiedInWriteRequest(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-schema-write"
+
+	// Write with explicit schema
+	filterableTrue := true
+	req := &WriteRequest{
+		RequestID: "test-schema-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "test", "category": "books"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"name":     {Type: "string", Filterable: &filterableTrue},
+				"category": {Type: "string", Filterable: &filterableTrue},
+			},
+		},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.RowsUpserted != 1 {
+		t.Errorf("expected 1 row upserted, got %d", resp.RowsUpserted)
+	}
+
+	// Verify schema was applied
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load namespace state: %v", err)
+	}
+
+	if loaded.State.Schema == nil {
+		t.Fatal("expected schema to be set")
+	}
+
+	nameAttr, ok := loaded.State.Schema.Attributes["name"]
+	if !ok {
+		t.Fatal("expected 'name' attribute in schema")
+	}
+	if nameAttr.Type != "string" {
+		t.Errorf("expected name type 'string', got %q", nameAttr.Type)
+	}
+	if nameAttr.Filterable == nil || !*nameAttr.Filterable {
+		t.Error("expected name to be filterable")
+	}
+
+	catAttr, ok := loaded.State.Schema.Attributes["category"]
+	if !ok {
+		t.Fatal("expected 'category' attribute in schema")
+	}
+	if catAttr.Filterable == nil || !*catAttr.Filterable {
+		t.Error("expected category to be filterable")
+	}
+}
+
+// TestHandler_SchemaChangesAppliedAtomicallyWithWrite verifies schema changes
+// are applied atomically with the write.
+func TestHandler_SchemaChangesAppliedAtomicallyWithWrite(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-schema-atomic"
+
+	// First write: create initial schema
+	filterableTrue := true
+	req1 := &WriteRequest{
+		RequestID: "test-schema-atomic-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "first"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"name": {Type: "string"},
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req1)
+	if err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+
+	// Verify first write state
+	loaded1, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state after first write: %v", err)
+	}
+
+	if loaded1.State.WAL.HeadSeq != 1 {
+		t.Errorf("expected WAL seq 1, got %d", loaded1.State.WAL.HeadSeq)
+	}
+
+	// Second write: update schema to add filterable
+	req2 := &WriteRequest{
+		RequestID: "test-schema-atomic-2",
+		UpsertRows: []map[string]any{
+			{"id": 2, "name": "second"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"name": {Filterable: &filterableTrue},
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req2)
+	if err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+
+	// Verify second write state - both WAL seq and schema should be updated together
+	loaded2, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state after second write: %v", err)
+	}
+
+	if loaded2.State.WAL.HeadSeq != 2 {
+		t.Errorf("expected WAL seq 2, got %d", loaded2.State.WAL.HeadSeq)
+	}
+
+	nameAttr := loaded2.State.Schema.Attributes["name"]
+	if nameAttr.Type != "string" {
+		t.Errorf("expected type 'string', got %q", nameAttr.Type)
+	}
+	if nameAttr.Filterable == nil || !*nameAttr.Filterable {
+		t.Error("expected filterable to be updated to true")
+	}
+}
+
+// TestHandler_TypeChangeRejectedWith400 verifies that changing attribute type returns 400.
+func TestHandler_TypeChangeRejectedWith400(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-type-change"
+
+	// First write: create schema with 'age' as int
+	req1 := &WriteRequest{
+		RequestID: "type-change-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "age": 25},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"age": {Type: "int"},
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req1)
+	if err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+
+	// Second write: try to change 'age' type to string
+	req2 := &WriteRequest{
+		RequestID: "type-change-2",
+		UpsertRows: []map[string]any{
+			{"id": 2, "age": "thirty"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"age": {Type: "string"}, // Type change should be rejected
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req2)
+	if err == nil {
+		t.Fatal("expected error for type change, got nil")
+	}
+
+	if !errors.Is(err, ErrSchemaTypeChange) {
+		t.Errorf("expected ErrSchemaTypeChange, got: %v", err)
+	}
+
+	// Verify state wasn't modified by failed write
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+
+	// WAL should still be at seq 1
+	if loaded.State.WAL.HeadSeq != 1 {
+		t.Errorf("expected WAL seq 1, got %d", loaded.State.WAL.HeadSeq)
+	}
+
+	// Age should still be int
+	ageAttr := loaded.State.Schema.Attributes["age"]
+	if ageAttr.Type != "int" {
+		t.Errorf("expected type 'int' unchanged, got %q", ageAttr.Type)
+	}
+}
+
+// TestHandler_FilterableCanBeUpdated verifies that filterable can be updated on existing attributes.
+func TestHandler_FilterableCanBeUpdated(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-filterable-update"
+
+	// First write: create schema with filterable = false
+	falseVal := false
+	req1 := &WriteRequest{
+		RequestID: "filterable-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "status": "active"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"status": {Type: "string", Filterable: &falseVal},
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req1)
+	if err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+
+	// Verify filterable is false
+	loaded1, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	statusAttr := loaded1.State.Schema.Attributes["status"]
+	if statusAttr.Filterable == nil || *statusAttr.Filterable {
+		t.Error("expected filterable to be false initially")
+	}
+
+	// Second write: update filterable to true
+	trueVal := true
+	req2 := &WriteRequest{
+		RequestID: "filterable-2",
+		UpsertRows: []map[string]any{
+			{"id": 2, "status": "inactive"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"status": {Filterable: &trueVal}, // Just update filterable, keep type
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req2)
+	if err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+
+	// Verify filterable is now true
+	loaded2, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	statusAttr = loaded2.State.Schema.Attributes["status"]
+	if statusAttr.Filterable == nil || !*statusAttr.Filterable {
+		t.Error("expected filterable to be updated to true")
+	}
+	if statusAttr.Type != "string" {
+		t.Errorf("expected type 'string' preserved, got %q", statusAttr.Type)
+	}
+}
+
+// TestHandler_FullTextSearchCanBeUpdated verifies that full_text_search can be updated.
+func TestHandler_FullTextSearchCanBeUpdated(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-fts-update"
+
+	// First write: create schema without FTS
+	req1 := &WriteRequest{
+		RequestID: "fts-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "content": "Hello world"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"content": {Type: "string"},
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req1)
+	if err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+
+	// Verify FTS is not set
+	loaded1, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	contentAttr := loaded1.State.Schema.Attributes["content"]
+	if len(contentAttr.FullTextSearch) > 0 {
+		t.Error("expected full_text_search to be empty initially")
+	}
+
+	// Second write: enable FTS
+	req2 := &WriteRequest{
+		RequestID: "fts-2",
+		UpsertRows: []map[string]any{
+			{"id": 2, "content": "Goodbye world"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"content": {FullTextSearch: true},
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req2)
+	if err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+
+	// Verify FTS is now enabled
+	loaded2, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	contentAttr = loaded2.State.Schema.Attributes["content"]
+	if len(contentAttr.FullTextSearch) == 0 {
+		t.Error("expected full_text_search to be enabled")
+	}
+}
+
+// TestHandler_SchemaUpdateWithNoData verifies schema can be updated without data changes.
+func TestHandler_SchemaUpdateWithNoData(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-schema-only"
+
+	// First write: create initial data and schema
+	req1 := &WriteRequest{
+		RequestID: "schema-only-1",
+		UpsertRows: []map[string]any{
+			{"id": 1, "title": "Test"},
+		},
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"title": {Type: "string"},
+			},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req1)
+	if err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+
+	// Second write: only schema update, no data
+	trueVal := true
+	req2 := &WriteRequest{
+		RequestID: "schema-only-2",
+		Schema: &SchemaUpdate{
+			Attributes: map[string]AttributeSchemaUpdate{
+				"title": {Filterable: &trueVal},
+			},
+		},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req2)
+	if err != nil {
+		t.Fatalf("schema-only write failed: %v", err)
+	}
+
+	// Should succeed with 0 rows affected
+	if resp.RowsAffected != 0 {
+		t.Errorf("expected 0 rows affected, got %d", resp.RowsAffected)
+	}
+
+	// Verify schema was updated
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+
+	titleAttr := loaded.State.Schema.Attributes["title"]
+	if titleAttr.Filterable == nil || !*titleAttr.Filterable {
+		t.Error("expected filterable to be updated")
+	}
+}

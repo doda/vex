@@ -259,9 +259,7 @@ func (m *StateManager) AdvanceWAL(ctx context.Context, namespace string, etag st
 				state.Schema.Attributes = make(map[string]AttributeSchema)
 			}
 			for name, attr := range schemaDelta.Attributes {
-				if _, exists := state.Schema.Attributes[name]; !exists {
-					state.Schema.Attributes[name] = attr
-				}
+				state.Schema.Attributes[name] = attr
 			}
 		}
 

@@ -820,3 +820,313 @@ func TestWriteAPI_DeleteEmptyArray(t *testing.T) {
 		t.Errorf("expected rows_affected 0, got %v", result["rows_affected"])
 	}
 }
+
+// --- Schema Updates Tests (write-schema-updates task) ---
+
+// TestWriteAPI_SchemaSpecifiedInWriteRequest verifies schema can be specified in write request.
+func TestWriteAPI_SchemaSpecifiedInWriteRequest(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	ns := "schema-write-ns"
+
+	// Write with explicit schema
+	body := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "name": "test", "category": "books"},
+		},
+		"schema": map[string]any{
+			"name":     map[string]any{"type": "string", "filterable": true},
+			"category": map[string]any{"type": "string", "filterable": true},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected status 200, got %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Verify schema was applied
+	stateMan := namespace.NewStateManager(store)
+	loaded, err := stateMan.Load(req.Context(), ns)
+	if err != nil {
+		t.Fatalf("failed to load namespace state: %v", err)
+	}
+
+	if loaded.State.Schema == nil {
+		t.Fatal("expected schema to be set")
+	}
+
+	nameAttr, ok := loaded.State.Schema.Attributes["name"]
+	if !ok {
+		t.Fatal("expected 'name' attribute in schema")
+	}
+	if nameAttr.Type != "string" {
+		t.Errorf("expected name type 'string', got %q", nameAttr.Type)
+	}
+	if nameAttr.Filterable == nil || !*nameAttr.Filterable {
+		t.Error("expected name to be filterable")
+	}
+}
+
+// TestWriteAPI_SchemaChangesAppliedAtomically verifies schema changes are applied atomically.
+func TestWriteAPI_SchemaChangesAppliedAtomically(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	ns := "schema-atomic-ns"
+
+	// First write: create initial schema
+	body1 := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "name": "first"},
+		},
+		"schema": map[string]any{
+			"name": map[string]any{"type": "string"},
+		},
+	}
+	body1Bytes, _ := json.Marshal(body1)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body1Bytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("first write failed: %d", w.Result().StatusCode)
+	}
+
+	// Second write: update schema to add filterable
+	body2 := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 2, "name": "second"},
+		},
+		"schema": map[string]any{
+			"name": map[string]any{"filterable": true},
+		},
+	}
+	body2Bytes, _ := json.Marshal(body2)
+
+	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body2Bytes))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("second write failed: %d", w.Result().StatusCode)
+	}
+
+	// Verify both WAL and schema were updated atomically
+	stateMan := namespace.NewStateManager(store)
+	loaded, err := stateMan.Load(req.Context(), ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+
+	if loaded.State.WAL.HeadSeq != 2 {
+		t.Errorf("expected WAL seq 2, got %d", loaded.State.WAL.HeadSeq)
+	}
+
+	nameAttr := loaded.State.Schema.Attributes["name"]
+	if nameAttr.Filterable == nil || !*nameAttr.Filterable {
+		t.Error("expected filterable to be updated to true")
+	}
+}
+
+// TestWriteAPI_TypeChangeReturns400 verifies that changing attribute type returns 400.
+func TestWriteAPI_TypeChangeReturns400(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	ns := "type-change-ns"
+
+	// First write: create schema with 'age' as int
+	body1 := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "age": 25},
+		},
+		"schema": map[string]any{
+			"age": map[string]any{"type": "int"},
+		},
+	}
+	body1Bytes, _ := json.Marshal(body1)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body1Bytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("first write failed: %d", w.Result().StatusCode)
+	}
+
+	// Second write: try to change 'age' type to string
+	body2 := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 2, "age": "thirty"},
+		},
+		"schema": map[string]any{
+			"age": map[string]any{"type": "string"}, // Type change should be rejected
+		},
+	}
+	body2Bytes, _ := json.Marshal(body2)
+
+	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body2Bytes))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected status 400 for type change, got %d", resp.StatusCode)
+	}
+
+	// Verify error message mentions type change
+	respBody, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(respBody, []byte("type")) && !bytes.Contains(respBody, []byte("changing")) {
+		t.Errorf("expected error message about type change, got: %s", string(respBody))
+	}
+}
+
+// TestWriteAPI_FilterableCanBeUpdated verifies filterable can be updated on existing attributes.
+func TestWriteAPI_FilterableCanBeUpdated(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	ns := "filterable-update-ns"
+
+	// First write: create schema with filterable = false
+	body1 := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "status": "active"},
+		},
+		"schema": map[string]any{
+			"status": map[string]any{"type": "string", "filterable": false},
+		},
+	}
+	body1Bytes, _ := json.Marshal(body1)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body1Bytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("first write failed: %d", w.Result().StatusCode)
+	}
+
+	// Second write: update filterable to true
+	body2 := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 2, "status": "inactive"},
+		},
+		"schema": map[string]any{
+			"status": map[string]any{"filterable": true}, // Just update filterable
+		},
+	}
+	body2Bytes, _ := json.Marshal(body2)
+
+	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body2Bytes))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	// Verify filterable was updated
+	stateMan := namespace.NewStateManager(store)
+	loaded, err := stateMan.Load(req.Context(), ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+
+	statusAttr := loaded.State.Schema.Attributes["status"]
+	if statusAttr.Filterable == nil || !*statusAttr.Filterable {
+		t.Error("expected filterable to be updated to true")
+	}
+	if statusAttr.Type != "string" {
+		t.Errorf("expected type 'string' preserved, got %q", statusAttr.Type)
+	}
+}
+
+// TestWriteAPI_FullTextSearchCanBeUpdated verifies full_text_search can be updated.
+func TestWriteAPI_FullTextSearchCanBeUpdated(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	ns := "fts-update-ns"
+
+	// First write: create schema without FTS
+	body1 := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "content": "Hello world"},
+		},
+		"schema": map[string]any{
+			"content": map[string]any{"type": "string"},
+		},
+	}
+	body1Bytes, _ := json.Marshal(body1)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body1Bytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("first write failed: %d", w.Result().StatusCode)
+	}
+
+	// Second write: enable FTS
+	body2 := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 2, "content": "Goodbye world"},
+		},
+		"schema": map[string]any{
+			"content": map[string]any{"full_text_search": true},
+		},
+	}
+	body2Bytes, _ := json.Marshal(body2)
+
+	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body2Bytes))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	// Verify FTS was enabled
+	stateMan := namespace.NewStateManager(store)
+	loaded, err := stateMan.Load(req.Context(), ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+
+	contentAttr := loaded.State.Schema.Attributes["content"]
+	if len(contentAttr.FullTextSearch) == 0 {
+		t.Error("expected full_text_search to be enabled")
+	}
+}

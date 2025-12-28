@@ -407,7 +407,7 @@
       "Test changing attribute type is rejected with 400",
       "Verify filterable and full_text_search can be updated"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "write-conditional-upsert",
