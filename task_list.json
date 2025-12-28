@@ -1836,7 +1836,7 @@
       "Test base64 float32 little-endian roundtrip",
       "Verify float array encoding/decoding"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-golden-api",
