@@ -2076,7 +2076,7 @@
       "Verify indexer folds tail vectors into IVF segments",
       "Test L0 segments built quickly from WAL"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "segment-compaction",

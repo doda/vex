@@ -84,8 +84,23 @@ func (c *IndexerConfig) ValidateVersionConfig() error {
 
 // WALProcessor is called when WAL entries need to be processed.
 // It receives the namespace, the WAL range to process (exclusive start, inclusive end),
-// and the current state. Returns the number of bytes indexed.
-type WALProcessor func(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State) (int64, error)
+// the current state, and the ETag for optimistic locking.
+// Returns the processing result containing bytes indexed and optional manifest info.
+type WALProcessor func(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error)
+
+// WALProcessResult contains the result of WAL processing.
+type WALProcessResult struct {
+	// BytesIndexed is the number of bytes processed from WAL.
+	BytesIndexed int64
+	// ManifestKey is the object key of the new manifest (if one was written).
+	ManifestKey string
+	// ManifestSeq is the sequence number of the new manifest.
+	ManifestSeq uint64
+	// IndexedWALSeq is the WAL sequence covered by the new manifest.
+	IndexedWALSeq uint64
+	// ManifestWritten indicates if a new manifest was published.
+	ManifestWritten bool
+}
 
 // Indexer watches namespace states and processes WAL ranges.
 type Indexer struct {
@@ -119,20 +134,21 @@ func New(store objectstore.Store, stateManager *namespace.StateManager, config *
 		cancel:       cancel,
 	}
 	if processor == nil {
-		idx.processor = idx.defaultProcessor
+		// Wire up the L0SegmentProcessor as the default processor
+		l0Processor := NewL0SegmentProcessor(store, stateManager, nil, idx)
+		idx.processor = l0Processor.AsWALProcessor()
 	}
 	return idx
 }
 
 // defaultProcessor reads WAL entries in the range and returns total bytes read.
-// This is a basic processor that reads WAL but doesn't build indexes yet.
-// Full index building (IVF segments, manifests) will be implemented in later tasks.
-func (i *Indexer) defaultProcessor(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State) (int64, error) {
+// This is a fallback processor that reads WAL but doesn't build indexes.
+func (i *Indexer) defaultProcessor(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
 	_, totalBytes, err := i.ProcessWALRange(ctx, ns, startSeq, endSeq)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return totalBytes, nil
+	return &WALProcessResult{BytesIndexed: totalBytes}, nil
 }
 
 // Start begins the indexer's background processing.
@@ -358,27 +374,38 @@ func (w *namespaceWatcher) checkAndProcess() {
 	}
 
 	// Process WAL range
-	bytesIndexed, err := w.indexer.processor(ctx, w.namespace, startSeq, endSeq, state)
+	result, err := w.indexer.processor(ctx, w.namespace, startSeq, endSeq, state, loaded.ETag)
 	if err != nil {
 		// Error processing, will retry next tick
 		return
 	}
-
-	// Update state to advance indexed_wal_seq.
-	// Always advance when processing succeeds, even if bytesIndexed is 0
-	// (e.g., empty WAL entries or already-processed data).
-	// Full index publishing is handled by later tasks.
-	updatedState, err := w.indexer.stateManager.AdvanceIndex(
-		ctx,
-		w.namespace,
-		loaded.ETag,
-		state.Index.ManifestKey, // Keep current manifest
-		state.Index.ManifestSeq, // Keep current manifest seq
-		endSeq,                  // Advance indexed_wal_seq
-		bytesIndexed,
-	)
-	if err != nil {
+	if result == nil {
 		return
+	}
+
+	// If the processor already updated state (wrote manifest and called AdvanceIndex),
+	// we don't need to call AdvanceIndex again.
+	var updatedState *namespace.LoadedState
+	if result.ManifestWritten {
+		// Processor already advanced state, reload to get fresh state for pending rebuilds
+		updatedState, err = w.indexer.stateManager.Load(ctx, w.namespace)
+		if err != nil {
+			return
+		}
+	} else {
+		// Processor didn't write a manifest, so we need to advance state ourselves
+		updatedState, err = w.indexer.stateManager.AdvanceIndex(
+			ctx,
+			w.namespace,
+			loaded.ETag,
+			state.Index.ManifestKey, // Keep current manifest
+			state.Index.ManifestSeq, // Keep current manifest seq
+			endSeq,                  // Advance indexed_wal_seq
+			result.BytesIndexed,
+		)
+		if err != nil {
+			return
+		}
 	}
 
 	// Mark any pending rebuilds as ready now that we've caught up.

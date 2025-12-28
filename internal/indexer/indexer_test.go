@@ -200,14 +200,14 @@ func TestIndexerWatchesNamespaceState(t *testing.T) {
 	var processedStart, processedEnd uint64
 	var mu sync.Mutex
 
-	processor := func(ctx context.Context, namespace string, startSeq, endSeq uint64, state *namespace.State) (int64, error) {
+	processor := func(ctx context.Context, namespace string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
 		mu.Lock()
 		processedNS = namespace
 		processedStart = startSeq
 		processedEnd = endSeq
 		mu.Unlock()
 		processedCalls.Add(1)
-		return 0, nil
+		return &WALProcessResult{BytesIndexed: 0}, nil
 	}
 
 	config := &IndexerConfig{
@@ -324,12 +324,12 @@ func TestIndexerRunsAsynchronously(t *testing.T) {
 
 	var processCh = make(chan struct{}, 10)
 
-	processor := func(ctx context.Context, namespace string, startSeq, endSeq uint64, state *namespace.State) (int64, error) {
+	processor := func(ctx context.Context, namespace string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
 		select {
 		case processCh <- struct{}{}:
 		default:
 		}
-		return 0, nil
+		return &WALProcessResult{BytesIndexed: 0}, nil
 	}
 
 	config := &IndexerConfig{
@@ -576,9 +576,9 @@ func TestIndexerAdvancesSeqEvenWithZeroBytes(t *testing.T) {
 	var processorCalled atomic.Bool
 
 	// Processor that returns 0 bytes but succeeds
-	processor := func(ctx context.Context, namespace string, startSeq, endSeq uint64, state *namespace.State) (int64, error) {
+	processor := func(ctx context.Context, namespace string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
 		processorCalled.Store(true)
-		return 0, nil
+		return &WALProcessResult{BytesIndexed: 0}, nil
 	}
 
 	config := &IndexerConfig{
