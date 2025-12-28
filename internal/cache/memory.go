@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/vexsearch/vex/internal/metrics"
 )
 
 var (
@@ -145,10 +147,12 @@ func (mc *MemoryCache) Get(key MemoryCacheKey) ([]byte, error) {
 	ent, ok := mc.entries[entryKey]
 	if !ok {
 		mc.misses++
+		metrics.IncCacheMiss("ram")
 		return nil, ErrRAMCacheMiss
 	}
 
 	mc.hits++
+	metrics.IncCacheHit("ram")
 
 	// Update access time
 	now := time.Now()

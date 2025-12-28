@@ -9,6 +9,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
@@ -254,7 +255,7 @@ func (m *StateManager) AdvanceWAL(ctx context.Context, namespace string, etag st
 // AdvanceWALWithOptions advances the WAL head sequence by 1 and updates related fields.
 // Supports additional options like disabling backpressure tracking.
 func (m *StateManager) AdvanceWALWithOptions(ctx context.Context, namespace string, etag string, walKey string, bytesWritten int64, opts AdvanceWALOptions) (*LoadedState, error) {
-	return m.Update(ctx, namespace, etag, func(state *State) error {
+	loaded, err := m.Update(ctx, namespace, etag, func(state *State) error {
 		state.WAL.HeadSeq++
 		state.WAL.HeadKey = walKey
 		state.WAL.BytesUnindexedEst += bytesWritten
@@ -282,11 +283,16 @@ func (m *StateManager) AdvanceWALWithOptions(ctx context.Context, namespace stri
 
 		return nil
 	})
+	if err == nil && loaded != nil {
+		metrics.SetTailBytes(namespace, loaded.State.WAL.BytesUnindexedEst)
+		metrics.SetIndexLag(namespace, loaded.State.WAL.HeadSeq-loaded.State.Index.IndexedWALSeq)
+	}
+	return loaded, err
 }
 
 // AdvanceIndex advances the index state after a successful index publish.
 func (m *StateManager) AdvanceIndex(ctx context.Context, namespace string, etag string, manifestKey string, manifestSeq uint64, indexedWALSeq uint64, bytesIndexed int64) (*LoadedState, error) {
-	return m.Update(ctx, namespace, etag, func(state *State) error {
+	loaded, err := m.Update(ctx, namespace, etag, func(state *State) error {
 		state.Index.ManifestSeq = manifestSeq
 		state.Index.ManifestKey = manifestKey
 		state.Index.IndexedWALSeq = indexedWALSeq
@@ -307,6 +313,11 @@ func (m *StateManager) AdvanceIndex(ctx context.Context, namespace string, etag 
 
 		return nil
 	})
+	if err == nil && loaded != nil {
+		metrics.SetTailBytes(namespace, loaded.State.WAL.BytesUnindexedEst)
+		metrics.SetIndexLag(namespace, loaded.State.WAL.HeadSeq-loaded.State.Index.IndexedWALSeq)
+	}
+	return loaded, err
 }
 
 // AddPendingRebuild adds a pending index rebuild to track.

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/vexsearch/vex/internal/metrics"
 )
 
 var (
@@ -156,6 +158,7 @@ func (dc *DiskCache) Get(key CacheKey) (string, error) {
 
 	ent, ok := dc.entries[hash]
 	if !ok {
+		metrics.IncCacheMiss("disk")
 		return "", ErrCacheMiss
 	}
 
@@ -167,6 +170,7 @@ func (dc *DiskCache) Get(key CacheKey) (string, error) {
 	now := time.Now()
 	os.Chtimes(ent.path, now, now)
 
+	metrics.IncCacheHit("disk")
 	return ent.path, nil
 }
 

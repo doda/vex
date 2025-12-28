@@ -61,7 +61,7 @@ type Config struct {
 func New(cfg Config) (Store, error) {
 	switch cfg.Type {
 	case "s3", "minio":
-		return NewS3Store(S3Config{
+		store, err := NewS3Store(S3Config{
 			Endpoint:  cfg.Endpoint,
 			Bucket:    cfg.Bucket,
 			AccessKey: cfg.AccessKey,
@@ -69,13 +69,21 @@ func New(cfg Config) (Store, error) {
 			Region:    cfg.Region,
 			UseSSL:    cfg.UseSSL,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return NewInstrumentedStore(store), nil
 	case "filesystem", "fs":
 		if cfg.RootPath == "" {
 			cfg.RootPath = "/tmp/vex-objectstore"
 		}
-		return NewFSStore(cfg.RootPath)
+		store, err := NewFSStore(cfg.RootPath)
+		if err != nil {
+			return nil, err
+		}
+		return NewInstrumentedStore(store), nil
 	case "memory", "mem":
-		return NewMemoryStore(), nil
+		return NewInstrumentedStore(NewMemoryStore()), nil
 	default:
 		return nil, errors.New("unsupported object store type: " + cfg.Type)
 	}

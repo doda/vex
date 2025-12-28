@@ -612,3 +612,13 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-28T18:27:08.000Z] Completed metrics-prometheus: Review Prometheus metrics integration
+- Reviewed new Prometheus metrics definitions in `internal/metrics/metrics.go` and associated tests.
+- Verified cache hit/miss metrics wired into `internal/cache/memory.go` and `internal/cache/disk.go`.
+- Verified query concurrency gauge wired into `internal/query/limiter.go`.
+- Verified tail bytes and index lag metrics updated in `internal/namespace/manager.go`.
+- Verified WAL commit latency/bytes recorded in `internal/wal/committer.go`.
+- Fixed missing object store instrumentation by wrapping `pkg/objectstore/store.go` factory with `NewInstrumentedStore`.
+- Issues found: object store metrics were defined but not recorded before fix.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -66,9 +68,12 @@ type CommitResult struct {
 // 5. Update state.json with If-Match: <old-etag> (CAS)
 // 6. On CAS failure, retry state update (don't re-upload WAL)
 func (c *Committer) Commit(ctx context.Context, ns string, entry *WalEntry, schemaDelta *namespace.Schema) (*CommitResult, error) {
+	start := time.Now()
+
 	// Step 1: Load or create namespace state
 	loaded, err := c.stateManager.LoadOrCreate(ctx, ns)
 	if err != nil {
+		metrics.ObserveWALCommit(time.Since(start).Seconds(), 0, err)
 		return nil, fmt.Errorf("failed to load namespace state: %w", err)
 	}
 
@@ -82,6 +87,7 @@ func (c *Committer) Commit(ctx context.Context, ns string, entry *WalEntry, sche
 	// Step 3: Encode the WAL entry (serialize + checksum + compress)
 	encResult, err := c.encoder.Encode(entry)
 	if err != nil {
+		metrics.ObserveWALCommit(time.Since(start).Seconds(), 0, err)
 		return nil, fmt.Errorf("failed to encode WAL entry: %w", err)
 	}
 
@@ -95,9 +101,11 @@ func (c *Committer) Commit(ctx context.Context, ns string, entry *WalEntry, sche
 		if objectstore.IsConflictError(err) {
 			// WAL already exists - ensure it's the same entry before proceeding.
 			if confirmErr := c.confirmExistingWAL(ctx, walKey, encResult.Data); confirmErr != nil {
+				metrics.ObserveWALCommit(time.Since(start).Seconds(), 0, confirmErr)
 				return nil, fmt.Errorf("%w: %v", ErrWALSeqConflict, confirmErr)
 			}
 		} else {
+			metrics.ObserveWALCommit(time.Since(start).Seconds(), 0, err)
 			return nil, fmt.Errorf("%w: %v", ErrWALUploadFailed, err)
 		}
 	} else {
@@ -110,8 +118,11 @@ func (c *Committer) Commit(ctx context.Context, ns string, entry *WalEntry, sche
 
 	result, err := c.updateStateWithRetry(ctx, ns, loaded.ETag, walKeyRelative, bytesWritten, schemaDelta)
 	if err != nil {
+		metrics.ObserveWALCommit(time.Since(start).Seconds(), 0, err)
 		return nil, err
 	}
+
+	metrics.ObserveWALCommit(time.Since(start).Seconds(), bytesWritten, nil)
 
 	return &CommitResult{
 		Seq:          seq,

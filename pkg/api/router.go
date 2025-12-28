@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/filter"
@@ -152,6 +153,7 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 	}
 
 	r.mux.HandleFunc("GET /health", r.handleHealth)
+	r.mux.HandleFunc("GET /metrics", r.handleMetrics)
 	r.mux.HandleFunc("POST /_test/state", r.handleSetTestState)
 	r.mux.HandleFunc("GET /v1/namespaces", r.authMiddleware(r.handleListNamespaces))
 	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/metadata", r.authMiddleware(r.validateNamespace(r.handleGetMetadata)))
@@ -335,6 +337,10 @@ func (r *Router) validateNamespace(next http.HandlerFunc) http.HandlerFunc {
 func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (r *Router) handleMetrics(w http.ResponseWriter, req *http.Request) {
+	promhttp.Handler().ServeHTTP(w, req)
 }
 
 func (r *Router) handleListNamespaces(w http.ResponseWriter, req *http.Request) {

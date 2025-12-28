@@ -1717,7 +1717,7 @@
       "Test global object store ops and latency",
       "Verify WAL commit latency metric"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "format-versioning",

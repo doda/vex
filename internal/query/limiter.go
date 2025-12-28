@@ -4,6 +4,8 @@ package query
 import (
 	"context"
 	"sync"
+
+	"github.com/vexsearch/vex/internal/metrics"
 )
 
 // DefaultConcurrencyLimit is the maximum concurrent queries per namespace.
@@ -41,7 +43,11 @@ func (l *ConcurrencyLimiter) Acquire(ctx context.Context, namespace string) (rel
 
 	select {
 	case nl.ch <- struct{}{}:
-		return func() { <-nl.ch }, nil
+		metrics.IncQueryConcurrency(namespace)
+		return func() {
+			<-nl.ch
+			metrics.DecQueryConcurrency(namespace)
+		}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -54,7 +60,11 @@ func (l *ConcurrencyLimiter) TryAcquire(namespace string) (release func(), ok bo
 
 	select {
 	case nl.ch <- struct{}{}:
-		return func() { <-nl.ch }, true
+		metrics.IncQueryConcurrency(namespace)
+		return func() {
+			<-nl.ch
+			metrics.DecQueryConcurrency(namespace)
+		}, true
 	default:
 		return nil, false
 	}
