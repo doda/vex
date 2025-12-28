@@ -35,6 +35,10 @@ func (m *mockTailStoreWithRefresh) Scan(ctx context.Context, ns string, f *filte
 	return m.docs, nil
 }
 
+func (m *mockTailStoreWithRefresh) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {
+	return m.docs, nil
+}
+
 func (m *mockTailStoreWithRefresh) VectorScan(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter) ([]tail.VectorScanResult, error) {
 	var results []tail.VectorScanResult
 	for i, doc := range m.docs {
@@ -47,6 +51,10 @@ func (m *mockTailStoreWithRefresh) VectorScan(ctx context.Context, ns string, qu
 		})
 	}
 	return results, nil
+}
+
+func (m *mockTailStoreWithRefresh) VectorScanWithByteLimit(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]tail.VectorScanResult, error) {
+	return m.VectorScan(ctx, ns, queryVector, topK, metric, f)
 }
 
 func (m *mockTailStoreWithRefresh) GetDocument(ctx context.Context, ns string, id document.ID) (*tail.Document, error) {
@@ -384,5 +392,263 @@ func TestStrongQueryNoRefreshWhenFullyIndexed(t *testing.T) {
 	// No refresh needed when fully indexed
 	if mockTail.refreshCalled {
 		t.Error("expected Refresh NOT to be called when data is fully indexed")
+	}
+}
+
+// mockTailStoreWithByteLimit is a mock that tracks byte limit parameters for eventual consistency testing.
+type mockTailStoreWithByteLimit struct {
+	docs               []*tail.Document
+	scanByteLimit      int64
+	vectorByteLimit    int64
+	scanWithLimitCall  bool
+	vectorWithLimitCall bool
+}
+
+func (m *mockTailStoreWithByteLimit) Refresh(ctx context.Context, ns string, afterSeq, upToSeq uint64) error {
+	return nil
+}
+
+func (m *mockTailStoreWithByteLimit) Scan(ctx context.Context, ns string, f *filter.Filter) ([]*tail.Document, error) {
+	return m.docs, nil
+}
+
+func (m *mockTailStoreWithByteLimit) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {
+	m.scanWithLimitCall = true
+	m.scanByteLimit = byteLimitBytes
+	return m.docs, nil
+}
+
+func (m *mockTailStoreWithByteLimit) VectorScan(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter) ([]tail.VectorScanResult, error) {
+	var results []tail.VectorScanResult
+	for i, doc := range m.docs {
+		if i >= topK {
+			break
+		}
+		results = append(results, tail.VectorScanResult{
+			Doc:      doc,
+			Distance: float64(i) * 0.1,
+		})
+	}
+	return results, nil
+}
+
+func (m *mockTailStoreWithByteLimit) VectorScanWithByteLimit(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]tail.VectorScanResult, error) {
+	m.vectorWithLimitCall = true
+	m.vectorByteLimit = byteLimitBytes
+	return m.VectorScan(ctx, ns, queryVector, topK, metric, f)
+}
+
+func (m *mockTailStoreWithByteLimit) GetDocument(ctx context.Context, ns string, id document.ID) (*tail.Document, error) {
+	return nil, nil
+}
+
+func (m *mockTailStoreWithByteLimit) TailBytes(ns string) int64 {
+	return 0
+}
+
+func (m *mockTailStoreWithByteLimit) Clear(ns string) {}
+
+func (m *mockTailStoreWithByteLimit) AddWALEntry(ns string, entry *wal.WalEntry) {}
+
+func (m *mockTailStoreWithByteLimit) Close() error {
+	return nil
+}
+
+func TestEventualConsistencyCanBeRequested(t *testing.T) {
+	// This test verifies that consistency: "eventual" is a valid request option
+	t.Run("eventual consistency is a valid value", func(t *testing.T) {
+		req, err := ParseQueryRequest(map[string]any{
+			"rank_by":     []any{"id", "asc"},
+			"consistency": "eventual",
+		})
+		if err != nil {
+			t.Fatalf("ParseQueryRequest failed: %v", err)
+		}
+		if req.Consistency != "eventual" {
+			t.Errorf("expected consistency 'eventual', got %q", req.Consistency)
+		}
+	})
+
+	t.Run("eventual query executes successfully", func(t *testing.T) {
+		store := objectstore.NewMemoryStore()
+		stateMan := namespace.NewStateManager(store)
+		ctx := context.Background()
+
+		if err := writeTestState(ctx, store, "test-ns", 5, 2); err != nil {
+			t.Fatalf("failed to write test state: %v", err)
+		}
+
+		mockTail := &mockTailStoreWithRefresh{
+			docs: []*tail.Document{
+				{ID: document.NewU64ID(1), Attributes: map[string]any{"name": "doc1"}},
+			},
+		}
+
+		h := NewHandler(store, stateMan, mockTail)
+
+		req := &QueryRequest{
+			RankBy:      []any{"id", "asc"},
+			Limit:       10,
+			Consistency: "eventual",
+		}
+		resp, err := h.Handle(ctx, "test-ns", req)
+		if err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if len(resp.Rows) != 1 {
+			t.Errorf("expected 1 row, got %d", len(resp.Rows))
+		}
+	})
+}
+
+func TestEventualConsistencyMayBeStale(t *testing.T) {
+	// Eventual consistency queries skip refresh, allowing stale reads up to 60 seconds.
+	// The staleness is implicit - we don't refresh on every query.
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	ctx := context.Background()
+
+	// Write state with unindexed data
+	if err := writeTestState(ctx, store, "test-ns", 10, 5); err != nil {
+		t.Fatalf("failed to write test state: %v", err)
+	}
+
+	mockTail := &mockTailStoreWithRefresh{
+		docs: []*tail.Document{
+			{ID: document.NewU64ID(1), Attributes: map[string]any{"name": "doc1"}},
+		},
+	}
+
+	h := NewHandler(store, stateMan, mockTail)
+
+	t.Run("eventual query skips refresh allowing staleness", func(t *testing.T) {
+		mockTail.refreshCalled = false
+
+		req := &QueryRequest{
+			RankBy:      []any{"id", "asc"},
+			Limit:       10,
+			Consistency: "eventual",
+		}
+		_, err := h.Handle(ctx, "test-ns", req)
+		if err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+
+		// Eventual consistency should NOT trigger a refresh
+		if mockTail.refreshCalled {
+			t.Error("expected Refresh NOT to be called for eventual consistency (allows staleness)")
+		}
+	})
+
+	t.Run("strong query does NOT allow staleness", func(t *testing.T) {
+		mockTail.refreshCalled = false
+
+		req := &QueryRequest{
+			RankBy:      []any{"id", "asc"},
+			Limit:       10,
+			Consistency: "strong",
+		}
+		_, err := h.Handle(ctx, "test-ns", req)
+		if err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+
+		// Strong consistency must refresh to not allow staleness
+		if !mockTail.refreshCalled {
+			t.Error("expected Refresh to be called for strong consistency (no staleness)")
+		}
+	})
+}
+
+func TestEventualSearchesOnly128MiBOfTail(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	ctx := context.Background()
+
+	if err := writeTestState(ctx, store, "test-ns", 5, 2); err != nil {
+		t.Fatalf("failed to write test state: %v", err)
+	}
+
+	mockTail := &mockTailStoreWithByteLimit{
+		docs: []*tail.Document{
+			{ID: document.NewU64ID(1), Attributes: map[string]any{"name": "doc1"}, Vector: []float32{1.0, 0.0}},
+		},
+	}
+
+	h := NewHandler(store, stateMan, mockTail)
+
+	t.Run("eventual order-by query uses byte-limited scan", func(t *testing.T) {
+		mockTail.scanWithLimitCall = false
+		mockTail.scanByteLimit = 0
+
+		req := &QueryRequest{
+			RankBy:      []any{"id", "asc"},
+			Limit:       10,
+			Consistency: "eventual",
+		}
+		_, err := h.Handle(ctx, "test-ns", req)
+		if err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+
+		if !mockTail.scanWithLimitCall {
+			t.Error("expected ScanWithByteLimit to be called for eventual consistency")
+		}
+		if mockTail.scanByteLimit != EventualTailCapBytes {
+			t.Errorf("expected byte limit %d, got %d", EventualTailCapBytes, mockTail.scanByteLimit)
+		}
+	})
+
+	t.Run("eventual vector query uses byte-limited scan", func(t *testing.T) {
+		mockTail.vectorWithLimitCall = false
+		mockTail.vectorByteLimit = 0
+
+		req := &QueryRequest{
+			RankBy:      []any{"vector", "ANN", []any{1.0, 0.0}},
+			Limit:       10,
+			Consistency: "eventual",
+		}
+		_, err := h.Handle(ctx, "test-ns", req)
+		if err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+
+		if !mockTail.vectorWithLimitCall {
+			t.Error("expected VectorScanWithByteLimit to be called for eventual consistency")
+		}
+		if mockTail.vectorByteLimit != EventualTailCapBytes {
+			t.Errorf("expected byte limit %d, got %d", EventualTailCapBytes, mockTail.vectorByteLimit)
+		}
+	})
+
+	t.Run("strong query does NOT use byte-limited scan", func(t *testing.T) {
+		mockTail.scanWithLimitCall = false
+		mockTail.vectorWithLimitCall = false
+
+		req := &QueryRequest{
+			RankBy:      []any{"id", "asc"},
+			Limit:       10,
+			Consistency: "strong",
+		}
+		_, err := h.Handle(ctx, "test-ns", req)
+		if err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+
+		if mockTail.scanWithLimitCall {
+			t.Error("expected Scan (not ScanWithByteLimit) to be called for strong consistency")
+		}
+	})
+}
+
+func TestEventualTailCapValue(t *testing.T) {
+	// Verify the 128 MiB constant is correctly defined
+	const expectedBytes = 128 * 1024 * 1024 // 128 MiB
+
+	if EventualTailCapBytes != expectedBytes {
+		t.Errorf("EventualTailCapBytes = %d, want %d", EventualTailCapBytes, expectedBytes)
 	}
 }

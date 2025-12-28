@@ -58,9 +58,19 @@ type Store interface {
 	// Results are ordered by WAL sequence (newest first for deduplication).
 	Scan(ctx context.Context, namespace string, f *filter.Filter) ([]*Document, error)
 
+	// ScanWithByteLimit scans documents within a byte limit for eventual consistency.
+	// Uses newest WAL entries first until the byte limit is reached.
+	// byteLimitBytes of 0 means no limit (same as Scan).
+	ScanWithByteLimit(ctx context.Context, namespace string, f *filter.Filter, byteLimitBytes int64) ([]*Document, error)
+
 	// VectorScan performs an exhaustive vector similarity search over tail documents.
 	// Returns the top-k results sorted by distance (ascending).
 	VectorScan(ctx context.Context, namespace string, queryVector []float32, topK int, metric DistanceMetric, f *filter.Filter) ([]VectorScanResult, error)
+
+	// VectorScanWithByteLimit performs vector scan within a byte limit for eventual consistency.
+	// Uses newest WAL entries first until the byte limit is reached.
+	// byteLimitBytes of 0 means no limit (same as VectorScan).
+	VectorScanWithByteLimit(ctx context.Context, namespace string, queryVector []float32, topK int, metric DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]VectorScanResult, error)
 
 	// GetDocument returns a specific document by ID from the tail.
 	// Returns nil if the document is not in the tail.
@@ -462,4 +472,139 @@ func (ts *TailStore) Close() error {
 
 	ts.namespaces = make(map[string]*namespaceTail)
 	return nil
+}
+
+// ScanWithByteLimit scans documents within a byte limit for eventual consistency.
+// Uses newest WAL entries first until the byte limit is reached.
+func (ts *TailStore) ScanWithByteLimit(ctx context.Context, namespace string, f *filter.Filter, byteLimitBytes int64) ([]*Document, error) {
+	if byteLimitBytes <= 0 {
+		return ts.Scan(ctx, namespace, f)
+	}
+
+	nt := ts.getNamespace(namespace)
+	if nt == nil {
+		return nil, nil
+	}
+
+	nt.mu.RLock()
+	defer nt.mu.RUnlock()
+
+	// Collect allowed WAL seqs from entries within the byte limit
+	allowedSeqs := ts.getSeqsWithinByteLimit(nt, byteLimitBytes)
+
+	var results []*Document
+	for _, doc := range nt.documents {
+		if doc.Deleted {
+			continue
+		}
+
+		// Check if document's WAL entry is within byte limit
+		if !allowedSeqs[doc.WalSeq] {
+			continue
+		}
+
+		if f != nil {
+			filterDoc := make(filter.Document)
+			for k, v := range doc.Attributes {
+				filterDoc[k] = v
+			}
+			if !f.Eval(filterDoc) {
+				continue
+			}
+		}
+
+		results = append(results, doc)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].WalSeq != results[j].WalSeq {
+			return results[i].WalSeq > results[j].WalSeq
+		}
+		return results[i].SubBatchID > results[j].SubBatchID
+	})
+
+	return results, nil
+}
+
+// VectorScanWithByteLimit performs vector scan within a byte limit for eventual consistency.
+func (ts *TailStore) VectorScanWithByteLimit(ctx context.Context, namespace string, queryVector []float32, topK int, metric DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]VectorScanResult, error) {
+	if byteLimitBytes <= 0 {
+		return ts.VectorScan(ctx, namespace, queryVector, topK, metric, f)
+	}
+
+	nt := ts.getNamespace(namespace)
+	if nt == nil {
+		return nil, nil
+	}
+
+	nt.mu.RLock()
+	defer nt.mu.RUnlock()
+
+	// Collect allowed WAL seqs from entries within the byte limit
+	allowedSeqs := ts.getSeqsWithinByteLimit(nt, byteLimitBytes)
+
+	var candidates []VectorScanResult
+
+	for _, doc := range nt.documents {
+		if doc.Deleted || doc.Vector == nil {
+			continue
+		}
+
+		// Check if document's WAL entry is within byte limit
+		if !allowedSeqs[doc.WalSeq] {
+			continue
+		}
+
+		if f != nil {
+			filterDoc := make(filter.Document)
+			for k, v := range doc.Attributes {
+				filterDoc[k] = v
+			}
+			if !f.Eval(filterDoc) {
+				continue
+			}
+		}
+
+		dist := computeDistance(queryVector, doc.Vector, metric)
+		candidates = append(candidates, VectorScanResult{
+			Doc:      doc,
+			Distance: dist,
+		})
+	}
+
+	// Sort by distance
+	sortByDistance(candidates)
+
+	if len(candidates) > topK {
+		candidates = candidates[:topK]
+	}
+
+	return candidates, nil
+}
+
+// getSeqsWithinByteLimit returns WAL seqs within the byte limit.
+// WAL entries are ordered newest-first (by seq descending) and included until limit is reached.
+func (ts *TailStore) getSeqsWithinByteLimit(nt *namespaceTail, byteLimitBytes int64) map[uint64]bool {
+	// Collect all WAL seqs and sort descending (newest first)
+	seqs := make([]uint64, 0, len(nt.ramEntries))
+	for seq := range nt.ramEntries {
+		seqs = append(seqs, seq)
+	}
+	sort.Slice(seqs, func(i, j int) bool {
+		return seqs[i] > seqs[j]
+	})
+
+	allowedSeqs := make(map[uint64]bool)
+	var accumulatedBytes int64
+
+	for _, seq := range seqs {
+		entry := nt.ramEntries[seq]
+		if accumulatedBytes+entry.sizeBytes > byteLimitBytes {
+			break
+		}
+		accumulatedBytes += entry.sizeBytes
+		allowedSeqs[seq] = true
+	}
+
+	return allowedSeqs
 }

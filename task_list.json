@@ -693,7 +693,7 @@
       "Test eventual searches only up to 128 MiB of tail",
       "Verify 128 MiB window uses newest WAL entries first"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "query-disable-backpressure-error",

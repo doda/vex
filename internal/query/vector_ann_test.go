@@ -28,6 +28,10 @@ func (m *vectorTestTailStore) Scan(ctx context.Context, ns string, f *filter.Fil
 	return m.docs, nil
 }
 
+func (m *vectorTestTailStore) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {
+	return m.Scan(ctx, ns, f)
+}
+
 func (m *vectorTestTailStore) VectorScan(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter) ([]tail.VectorScanResult, error) {
 	m.metric = metric // record which metric was used
 
@@ -68,6 +72,10 @@ func (m *vectorTestTailStore) VectorScan(ctx context.Context, ns string, queryVe
 	}
 
 	return results, nil
+}
+
+func (m *vectorTestTailStore) VectorScanWithByteLimit(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]tail.VectorScanResult, error) {
+	return m.VectorScan(ctx, ns, queryVector, topK, metric, f)
 }
 
 func computeDistance(a, b []float32, metric tail.DistanceMetric) float64 {

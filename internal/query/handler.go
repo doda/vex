@@ -21,6 +21,9 @@ const (
 
 	// DefaultLimit is the default result limit if not specified.
 	DefaultLimit = 10
+
+	// EventualTailCapBytes is the max tail bytes to search in eventual consistency mode (128 MiB).
+	EventualTailCapBytes = 128 * 1024 * 1024
 )
 
 var (
@@ -157,14 +160,20 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		}
 	}
 
+	// Determine byte limit for eventual consistency
+	var tailByteCap int64
+	if req.Consistency == "eventual" {
+		tailByteCap = EventualTailCapBytes
+	}
+
 	// Execute the query based on rank_by type
 	var rows []Row
 	if parsed != nil {
 		switch parsed.Type {
 		case RankByVector:
-			rows, err = h.executeVectorQuery(ctx, ns, loaded, parsed, f, req)
+			rows, err = h.executeVectorQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByAttr:
-			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req)
+			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req, tailByteCap)
 		case RankByBM25:
 			rows, err = h.executeBM25Query(ctx, ns, parsed, f, req)
 		}
@@ -318,7 +327,8 @@ func parseVector(v any, vectorEncoding string) ([]float32, error) {
 }
 
 // executeVectorQuery executes a vector ANN query.
-func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
+// tailByteCap of 0 means no limit (strong consistency); >0 means eventual consistency byte cap.
+func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
 	if h.tailStore == nil {
 		return nil, nil
 	}
@@ -337,7 +347,14 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 	}
 
 	// Perform exhaustive vector scan on tail (no ANN index yet)
-	results, err := h.tailStore.VectorScan(ctx, ns, parsed.QueryVector, req.Limit, metric, f)
+	// Use byte-limited scan for eventual consistency
+	var results []tail.VectorScanResult
+	var err error
+	if tailByteCap > 0 {
+		results, err = h.tailStore.VectorScanWithByteLimit(ctx, ns, parsed.QueryVector, req.Limit, metric, f, tailByteCap)
+	} else {
+		results, err = h.tailStore.VectorScan(ctx, ns, parsed.QueryVector, req.Limit, metric, f)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -356,13 +373,20 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 }
 
 // executeAttrQuery executes an order-by attribute query.
-func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
+// tailByteCap of 0 means no limit (strong consistency); >0 means eventual consistency byte cap.
+func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
 	if h.tailStore == nil {
 		return nil, nil
 	}
 
-	// Scan all documents
-	docs, err := h.tailStore.Scan(ctx, ns, f)
+	// Scan documents, using byte-limited scan for eventual consistency
+	var docs []*tail.Document
+	var err error
+	if tailByteCap > 0 {
+		docs, err = h.tailStore.ScanWithByteLimit(ctx, ns, f, tailByteCap)
+	} else {
+		docs, err = h.tailStore.Scan(ctx, ns, f)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -39,8 +39,16 @@ func (m *orderByMockTailStore) Scan(ctx context.Context, ns string, f *filter.Fi
 	return result, nil
 }
 
+func (m *orderByMockTailStore) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {
+	return m.Scan(ctx, ns, f)
+}
+
 func (m *orderByMockTailStore) VectorScan(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter) ([]tail.VectorScanResult, error) {
 	return nil, nil
+}
+
+func (m *orderByMockTailStore) VectorScanWithByteLimit(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]tail.VectorScanResult, error) {
+	return m.VectorScan(ctx, ns, queryVector, topK, metric, f)
 }
 
 func (m *orderByMockTailStore) GetDocument(ctx context.Context, ns string, id document.ID) (*tail.Document, error) {

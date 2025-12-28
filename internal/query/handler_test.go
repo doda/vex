@@ -460,6 +460,10 @@ func (m *mockTailStore) Scan(ctx context.Context, ns string, f *filter.Filter) (
 	return m.docs, nil
 }
 
+func (m *mockTailStore) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {
+	return m.docs, nil
+}
+
 func (m *mockTailStore) VectorScan(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter) ([]tail.VectorScanResult, error) {
 	var results []tail.VectorScanResult
 	for i, doc := range m.docs {
@@ -472,6 +476,10 @@ func (m *mockTailStore) VectorScan(ctx context.Context, ns string, queryVector [
 		})
 	}
 	return results, nil
+}
+
+func (m *mockTailStore) VectorScanWithByteLimit(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]tail.VectorScanResult, error) {
+	return m.VectorScan(ctx, ns, queryVector, topK, metric, f)
 }
 
 func (m *mockTailStore) GetDocument(ctx context.Context, ns string, id document.ID) (*tail.Document, error) {

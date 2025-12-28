@@ -649,3 +649,223 @@ func TestFloat16Conversion(t *testing.T) {
 		})
 	}
 }
+
+func TestTailStore_ScanWithByteLimit(t *testing.T) {
+	store := newMockStore()
+	ts := New(DefaultConfig(), store, nil, nil)
+	defer ts.Close()
+
+	// Add multiple WAL entries with different sequences
+	// Each entry has known size, allowing us to test byte limiting
+
+	// Entry 1: oldest (seq=1)
+	_, data1 := createTestWALEntry("test-ns", 1, []testDoc{
+		{id: 1, attrs: map[string]any{"seq": int64(1)}},
+	})
+	store.objects["test-ns/wal/1.wal.zst"] = data1
+
+	// Entry 2: middle (seq=2)
+	_, data2 := createTestWALEntry("test-ns", 2, []testDoc{
+		{id: 2, attrs: map[string]any{"seq": int64(2)}},
+	})
+	store.objects["test-ns/wal/2.wal.zst"] = data2
+
+	// Entry 3: newest (seq=3)
+	_, data3 := createTestWALEntry("test-ns", 3, []testDoc{
+		{id: 3, attrs: map[string]any{"seq": int64(3)}},
+	})
+	store.objects["test-ns/wal/3.wal.zst"] = data3
+
+	ctx := context.Background()
+	err := ts.Refresh(ctx, "test-ns", 0, 3)
+	if err != nil {
+		t.Fatalf("Refresh failed: %v", err)
+	}
+
+	// Get the namespace to understand entry sizes
+	nt := ts.getNamespace("test-ns")
+	if nt == nil {
+		t.Fatal("namespace not found")
+	}
+
+	// Verify all documents are present without limit
+	allDocs, err := ts.ScanWithByteLimit(ctx, "test-ns", nil, 0)
+	if err != nil {
+		t.Fatalf("ScanWithByteLimit(0) failed: %v", err)
+	}
+	if len(allDocs) != 3 {
+		t.Errorf("expected 3 docs with no limit, got %d", len(allDocs))
+	}
+
+	// Calculate size of newest entry only
+	newestEntrySize := nt.ramEntries[3].sizeBytes
+
+	t.Run("byte limit includes only newest entry", func(t *testing.T) {
+		// Limit to only fit the newest entry
+		docs, err := ts.ScanWithByteLimit(ctx, "test-ns", nil, newestEntrySize)
+		if err != nil {
+			t.Fatalf("ScanWithByteLimit failed: %v", err)
+		}
+
+		// Should only return the newest document (id=3)
+		if len(docs) != 1 {
+			t.Errorf("expected 1 doc (newest only), got %d", len(docs))
+		}
+		if len(docs) > 0 && docs[0].ID.U64() != 3 {
+			t.Errorf("expected doc id=3 (newest), got %d", docs[0].ID.U64())
+		}
+	})
+
+	t.Run("byte limit uses newest first ordering", func(t *testing.T) {
+		// Limit to fit 2 entries (should include seq=3 and seq=2, but not seq=1)
+		twoEntriesSize := nt.ramEntries[3].sizeBytes + nt.ramEntries[2].sizeBytes
+
+		docs, err := ts.ScanWithByteLimit(ctx, "test-ns", nil, twoEntriesSize)
+		if err != nil {
+			t.Fatalf("ScanWithByteLimit failed: %v", err)
+		}
+
+		// Should return docs from newest entries (id=3, id=2) but not oldest (id=1)
+		if len(docs) != 2 {
+			t.Errorf("expected 2 docs (newest 2), got %d", len(docs))
+		}
+
+		// Check that id=1 (oldest) is NOT included
+		for _, doc := range docs {
+			if doc.ID.U64() == 1 {
+				t.Error("expected oldest doc (id=1) to be excluded due to byte limit")
+			}
+		}
+	})
+}
+
+func TestTailStore_VectorScanWithByteLimit(t *testing.T) {
+	store := newMockStore()
+	ts := New(DefaultConfig(), store, nil, nil)
+	defer ts.Close()
+
+	// Add multiple WAL entries with different sequences and vectors
+
+	// Entry 1: oldest (seq=1)
+	_, data1 := createTestWALEntry("test-ns", 1, []testDoc{
+		{id: 1, attrs: map[string]any{"seq": int64(1)}, vector: []float32{0.0, 1.0}},
+	})
+	store.objects["test-ns/wal/1.wal.zst"] = data1
+
+	// Entry 2: middle (seq=2) - closest to query
+	_, data2 := createTestWALEntry("test-ns", 2, []testDoc{
+		{id: 2, attrs: map[string]any{"seq": int64(2)}, vector: []float32{1.0, 0.0}},
+	})
+	store.objects["test-ns/wal/2.wal.zst"] = data2
+
+	// Entry 3: newest (seq=3)
+	_, data3 := createTestWALEntry("test-ns", 3, []testDoc{
+		{id: 3, attrs: map[string]any{"seq": int64(3)}, vector: []float32{0.5, 0.5}},
+	})
+	store.objects["test-ns/wal/3.wal.zst"] = data3
+
+	ctx := context.Background()
+	err := ts.Refresh(ctx, "test-ns", 0, 3)
+	if err != nil {
+		t.Fatalf("Refresh failed: %v", err)
+	}
+
+	nt := ts.getNamespace("test-ns")
+	if nt == nil {
+		t.Fatal("namespace not found")
+	}
+
+	// Query close to [1, 0] - id=2 is closest
+	query := []float32{1.0, 0.0}
+
+	t.Run("vector scan with no limit returns all", func(t *testing.T) {
+		results, err := ts.VectorScanWithByteLimit(ctx, "test-ns", query, 10, MetricCosineDistance, nil, 0)
+		if err != nil {
+			t.Fatalf("VectorScanWithByteLimit(0) failed: %v", err)
+		}
+		if len(results) != 3 {
+			t.Errorf("expected 3 results with no limit, got %d", len(results))
+		}
+	})
+
+	t.Run("vector scan with byte limit excludes oldest entries", func(t *testing.T) {
+		// Limit to only the newest entry (seq=3)
+		newestEntrySize := nt.ramEntries[3].sizeBytes
+
+		results, err := ts.VectorScanWithByteLimit(ctx, "test-ns", query, 10, MetricCosineDistance, nil, newestEntrySize)
+		if err != nil {
+			t.Fatalf("VectorScanWithByteLimit failed: %v", err)
+		}
+
+		// Should only include doc from newest entry
+		if len(results) != 1 {
+			t.Errorf("expected 1 result (newest only), got %d", len(results))
+		}
+		if len(results) > 0 && results[0].Doc.ID.U64() != 3 {
+			t.Errorf("expected result id=3, got %d", results[0].Doc.ID.U64())
+		}
+	})
+}
+
+func TestTailStore_ByteLimitNewestFirstOrdering(t *testing.T) {
+	// This test specifically verifies that the 128 MiB window uses newest WAL entries first
+	// per the spec: "Order unindexed WAL entries by seq descending (newest first)"
+
+	store := newMockStore()
+	ts := New(DefaultConfig(), store, nil, nil)
+	defer ts.Close()
+
+	// Create 5 entries with different sequences using the correct key format
+	for i := uint64(1); i <= 5; i++ {
+		_, data := createTestWALEntry("test-ns", i, []testDoc{
+			{id: i, attrs: map[string]any{"seq": int64(i)}},
+		})
+		// KeyForSeq returns "wal/N.wal.zst", so the full key is "test-ns/" + KeyForSeq(i)
+		store.objects["test-ns/"+wal.KeyForSeq(i)] = data
+	}
+
+	ctx := context.Background()
+	err := ts.Refresh(ctx, "test-ns", 0, 5)
+	if err != nil {
+		t.Fatalf("Refresh failed: %v", err)
+	}
+
+	nt := ts.getNamespace("test-ns")
+	if nt == nil {
+		t.Fatal("namespace not found")
+	}
+
+	// Verify we have all 5 entries
+	if len(nt.ramEntries) != 5 {
+		t.Fatalf("expected 5 RAM entries, got %d", len(nt.ramEntries))
+	}
+
+	// Calculate size to include only 2 newest entries (seq=5 and seq=4)
+	twoNewestSize := nt.ramEntries[5].sizeBytes + nt.ramEntries[4].sizeBytes
+
+	docs, err := ts.ScanWithByteLimit(ctx, "test-ns", nil, twoNewestSize)
+	if err != nil {
+		t.Fatalf("ScanWithByteLimit failed: %v", err)
+	}
+
+	// Should include only docs from seq=5 and seq=4 (newest first)
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (newest 2 entries), got %d", len(docs))
+	}
+
+	// Verify docs are from newest entries
+	foundIDs := map[uint64]bool{}
+	for _, doc := range docs {
+		foundIDs[doc.ID.U64()] = true
+	}
+
+	if !foundIDs[5] {
+		t.Error("expected doc id=5 (newest) to be included")
+	}
+	if !foundIDs[4] {
+		t.Error("expected doc id=4 (second newest) to be included")
+	}
+	if foundIDs[1] || foundIDs[2] || foundIDs[3] {
+		t.Error("expected older docs (id=1,2,3) to be excluded")
+	}
+}
