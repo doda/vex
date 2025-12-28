@@ -1177,7 +1177,7 @@
       "Test stemming, remove_stopwords, ascii_folding options",
       "Verify BM25 params k1, b configuration"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "bm25-indexing",

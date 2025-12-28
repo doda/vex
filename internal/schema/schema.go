@@ -2,6 +2,8 @@ package schema
 
 import (
 	"fmt"
+
+	"github.com/vexsearch/vex/internal/fts"
 )
 
 // Definition represents a complete schema definition for a namespace.
@@ -20,34 +22,13 @@ type Attribute struct {
 	Vector         *VectorFieldConfig // nil = not a vector field
 }
 
-// FullTextConfig represents full-text search configuration for an attribute.
-// Can be enabled with just a boolean (use defaults) or with detailed options.
-type FullTextConfig struct {
-	// Core options
-	Tokenizer       string  // default "word_v3"
-	CaseSensitive   bool    // default false
-	Language        string  // default "english"
-	Stemming        bool    // default true
-	RemoveStopwords bool    // default true
-	ASCIIFolding    bool    // default false
-
-	// BM25 parameters
-	BM25K1 float64 // default 1.2
-	BM25B  float64 // default 0.75
-}
+// FullTextConfig is an alias for fts.Config.
+// Use fts.Config directly when possible.
+type FullTextConfig = fts.Config
 
 // NewFullTextConfig creates a FullTextConfig with default values.
 func NewFullTextConfig() *FullTextConfig {
-	return &FullTextConfig{
-		Tokenizer:       "word_v3",
-		CaseSensitive:   false,
-		Language:        "english",
-		Stemming:        true,
-		RemoveStopwords: true,
-		ASCIIFolding:    false,
-		BM25K1:          1.2,
-		BM25B:           0.75,
-	}
+	return fts.DefaultConfig()
 }
 
 // VectorFieldConfig represents vector configuration for a vector attribute.
@@ -289,49 +270,9 @@ func (d *Definition) UpdateFieldOptions(name string, filterable *bool, fts *Full
 // ParseFullTextSearch parses a full_text_search value which can be:
 // - bool: true means use default config, false means disabled
 // - map: custom configuration options
+// This function delegates to fts.Parse for validation and parsing.
 func ParseFullTextSearch(v any) (*FullTextConfig, error) {
-	if v == nil {
-		return nil, nil
-	}
-
-	switch val := v.(type) {
-	case bool:
-		if val {
-			return NewFullTextConfig(), nil
-		}
-		return nil, nil
-
-	case map[string]any:
-		cfg := NewFullTextConfig()
-		if tokenizer, ok := val["tokenizer"].(string); ok {
-			cfg.Tokenizer = tokenizer
-		}
-		if caseSensitive, ok := val["case_sensitive"].(bool); ok {
-			cfg.CaseSensitive = caseSensitive
-		}
-		if language, ok := val["language"].(string); ok {
-			cfg.Language = language
-		}
-		if stemming, ok := val["stemming"].(bool); ok {
-			cfg.Stemming = stemming
-		}
-		if removeStopwords, ok := val["remove_stopwords"].(bool); ok {
-			cfg.RemoveStopwords = removeStopwords
-		}
-		if asciiFolding, ok := val["ascii_folding"].(bool); ok {
-			cfg.ASCIIFolding = asciiFolding
-		}
-		if k1, ok := val["k1"].(float64); ok {
-			cfg.BM25K1 = k1
-		}
-		if b, ok := val["b"].(float64); ok {
-			cfg.BM25B = b
-		}
-		return cfg, nil
-
-	default:
-		return nil, fmt.Errorf("full_text_search must be a boolean or object, got %T", v)
-	}
+	return fts.Parse(v)
 }
 
 // ParseVectorConfig parses a vector field configuration from JSON.

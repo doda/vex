@@ -151,11 +151,11 @@ func TestFullTextSearchObject(t *testing.T) {
 	if !cfg.ASCIIFolding {
 		t.Error("expected ascii_folding to be true")
 	}
-	if cfg.BM25K1 != 1.5 {
-		t.Errorf("expected k1=1.5, got %f", cfg.BM25K1)
+	if cfg.K1 != 1.5 {
+		t.Errorf("expected k1=1.5, got %f", cfg.K1)
 	}
-	if cfg.BM25B != 0.5 {
-		t.Errorf("expected b=0.5, got %f", cfg.BM25B)
+	if cfg.B != 0.5 {
+		t.Errorf("expected b=0.5, got %f", cfg.B)
 	}
 }
 
@@ -175,8 +175,8 @@ func TestFullTextSearchObjectPartial(t *testing.T) {
 	if cfg.Language != "english" {
 		t.Errorf("expected default language 'english', got %q", cfg.Language)
 	}
-	if cfg.BM25K1 != 1.2 {
-		t.Errorf("expected default k1=1.2, got %f", cfg.BM25K1)
+	if cfg.K1 != 1.2 {
+		t.Errorf("expected default k1=1.2, got %f", cfg.K1)
 	}
 }
 
@@ -611,10 +611,10 @@ func TestNewFullTextConfigDefaults(t *testing.T) {
 	if cfg.ASCIIFolding {
 		t.Error("expected ascii_folding=false")
 	}
-	if cfg.BM25K1 != 1.2 {
-		t.Errorf("expected k1=1.2, got %f", cfg.BM25K1)
+	if cfg.K1 != 1.2 {
+		t.Errorf("expected k1=1.2, got %f", cfg.K1)
 	}
-	if cfg.BM25B != 0.75 {
-		t.Errorf("expected b=0.75, got %f", cfg.BM25B)
+	if cfg.B != 0.75 {
+		t.Errorf("expected b=0.75, got %f", cfg.B)
 	}
 }
