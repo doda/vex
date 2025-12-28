@@ -51,10 +51,7 @@ func (m *mockDedupTailStore) Scan(ctx context.Context, ns string, f *filter.Filt
 		// Skip deleted documents
 		if newest != nil && !newest.Deleted {
 			if f != nil {
-				filterDoc := make(filter.Document)
-				for k, v := range newest.Attributes {
-					filterDoc[k] = v
-				}
+				filterDoc := buildDedupTestFilterDoc(newest)
 				if f.Eval(filterDoc) {
 					result = append(result, newest)
 				}
@@ -64,6 +61,26 @@ func (m *mockDedupTailStore) Scan(ctx context.Context, ns string, f *filter.Filt
 		}
 	}
 	return result, nil
+}
+
+// buildDedupTestFilterDoc creates a filter.Document including the "id" field.
+func buildDedupTestFilterDoc(doc *tail.Document) filter.Document {
+	filterDoc := make(filter.Document)
+	for k, v := range doc.Attributes {
+		filterDoc[k] = v
+	}
+	// Add "id" field for filtering by document ID
+	switch doc.ID.Type() {
+	case document.IDTypeU64:
+		filterDoc["id"] = doc.ID.U64()
+	case document.IDTypeUUID:
+		filterDoc["id"] = doc.ID.UUID().String()
+	case document.IDTypeString:
+		filterDoc["id"] = doc.ID.String()
+	default:
+		filterDoc["id"] = doc.ID.String()
+	}
+	return filterDoc
 }
 
 func (m *mockDedupTailStore) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {

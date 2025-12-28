@@ -1566,7 +1566,7 @@
       "Verify filter [\"id\", \"Gt\", last_id] for next page",
       "Test continue until fewer than limit results"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "http-status-codes",

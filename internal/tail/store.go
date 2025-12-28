@@ -322,10 +322,7 @@ func (ts *TailStore) Scan(ctx context.Context, namespace string, f *filter.Filte
 		}
 
 		if f != nil {
-			filterDoc := make(filter.Document)
-			for k, v := range doc.Attributes {
-				filterDoc[k] = v
-			}
+			filterDoc := buildFilterDoc(doc)
 			if !f.Eval(filterDoc) {
 				continue
 			}
@@ -361,10 +358,7 @@ func (ts *TailStore) VectorScan(ctx context.Context, namespace string, queryVect
 		}
 
 		if f != nil {
-			filterDoc := make(filter.Document)
-			for k, v := range doc.Attributes {
-				filterDoc[k] = v
-			}
+			filterDoc := buildFilterDoc(doc)
 			if !f.Eval(filterDoc) {
 				continue
 			}
@@ -504,10 +498,7 @@ func (ts *TailStore) ScanWithByteLimit(ctx context.Context, namespace string, f 
 		}
 
 		if f != nil {
-			filterDoc := make(filter.Document)
-			for k, v := range doc.Attributes {
-				filterDoc[k] = v
-			}
+			filterDoc := buildFilterDoc(doc)
 			if !f.Eval(filterDoc) {
 				continue
 			}
@@ -556,10 +547,7 @@ func (ts *TailStore) VectorScanWithByteLimit(ctx context.Context, namespace stri
 		}
 
 		if f != nil {
-			filterDoc := make(filter.Document)
-			for k, v := range doc.Attributes {
-				filterDoc[k] = v
-			}
+			filterDoc := buildFilterDoc(doc)
 			if !f.Eval(filterDoc) {
 				continue
 			}
@@ -580,6 +568,33 @@ func (ts *TailStore) VectorScanWithByteLimit(ctx context.Context, namespace stri
 	}
 
 	return candidates, nil
+}
+
+// buildFilterDoc creates a filter.Document from a tail.Document, including the "id" field.
+// This is necessary for filters like ["id", "Gt", last_id] to work with pagination.
+func buildFilterDoc(doc *Document) filter.Document {
+	filterDoc := make(filter.Document)
+	for k, v := range doc.Attributes {
+		filterDoc[k] = v
+	}
+	// Add "id" field for filtering by document ID
+	filterDoc["id"] = docIDToFilterValue(doc.ID)
+	return filterDoc
+}
+
+// docIDToFilterValue converts a document.ID to a value suitable for filter evaluation.
+// This is used to enable filtering by "id" field.
+func docIDToFilterValue(id document.ID) any {
+	switch id.Type() {
+	case document.IDTypeU64:
+		return id.U64()
+	case document.IDTypeUUID:
+		return id.UUID().String()
+	case document.IDTypeString:
+		return id.String()
+	default:
+		return id.String()
+	}
 }
 
 // getSeqsWithinByteLimit returns WAL seqs within the byte limit.

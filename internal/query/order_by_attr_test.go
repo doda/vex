@@ -32,11 +32,27 @@ func (m *orderByMockTailStore) Scan(ctx context.Context, ns string, f *filter.Fi
 		for k, v := range doc.Attributes {
 			filterDoc[k] = v
 		}
+		// Add "id" field for filtering by document ID
+		filterDoc["id"] = docIDToFilterValue(doc.ID)
 		if f.Eval(filterDoc) {
 			result = append(result, doc)
 		}
 	}
 	return result, nil
+}
+
+// docIDToFilterValue converts a document.ID to a value suitable for filter evaluation.
+func docIDToFilterValue(id document.ID) any {
+	switch id.Type() {
+	case document.IDTypeU64:
+		return id.U64()
+	case document.IDTypeUUID:
+		return id.UUID().String()
+	case document.IDTypeString:
+		return id.String()
+	default:
+		return id.String()
+	}
 }
 
 func (m *orderByMockTailStore) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {

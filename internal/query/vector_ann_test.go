@@ -45,10 +45,7 @@ func (m *vectorTestTailStore) VectorScan(ctx context.Context, ns string, queryVe
 		}
 
 		if f != nil {
-			filterDoc := make(filter.Document)
-			for k, v := range doc.Attributes {
-				filterDoc[k] = v
-			}
+			filterDoc := buildVectorTestFilterDoc(doc)
 			if !f.Eval(filterDoc) {
 				continue
 			}
@@ -75,6 +72,26 @@ func (m *vectorTestTailStore) VectorScan(ctx context.Context, ns string, queryVe
 	}
 
 	return results, nil
+}
+
+// buildVectorTestFilterDoc creates a filter.Document including the "id" field.
+func buildVectorTestFilterDoc(doc *tail.Document) filter.Document {
+	filterDoc := make(filter.Document)
+	for k, v := range doc.Attributes {
+		filterDoc[k] = v
+	}
+	// Add "id" field for filtering by document ID
+	switch doc.ID.Type() {
+	case document.IDTypeU64:
+		filterDoc["id"] = doc.ID.U64()
+	case document.IDTypeUUID:
+		filterDoc["id"] = doc.ID.UUID().String()
+	case document.IDTypeString:
+		filterDoc["id"] = doc.ID.String()
+	default:
+		filterDoc["id"] = doc.ID.String()
+	}
+	return filterDoc
 }
 
 func (m *vectorTestTailStore) VectorScanWithByteLimit(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]tail.VectorScanResult, error) {

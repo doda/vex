@@ -25,10 +25,7 @@ func (m *filteringTailStore) Scan(ctx context.Context, ns string, f *filter.Filt
 	var results []*tail.Document
 	for _, doc := range m.docs {
 		if f != nil {
-			filterDoc := make(filter.Document)
-			for k, v := range doc.Attributes {
-				filterDoc[k] = v
-			}
+			filterDoc := buildFilterDocForTest(doc)
 			if !f.Eval(filterDoc) {
 				continue
 			}
@@ -50,10 +47,7 @@ func (m *filteringTailStore) VectorScan(ctx context.Context, ns string, queryVec
 		}
 
 		if f != nil {
-			filterDoc := make(filter.Document)
-			for k, v := range doc.Attributes {
-				filterDoc[k] = v
-			}
+			filterDoc := buildFilterDocForTest(doc)
 			if !f.Eval(filterDoc) {
 				continue
 			}
@@ -71,6 +65,26 @@ func (m *filteringTailStore) VectorScan(ctx context.Context, ns string, queryVec
 		results = results[:topK]
 	}
 	return results, nil
+}
+
+// buildFilterDocForTest creates a filter.Document including the "id" field.
+func buildFilterDocForTest(doc *tail.Document) filter.Document {
+	filterDoc := make(filter.Document)
+	for k, v := range doc.Attributes {
+		filterDoc[k] = v
+	}
+	// Add "id" field for filtering by document ID
+	switch doc.ID.Type() {
+	case document.IDTypeU64:
+		filterDoc["id"] = doc.ID.U64()
+	case document.IDTypeUUID:
+		filterDoc["id"] = doc.ID.UUID().String()
+	case document.IDTypeString:
+		filterDoc["id"] = doc.ID.String()
+	default:
+		filterDoc["id"] = doc.ID.String()
+	}
+	return filterDoc
 }
 
 func (m *filteringTailStore) VectorScanWithByteLimit(ctx context.Context, ns string, queryVector []float32, topK int, metric tail.DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]tail.VectorScanResult, error) {
