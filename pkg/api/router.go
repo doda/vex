@@ -1647,7 +1647,7 @@ func (r *Router) SetStore(store objectstore.Store) error {
 	r.store = store
 	if store != nil {
 		r.stateManager = namespace.NewStateManager(store)
-		r.tailStore = tail.New(tail.DefaultConfig(), store, nil, nil)
+		r.tailStore = tail.New(tail.DefaultConfig(), store, r.diskCache, r.ramCache)
 		// Get compat mode from config, defaulting to turbopuffer
 		compatMode := string(r.cfg.GetCompatMode())
 		writeHandler, err := write.NewHandlerWithOptions(store, r.stateManager, r.tailStore, compatMode)
@@ -1662,7 +1662,11 @@ func (r *Router) SetStore(store objectstore.Store) error {
 		}
 		r.writeBatcher = writeBatcher
 		// Initialize the query handler
-		r.queryHandler = query.NewHandler(store, r.stateManager, r.tailStore)
+		if r.diskCache != nil || r.ramCache != nil {
+			r.queryHandler = query.NewHandlerWithCache(store, r.stateManager, r.tailStore, r.diskCache, r.ramCache)
+		} else {
+			r.queryHandler = query.NewHandler(store, r.stateManager, r.tailStore)
+		}
 	}
 	return nil
 }

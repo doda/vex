@@ -2520,7 +2520,7 @@
       "Start server and verify caches are constructed and injected into query/tail handlers",
       "Call warm-cache endpoint and confirm prefetch tasks run"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "cmd/vex/serve/serve.go",
       "pkg/api/router.go"

@@ -1103,3 +1103,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: avoided stale field tracking during upsert removal.
 - Resolution: removed cached field map and rely on ensureDocFields per update.
+[2025-12-30T03:15:00Z] Completed cache-init-serve-path: PASS
+- Initialized disk/RAM caches in serve startup and wired SetStore to pass caches into tail/query handlers.
+- Added cache warmer creation in serve path using configured caches and state manager.
+- Files changed: cmd/vex/serve/serve.go; pkg/api/router.go; task_list.json.
+- Verification: started server with filesystem store + temp cache dirs, injected manifest/state, called /v1/namespaces/warmtest/hint_cache_warm, and confirmed /_debug/cache entry_count/used_bytes increased (disk_cache 0->4, ram_cache 0->2).
+- Tests: /usr/local/go/bin/go test ./... -count=1 (fails: internal/query TestBM25IndexScanDeduplication; internal/write no-tail-store tests; tests/integration missing creds).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: full test suite has pre-existing failures unrelated to cache init.
+- Resolution: documented failing tests; no changes to unrelated behavior.
+- Follow-ups: investigate failing internal/query and internal/write tests; run ./scripts/setup-garage.sh for integration credentials.
