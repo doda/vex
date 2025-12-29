@@ -66,7 +66,7 @@ func createTestNamespace(t *testing.T, store objectstore.Store, ns string, tombs
 }
 
 func walKey(ns string, seq uint64) string {
-	return fmt.Sprintf("vex/namespaces/%s/wal/%d.wal.zst", ns, seq)
+	return fmt.Sprintf("vex/namespaces/%s/wal/%s.wal.zst", ns, padSequence(seq))
 }
 
 func indexSegmentKey(ns, segment string) string {

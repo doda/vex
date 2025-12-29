@@ -33,11 +33,11 @@ import (
 
 // NamespaceState represents the state of a namespace for testing/simulation purposes.
 type NamespaceState struct {
-	Exists           bool
-	Deleted          bool
-	IndexBuilding    bool
-	UnindexedBytes   int64
-	BackpressureOff  bool // disable_backpressure=true was used
+	Exists          bool
+	Deleted         bool
+	IndexBuilding   bool
+	UnindexedBytes  int64
+	BackpressureOff bool // disable_backpressure=true was used
 }
 
 // ObjectStoreState represents the state of object storage for testing/simulation purposes.
@@ -93,11 +93,11 @@ type Router struct {
 	stateManager *namespace.StateManager
 	tailStore    tail.Store
 	writeHandler *write.Handler
-	writeBatcher *write.Batcher       // batches writes at 1/sec per namespace
-	queryHandler *query.Handler       // handles query execution
-	cacheWarmer  *warmer.Warmer       // background cache warmer
-	diskCache    *cache.DiskCache     // NVMe SSD cache
-	ramCache     *cache.MemoryCache   // RAM cache for hot index structures
+	writeBatcher *write.Batcher     // batches writes at 1/sec per namespace
+	queryHandler *query.Handler     // handles query execution
+	cacheWarmer  *warmer.Warmer     // background cache warmer
+	diskCache    *cache.DiskCache   // NVMe SSD cache
+	ramCache     *cache.MemoryCache // RAM cache for hot index structures
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -1269,10 +1269,10 @@ func (r *Router) handleDebugState(w http.ResponseWriter, req *http.Request) {
 	// Return a minimal state representation for test mode
 	nsState := r.getNamespaceState(ns)
 	response := map[string]interface{}{
-		"namespace":   ns,
-		"exists":      nsState != nil && nsState.Exists,
-		"deleted":     nsState != nil && nsState.Deleted,
-		"test_mode":   true,
+		"namespace": ns,
+		"exists":    nsState != nil && nsState.Exists,
+		"deleted":   nsState != nil && nsState.Deleted,
+		"test_mode": true,
 	}
 	r.writeJSON(w, http.StatusOK, response)
 }
@@ -1803,7 +1803,7 @@ func parseUint64(s string) (uint64, error) {
 }
 
 // readWalEntry reads and decodes a WAL entry from object storage.
-// WAL entries are stored under vex/namespaces/<namespace>/wal/<seq>.wal.zst.
+// WAL entries are stored under vex/namespaces/<namespace>/wal/<zero-padded seq>.wal.zst.
 func readWalEntry(ctx context.Context, store objectstore.Store, ns string, seq uint64) (map[string]interface{}, error) {
 	key := fmt.Sprintf("vex/namespaces/%s/%s", ns, wal.KeyForSeq(seq))
 	reader, _, err := store.Get(ctx, key, nil)
@@ -1837,17 +1837,17 @@ func readWalEntry(ctx context.Context, store objectstore.Store, ns string, seq u
 
 	// Convert to JSON-friendly map
 	result := map[string]interface{}{
-		"seq":              entry.Seq,
-		"namespace":        entry.Namespace,
-		"format_version":   entry.FormatVersion,
-		"committed_at_ms":  entry.CommittedUnixMs,
+		"seq":             entry.Seq,
+		"namespace":       entry.Namespace,
+		"format_version":  entry.FormatVersion,
+		"committed_at_ms": entry.CommittedUnixMs,
 	}
 
 	// Convert sub-batches
 	subBatches := make([]interface{}, 0, len(entry.SubBatches))
 	for _, batch := range entry.SubBatches {
 		batchMap := map[string]interface{}{
-			"request_id":    batch.RequestId,
+			"request_id":     batch.RequestId,
 			"received_at_ms": batch.ReceivedAtMs,
 		}
 

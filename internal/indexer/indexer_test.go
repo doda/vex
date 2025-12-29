@@ -437,7 +437,7 @@ func TestExtractNamespaceFromKey(t *testing.T) {
 	}{
 		{"vex/namespaces/my-ns/meta/state.json", "my-ns"},
 		{"vex/namespaces/test_123/meta/state.json", "test_123"},
-		{"vex/namespaces/ns/wal/1.wal.zst", ""},
+		{"vex/namespaces/ns/wal/00000000000000000001.wal.zst", ""},
 		{"vex/namespaces/", ""},
 		{"other/path/meta/state.json", ""},
 	}

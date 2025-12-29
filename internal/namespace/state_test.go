@@ -105,7 +105,7 @@ func TestCASLoop(t *testing.T) {
 
 		updated, err := mgr.Update(ctx, "test-cas-1", loaded.ETag, func(state *State) error {
 			state.WAL.HeadSeq++
-			state.WAL.HeadKey = "wal/0000000000000000001.wal.zst"
+			state.WAL.HeadKey = "wal/00000000000000000001.wal.zst"
 			return nil
 		})
 		if err != nil {
@@ -126,7 +126,7 @@ func TestCASLoop(t *testing.T) {
 		// Simulate a concurrent update by modifying state directly
 		_, err = mgr.Update(ctx, "test-cas-2", loaded.ETag, func(state *State) error {
 			state.WAL.HeadSeq++
-			state.WAL.HeadKey = "wal/0000000000000000001.wal.zst"
+			state.WAL.HeadKey = "wal/00000000000000000001.wal.zst"
 			return nil
 		})
 		if err != nil {
@@ -138,7 +138,7 @@ func TestCASLoop(t *testing.T) {
 		updated, err := mgr.Update(ctx, "test-cas-2", loaded.ETag, func(state *State) error {
 			updateCount++
 			state.WAL.HeadSeq++
-			state.WAL.HeadKey = "wal/0000000000000000002.wal.zst"
+			state.WAL.HeadKey = "wal/00000000000000000002.wal.zst"
 			return nil
 		})
 		if err != nil {
@@ -473,7 +473,7 @@ func TestAdvanceWAL(t *testing.T) {
 		}
 
 		loaded, err = mgr.AdvanceWAL(ctx, "test-advance-wal", loaded.ETag,
-			"wal/0000000000000000001.wal.zst", 1024, schemaDelta)
+			"wal/00000000000000000001.wal.zst", 1024, schemaDelta)
 		if err != nil {
 			t.Fatalf("failed to advance WAL: %v", err)
 		}

@@ -3,6 +3,7 @@ package wal
 import (
 	"bytes"
 	"math"
+	"sort"
 	"testing"
 	"time"
 
@@ -177,9 +178,9 @@ func TestDeterministicEncoding(t *testing.T) {
 			Type: MutationType_MUTATION_TYPE_UPSERT,
 			Id:   &DocumentID{Id: &DocumentID_U64{U64: 3}},
 			Attributes: map[string]*AttributeValue{
-				"zebra":   StringValue("z"),
-				"apple":   StringValue("a"),
-				"mango":   StringValue("m"),
+				"zebra": StringValue("z"),
+				"apple": StringValue("a"),
+				"mango": StringValue("m"),
 			},
 		},
 		{
@@ -350,9 +351,9 @@ func TestKeyForSeq(t *testing.T) {
 		seq  uint64
 		want string
 	}{
-		{0, "wal/0.wal.zst"},
-		{1, "wal/1.wal.zst"},
-		{123, "wal/123.wal.zst"},
+		{0, "wal/00000000000000000000.wal.zst"},
+		{1, "wal/00000000000000000001.wal.zst"},
+		{123, "wal/00000000000000000123.wal.zst"},
 		{math.MaxUint64, "wal/18446744073709551615.wal.zst"},
 	}
 
@@ -360,6 +361,24 @@ func TestKeyForSeq(t *testing.T) {
 		got := KeyForSeq(tt.seq)
 		if got != tt.want {
 			t.Errorf("KeyForSeq(%d) = %q, want %q", tt.seq, got, tt.want)
+		}
+	}
+}
+
+func TestKeyForSeqLexOrder(t *testing.T) {
+	keys := []string{
+		KeyForSeq(1),
+		KeyForSeq(2),
+		KeyForSeq(10),
+		KeyForSeq(11),
+	}
+
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+
+	for i, key := range keys {
+		if sorted[i] != key {
+			t.Fatalf("sorted key %d = %s, want %s", i, sorted[i], key)
 		}
 	}
 }

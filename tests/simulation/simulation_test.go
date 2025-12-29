@@ -572,7 +572,7 @@ func TestDeterministicStoreWithFaultInjection(t *testing.T) {
 	// Update should fail due to injected error
 	_, err = stateManager.Update(ctx, "fault-test", loaded.ETag, func(state *namespace.State) error {
 		state.WAL.HeadSeq = 1
-		state.WAL.HeadKey = "wal/00000001.wal.zst"
+		state.WAL.HeadKey = "wal/00000000000000000001.wal.zst"
 		return nil
 	})
 	if err == nil {

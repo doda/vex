@@ -182,7 +182,7 @@ func TestHandler_WALCommitToObjectStorage(t *testing.T) {
 	}
 
 	// Verify WAL entry exists in object storage
-	walKey := "vex/namespaces/" + ns + "/wal/1.wal.zst"
+	walKey := "vex/namespaces/" + ns + "/wal/00000000000000000001.wal.zst"
 	_, info, err := store.Get(ctx, walKey, nil)
 	if err != nil {
 		t.Fatalf("WAL entry not found in object storage: %v", err)
@@ -200,7 +200,7 @@ func TestHandler_WALCommitToObjectStorage(t *testing.T) {
 	if loaded.State.WAL.HeadSeq != 1 {
 		t.Errorf("expected WAL head_seq 1, got %d", loaded.State.WAL.HeadSeq)
 	}
-	walKeyRelative := "wal/1.wal.zst"
+	walKeyRelative := "wal/00000000000000000001.wal.zst"
 	if loaded.State.WAL.HeadKey != walKeyRelative {
 		t.Errorf("expected WAL head_key %q, got %q", walKeyRelative, loaded.State.WAL.HeadKey)
 	}
@@ -547,13 +547,13 @@ func TestHandler_SchemaInferenceFromFirstWrite(t *testing.T) {
 		RequestID: "test-req-schema",
 		UpsertRows: []map[string]any{
 			{
-				"id":       1,
-				"name":     "test",           // string
-				"count":    100,              // int
-				"price":    19.99,            // float
-				"active":   true,             // bool
-				"tags":     []any{"a", "b"},  // string array
-				"vector":   []any{0.1, 0.2},  // vector
+				"id":     1,
+				"name":   "test",          // string
+				"count":  100,             // int
+				"price":  19.99,           // float
+				"active": true,            // bool
+				"tags":   []any{"a", "b"}, // string array
+				"vector": []any{0.1, 0.2}, // vector
 			},
 		},
 	}
@@ -571,13 +571,13 @@ func TestHandler_SchemaInferenceFromFirstWrite(t *testing.T) {
 		RequestID: "test-req-schema-2",
 		UpsertRows: []map[string]any{
 			{
-				"id":       2,
-				"name":     "test2",
-				"count":    200,
-				"price":    29.99,
-				"active":   false,
-				"tags":     []any{"c", "d"},
-				"vector":   []any{0.3, 0.4},
+				"id":     2,
+				"name":   "test2",
+				"count":  200,
+				"price":  29.99,
+				"active": false,
+				"tags":   []any{"c", "d"},
+				"vector": []any{0.3, 0.4},
 			},
 		},
 	}
@@ -1788,7 +1788,7 @@ func TestHandler_DeleteRecordedInWAL(t *testing.T) {
 	}
 
 	// Verify WAL entry exists in object storage
-	walKey := "vex/namespaces/" + ns + "/wal/1.wal.zst"
+	walKey := "vex/namespaces/" + ns + "/wal/00000000000000000001.wal.zst"
 	_, info, err := store.Get(ctx, walKey, nil)
 	if err != nil {
 		t.Fatalf("WAL entry not found in object storage: %v", err)

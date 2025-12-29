@@ -446,7 +446,7 @@ func KeyForSeq(seq uint64) string {
 }
 
 func keyForSeq(seq uint64) string {
-	return "wal/" + uintToString(seq) + FileExtension
+	return "wal/" + uintToZeroPaddedString(seq) + FileExtension
 }
 
 func uintToString(n uint64) string {
@@ -461,4 +461,13 @@ func uintToString(n uint64) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+func uintToZeroPaddedString(n uint64) string {
+	buf := make([]byte, 20)
+	for i := len(buf) - 1; i >= 0; i-- {
+		buf[i] = byte(n%10) + '0'
+		n /= 10
+	}
+	return string(buf)
 }

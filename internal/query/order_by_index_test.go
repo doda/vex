@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/document"
@@ -145,7 +144,7 @@ func TestOrderByWithIndexedDocuments(t *testing.T) {
 	// Advance WAL to seq 10 (must advance one at a time)
 	currentETag := created.ETag
 	for i := 1; i <= 10; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, fmt.Sprintf("wal/%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}
@@ -238,7 +237,7 @@ func TestOrderByMergesIndexAndTail(t *testing.T) {
 	// Advance WAL to seq 10
 	currentETag := created.ETag
 	for i := 1; i <= 10; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, fmt.Sprintf("wal/%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}
@@ -325,7 +324,7 @@ func TestOrderByTailTakesPrecedence(t *testing.T) {
 	// Advance WAL to seq 10
 	currentETag := created.ETag
 	for i := 1; i <= 10; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, fmt.Sprintf("wal/%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}
@@ -428,7 +427,7 @@ func TestOrderByDeletedDocExcluded(t *testing.T) {
 	// Advance WAL to seq 10
 	currentETag := created.ETag
 	for i := 1; i <= 10; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, fmt.Sprintf("wal/%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}
@@ -521,7 +520,7 @@ func TestOrderByWithFilterOnIndexedDocs(t *testing.T) {
 	// Advance WAL to seq 10
 	currentETag := created.ETag
 	for i := 1; i <= 10; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, fmt.Sprintf("wal/%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}

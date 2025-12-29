@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"math"
 	"testing"
 
@@ -737,7 +736,7 @@ func TestANNSearchUsesIndexWhenAvailable(t *testing.T) {
 	// Need to update WAL head seq first (it must increase by exactly 1)
 	currentETag := loaded.ETag
 	for i := 1; i <= 10; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, "wal/"+fmt.Sprintf("%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}
@@ -865,7 +864,7 @@ func TestANNSearchMergesTailResults(t *testing.T) {
 	// Need to update WAL head seq first (it must increase by exactly 1)
 	currentETag := loaded.ETag
 	for i := 1; i <= 12; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, "wal/"+fmt.Sprintf("%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}
@@ -996,7 +995,7 @@ func TestANNSearchWithFilterSkipsIndex(t *testing.T) {
 	// Update namespace state
 	currentETag := loaded.ETag
 	for i := 1; i <= 12; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, "wal/"+fmt.Sprintf("%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}
@@ -1149,7 +1148,7 @@ func TestANNSearchWithFilterUsesIndexWhenBitmapsAvailable(t *testing.T) {
 	// Update namespace state
 	currentETag := loaded.ETag
 	for i := 1; i <= 10; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, "wal/"+fmt.Sprintf("%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}
@@ -1297,7 +1296,7 @@ func TestANNSearchWithFilterMergesTailAndIndex(t *testing.T) {
 	// Update namespace state
 	currentETag := loaded.ETag
 	for i := 1; i <= 12; i++ {
-		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, "wal/"+fmt.Sprintf("%d", i), 100, nil)
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
 		if err != nil {
 			t.Fatalf("failed to advance WAL %d: %v", i, err)
 		}

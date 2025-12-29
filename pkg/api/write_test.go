@@ -159,7 +159,7 @@ func TestWriteAPI_WALCommitToObjectStorage(t *testing.T) {
 	}
 
 	// Verify WAL entry exists in object storage
-	walKeyRelative := "wal/1.wal.zst"
+	walKeyRelative := "wal/00000000000000000001.wal.zst"
 	walKeyFull := "vex/namespaces/" + ns + "/" + walKeyRelative
 	_, info, err := store.Get(req.Context(), walKeyFull, nil)
 	if err != nil {

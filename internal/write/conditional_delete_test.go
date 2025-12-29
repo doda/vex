@@ -18,8 +18,8 @@ func TestConditionalDelete_DocMissing_Skip(t *testing.T) {
 
 	// Delete with condition on non-existent document should be SKIPPED
 	req := &WriteRequest{
-		RequestID: "test-cond-delete-1",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-1",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "Lt", 100},
 	}
 
@@ -49,8 +49,8 @@ func TestConditionalDelete_DocExists_ConditionMet(t *testing.T) {
 
 	// Now delete with a condition that should be met (version < 10)
 	req2 := &WriteRequest{
-		RequestID: "test-cond-delete-2b",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-2b",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "Lt", 10}, // Existing version (1) < 10 => true
 	}
 
@@ -79,8 +79,8 @@ func TestConditionalDelete_DocExists_ConditionNotMet(t *testing.T) {
 
 	// Now delete with a condition that should NOT be met (version < 10, but version = 10)
 	req2 := &WriteRequest{
-		RequestID: "test-cond-delete-3b",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-3b",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "Lt", 10}, // Existing version (10) < 10 => false
 	}
 
@@ -111,8 +111,8 @@ func TestConditionalDelete_RefNew_AllAttributesNull(t *testing.T) {
 	// The condition checks if the existing version equals $ref_new.version (which is null)
 	// Since version (5) != null, this should NOT delete
 	req2 := &WriteRequest{
-		RequestID: "test-cond-delete-4b",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-4b",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "Eq", "$ref_new.version"},
 	}
 
@@ -143,8 +143,8 @@ func TestConditionalDelete_RefNew_NullAttribute_MatchesMissing(t *testing.T) {
 	// Delete with condition: deletable = $ref_new.version
 	// Both are null/missing, so they match
 	req2 := &WriteRequest{
-		RequestID: "test-cond-delete-5b",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-5b",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"deletable", "Eq", "$ref_new.version"}, // both null
 	}
 
@@ -178,8 +178,8 @@ func TestConditionalDelete_MultipleRows_MixedConditions(t *testing.T) {
 	// Doc 2 (version 15 < 10) should NOT be deleted
 	// Doc 3 (missing) should be SKIPPED
 	req2 := &WriteRequest{
-		RequestID: "test-cond-delete-6b",
-		Deletes:   []any{1, 2, 3},
+		RequestID:       "test-cond-delete-6b",
+		Deletes:         []any{1, 2, 3},
 		DeleteCondition: []any{"version", "Lt", 10},
 	}
 
@@ -211,7 +211,7 @@ func TestConditionalDelete_AtomicWithWriting(t *testing.T) {
 	}, 1)
 
 	// Verify WAL entry exists
-	walKey1 := "vex/namespaces/" + ns + "/wal/1.wal.zst"
+	walKey1 := "vex/namespaces/" + ns + "/wal/00000000000000000001.wal.zst"
 	_, _, err := store.Get(ctx, walKey1, nil)
 	if err != nil {
 		t.Fatalf("WAL entry 1 not found: %v", err)
@@ -219,8 +219,8 @@ func TestConditionalDelete_AtomicWithWriting(t *testing.T) {
 
 	// Conditional delete that should succeed
 	req2 := &WriteRequest{
-		RequestID: "test-cond-delete-7b",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-7b",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "Eq", 1},
 	}
 
@@ -235,7 +235,7 @@ func TestConditionalDelete_AtomicWithWriting(t *testing.T) {
 	}
 
 	// Verify WAL entry 2 exists (write was committed)
-	walKey2 := "vex/namespaces/" + ns + "/wal/2.wal.zst"
+	walKey2 := "vex/namespaces/" + ns + "/wal/00000000000000000002.wal.zst"
 	_, _, err = store.Get(ctx, walKey2, nil)
 	if err != nil {
 		t.Fatalf("WAL entry 2 not found: %v", err)
@@ -291,8 +291,8 @@ func TestConditionalDelete_NullCondition(t *testing.T) {
 	// Condition: lock_holder = null (i.e., attribute missing or null)
 	// Only delete if no one holds the lock
 	req2 := &WriteRequest{
-		RequestID: "test-cond-delete-9b",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-9b",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"lock_holder", "Eq", nil},
 	}
 
@@ -322,8 +322,8 @@ func TestConditionalDelete_NotEq_Condition(t *testing.T) {
 	// Condition: status != "completed"
 	// Only delete if not completed
 	req2 := &WriteRequest{
-		RequestID: "test-cond-delete-10",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-10",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"status", "NotEq", "completed"},
 	}
 
@@ -361,8 +361,8 @@ func TestConditionalDelete_AlreadyDeletedDoc_Skip(t *testing.T) {
 
 	// Try to conditionally delete the already deleted document
 	req := &WriteRequest{
-		RequestID: "test-cond-delete-already-deleted",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-already-deleted",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "Eq", 1},
 	}
 
@@ -392,8 +392,8 @@ func TestConditionalDelete_InvalidCondition_Error(t *testing.T) {
 
 	// Invalid condition (unknown operator)
 	req := &WriteRequest{
-		RequestID: "test-cond-delete-invalid",
-		Deletes:   []any{1},
+		RequestID:       "test-cond-delete-invalid",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "InvalidOp", 1},
 	}
 
@@ -440,7 +440,7 @@ func TestConditionalDelete_OrCondition(t *testing.T) {
 func TestConditionalDelete_ParseWriteRequest(t *testing.T) {
 	// Test that delete_condition is parsed correctly from request body
 	body := map[string]any{
-		"deletes": []any{1, 2, 3},
+		"deletes":          []any{1, 2, 3},
 		"delete_condition": []any{"status", "Eq", "archived"},
 	}
 
@@ -504,8 +504,8 @@ func TestConditionalDelete_WithoutTailStore_NoOp(t *testing.T) {
 
 	// Now try conditional delete - should be skipped (no tail store to evaluate)
 	deleteReq := &WriteRequest{
-		RequestID: "cond-delete",
-		Deletes:   []any{1},
+		RequestID:       "cond-delete",
+		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "Eq", 1},
 	}
 

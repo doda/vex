@@ -382,7 +382,7 @@ func TestExtractNamespaceFromKey(t *testing.T) {
 		key      string
 		expected string
 	}{
-		{"namespace/wal/000001.wal.zst", "namespace"},
+		{"namespace/wal/00000000000000000001.wal.zst", "namespace"},
 		{"/namespace/manifest/001.json", "namespace"},
 		{"ns", "ns"},
 		{"/ns", "ns"},

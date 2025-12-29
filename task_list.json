@@ -2240,7 +2240,7 @@
       "Commit a WAL entry and verify key format is wal/00000000000000000001.wal.zst",
       "Confirm listing order remains correct with zero padding"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/wal/encoder.go"
     ]

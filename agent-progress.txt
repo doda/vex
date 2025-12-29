@@ -886,3 +886,13 @@ KEY DEPENDENCIES:
 - Challenges: gofmt not on PATH.
 - Resolution: used /usr/local/go/bin/gofmt.
 - Follow-ups: none.
+[2025-12-29T17:10:00Z] Completed wal-key-zero-pad: PASS
+- Updated WAL key formatting to zero-pad sequences to 20 digits for object storage layout compliance.
+- Added lexicographic ordering test for padded WAL keys and updated hard-coded WAL keys to the padded format.
+- Updated comments describing WAL key formats to call out zero padding.
+- Key files changed: internal/wal/encoder.go, internal/wal/encoder_test.go, internal/query/vector_ann_test.go, internal/query/order_by_index_test.go, internal/gc/gc_test.go.
+- Tests run: /usr/local/go/bin/go test ./internal/wal -count=1 (pass).
+- Tests run: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: python not available at first attempt for bulk replacement.
+- Resolution: used python3 for string updates and then gofmt.
+- Follow-ups: none.

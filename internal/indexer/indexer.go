@@ -295,7 +295,7 @@ func extractNamespaceFromKey(key string) string {
 		return ""
 	}
 	rest := strings.TrimPrefix(key, base)
-	// rest is like "my-ns/meta/state.json" or "my-ns/wal/1.wal.zst"
+	// rest is like "my-ns/meta/state.json" or "my-ns/wal/<zero-padded seq>.wal.zst"
 	if idx := strings.Index(rest, "/"); idx > 0 {
 		ns := rest[:idx]
 		// Only return namespaces that have a state.json file

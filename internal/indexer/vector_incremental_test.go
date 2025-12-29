@@ -79,7 +79,10 @@ type tailObjectStore struct {
 	*mockStore
 }
 
-func (t *tailObjectStore) Get(ctx context.Context, key string, opts *objectstore.GetOptions) (interface{ Read([]byte) (int, error); Close() error }, *objectstore.ObjectInfo, error) {
+func (t *tailObjectStore) Get(ctx context.Context, key string, opts *objectstore.GetOptions) (interface {
+	Read([]byte) (int, error)
+	Close() error
+}, *objectstore.ObjectInfo, error) {
 	return t.mockStore.Get(ctx, key, opts)
 }
 
@@ -100,7 +103,7 @@ func TestVectorIncrementalUpdates_Step1_TailExhaustiveScan(t *testing.T) {
 	}
 	_, data := createVectorWALEntry("test-ns", 1, docs)
 	store.mu.Lock()
-	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = mockObject{data: data, etag: "etag1"}
+	store.objects["vex/namespaces/test-ns/wal/00000000000000000001.wal.zst"] = mockObject{data: data, etag: "etag1"}
 	store.mu.Unlock()
 
 	// Refresh tail to load WAL
@@ -149,7 +152,7 @@ func TestVectorIncrementalUpdates_Step1_TailExhaustiveScan(t *testing.T) {
 		}
 		_, data2 := createVectorWALEntry("test-ns", 2, newDocs)
 		store.mu.Lock()
-		store.objects["vex/namespaces/test-ns/wal/2.wal.zst"] = mockObject{data: data2, etag: "etag2"}
+		store.objects["vex/namespaces/test-ns/wal/00000000000000000002.wal.zst"] = mockObject{data: data2, etag: "etag2"}
 		store.mu.Unlock()
 
 		// Refresh to include new entry
@@ -221,7 +224,7 @@ func TestVectorIncrementalUpdates_Step2_IndexerFoldsTailToIVF(t *testing.T) {
 	}
 	_, data := createVectorWALEntry("test-ns", 1, docs)
 	store.mu.Lock()
-	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = mockObject{data: data, etag: "etag1"}
+	store.objects["vex/namespaces/test-ns/wal/00000000000000000001.wal.zst"] = mockObject{data: data, etag: "etag1"}
 	store.mu.Unlock()
 
 	// Advance WAL head_seq to 1 to match our WAL entry
@@ -229,7 +232,7 @@ func TestVectorIncrementalUpdates_Step2_IndexerFoldsTailToIVF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load namespace: %v", err)
 	}
-	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, "vex/namespaces/test-ns/wal/1.wal.zst", int64(len(data)), nil)
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, "vex/namespaces/test-ns/wal/00000000000000000001.wal.zst", int64(len(data)), nil)
 	if err != nil {
 		t.Fatalf("Failed to advance WAL: %v", err)
 	}
@@ -328,7 +331,7 @@ func TestVectorIncrementalUpdates_Step3_L0SegmentsBuiltQuickly(t *testing.T) {
 	}
 	_, data := createVectorWALEntry("test-ns", 1, docs)
 	store.mu.Lock()
-	store.objects["vex/namespaces/test-ns/wal/1.wal.zst"] = mockObject{data: data, etag: "etag1"}
+	store.objects["vex/namespaces/test-ns/wal/00000000000000000001.wal.zst"] = mockObject{data: data, etag: "etag1"}
 	store.mu.Unlock()
 
 	// Advance WAL head_seq to 1 to match our WAL entry
@@ -336,7 +339,7 @@ func TestVectorIncrementalUpdates_Step3_L0SegmentsBuiltQuickly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load namespace: %v", err)
 	}
-	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, "vex/namespaces/test-ns/wal/1.wal.zst", int64(len(data)), nil)
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, "vex/namespaces/test-ns/wal/00000000000000000001.wal.zst", int64(len(data)), nil)
 	if err != nil {
 		t.Fatalf("Failed to advance WAL: %v", err)
 	}

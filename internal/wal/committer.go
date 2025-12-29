@@ -52,10 +52,10 @@ func (c *Committer) Close() error {
 
 // CommitResult contains the result of a successful WAL commit.
 type CommitResult struct {
-	Seq         uint64
-	WALKey      string
-	ETag        string
-	State       *namespace.State
+	Seq          uint64
+	WALKey       string
+	ETag         string
+	State        *namespace.State
 	BytesWritten int64
 }
 
@@ -64,7 +64,7 @@ type CommitResult struct {
 // 1. Load state.json (capture ETag)
 // 2. Choose seq = state.wal.head_seq + 1
 // 3. Serialize WAL entry, compute checksum, compress
-// 4. PUT wal/<seq>.wal.zst with If-None-Match: "*" (idempotent)
+// 4. PUT wal/<zero-padded seq>.wal.zst with If-None-Match: "*" (idempotent)
 // 5. Update state.json with If-Match: <old-etag> (CAS)
 // 6. On CAS failure, retry state update (don't re-upload WAL)
 func (c *Committer) Commit(ctx context.Context, ns string, entry *WalEntry, schemaDelta *namespace.Schema) (*CommitResult, error) {
@@ -205,7 +205,7 @@ func walKeyForNamespace(ns string, seq uint64) string {
 // parseSeqFromKey extracts the sequence number from a WAL key.
 func parseSeqFromKey(key string) uint64 {
 	var seq uint64
-	// Key format: wal/<seq>.wal.zst
+	// Key format: wal/<zero-padded seq>.wal.zst
 	_, err := fmt.Sscanf(key, "wal/%d"+FileExtension, &seq)
 	if err != nil {
 		return 0
