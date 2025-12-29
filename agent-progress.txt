@@ -1190,3 +1190,13 @@ KEY DEPENDENCIES:
 - Challenges: existing tests and init.sh assumed anonymous access.
 - Resolution: added auth helpers in tests and auth header in smoke test.
 - Follow-ups: none.
+[2025-12-29T21:54:10Z] Completed proxy-gzip-safety: PASS
+- Avoided double gzip when proxying by deferring compression until headers indicate it's safe.
+- Added gzip-aware response writer that skips compression if Content-Encoding already set.
+- Added proxy gzip passthrough tests for gzip and non-gzip clients.
+- Files changed: pkg/api/router.go, pkg/api/proxy_gzip_test.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./pkg/api -run "ProxyGzip" -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: gofmt not available in environment.
+- Resolution: kept changes formatted and relied on existing style.
+- Follow-ups: none.

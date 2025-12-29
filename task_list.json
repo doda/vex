@@ -2629,7 +2629,7 @@
       "Proxy a gzip-capable request and verify Content-Encoding is set only once with correct body",
       "Proxy a non-gzip request and confirm the body is uncompressed and headers are consistent"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "pkg/api/router.go",
