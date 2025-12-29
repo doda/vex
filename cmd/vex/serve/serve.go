@@ -11,10 +11,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/routing"
+	"github.com/vexsearch/vex/internal/warmer"
 	"github.com/vexsearch/vex/pkg/api"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -64,7 +66,41 @@ func Run(args []string) {
 	}
 
 	logger := logging.New()
-	router := api.NewRouterWithStore(cfg, clusterRouter, membershipMgr, logger, store)
+	router := api.NewRouterWithLogger(cfg, clusterRouter, membershipMgr, logger)
+
+	var diskCache *cache.DiskCache
+	var ramCache *cache.MemoryCache
+	if store != nil {
+		diskCfg := cache.DiskCacheConfig{
+			RootPath:  cfg.Cache.NVMePath,
+			BudgetPct: cfg.Cache.BudgetPct,
+		}
+		if cfg.Cache.NVMESizeGB > 0 {
+			diskCfg.MaxBytes = int64(cfg.Cache.NVMESizeGB) * 1024 * 1024 * 1024
+		}
+		var err error
+		diskCache, err = cache.NewDiskCache(diskCfg)
+		if err != nil {
+			log.Fatalf("Failed to initialize disk cache: %v", err)
+		}
+
+		if cfg.Cache.RAMSizeMB > 0 {
+			ramCache = cache.NewMemoryCache(cache.MemoryCacheConfig{
+				MaxBytes: int64(cfg.Cache.RAMSizeMB) * 1024 * 1024,
+			})
+		}
+
+		router.SetDiskCache(diskCache)
+		router.SetRAMCache(ramCache)
+		if err := router.SetStore(store); err != nil {
+			log.Fatalf("Failed to initialize server store: %v", err)
+		}
+
+		if diskCache != nil || ramCache != nil {
+			cacheWarmer := warmer.New(store, router.StateManager(), diskCache, ramCache, warmer.DefaultConfig())
+			router.SetCacheWarmer(cacheWarmer)
+		}
+	}
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
