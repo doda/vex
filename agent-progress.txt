@@ -1221,3 +1221,11 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: aligning state updates when wal keys include namespace prefixes.
 - Resolution: parse wal seq from the final wal/ segment before validation.
+[2025-12-29T22:27:42Z] Completed test-filter-conditional-copy-indexed: PASS
+- Verified indexed snapshot tests cover delete_by_filter, patch_by_filter, conditional upsert/patch/delete, and copy_from_namespace.
+- No code changes needed; existing indexed snapshot coverage already exercised indexed segments.
+- Task list updated: task_list.json set test-filter-conditional-copy-indexed passes=true.
+- Tests: /usr/local/go/bin/go test ./internal/write -run IndexedSnapshot -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
