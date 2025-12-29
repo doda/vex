@@ -572,7 +572,7 @@ func (r *Router) handleWarmCache(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Return 200 immediately - cache warming happens in background
-	r.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	w.WriteHeader(http.StatusOK)
 }
 
 func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {

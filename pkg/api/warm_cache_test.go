@@ -59,13 +59,8 @@ func TestWarmCacheEndpoint_Returns200Immediately(t *testing.T) {
 	}
 
 	respBody, _ := io.ReadAll(resp.Body)
-	var result map[string]any
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-
-	if result["status"] != "ok" {
-		t.Errorf("expected status 'ok', got %v", result["status"])
+	if len(respBody) != 0 {
+		t.Errorf("expected empty response body, got %q", string(respBody))
 	}
 }
 
@@ -194,13 +189,8 @@ func TestWarmCacheEndpoint_RoutesToHomeNode(t *testing.T) {
 
 	// Verify response format
 	respBody, _ := io.ReadAll(resp.Body)
-	var result map[string]any
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-
-	if result["status"] != "ok" {
-		t.Errorf("expected status 'ok', got %v", result["status"])
+	if len(respBody) != 0 {
+		t.Errorf("expected empty response body, got %q", string(respBody))
 	}
 }
 
@@ -277,13 +267,8 @@ func TestWarmCacheEndpoint_FallbackMode(t *testing.T) {
 	}
 
 	respBody, _ := io.ReadAll(resp.Body)
-	var result map[string]any
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-
-	if result["status"] != "ok" {
-		t.Errorf("expected status 'ok', got %v", result["status"])
+	if len(respBody) != 0 {
+		t.Errorf("expected empty response body, got %q", string(respBody))
 	}
 }
 
