@@ -44,6 +44,7 @@ var (
 	ErrNamespaceNotFound     = errors.New("namespace not found")
 	ErrAttributeConflict     = errors.New("cannot specify both include_attributes and exclude_attributes")
 	ErrInvalidVectorEncoding = errors.New("vector_encoding must be 'float' or 'base64'")
+	ErrInvalidVectorDims     = errors.New("query vector dimensions do not match schema")
 	ErrInvalidConsistency    = errors.New("consistency must be 'strong' or 'eventual'")
 	ErrSnapshotRefreshFailed = errors.New("failed to refresh snapshot for strong consistency")
 	ErrInvalidAggregation    = errors.New("invalid aggregation expression")
@@ -238,6 +239,9 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 	// Parse the rank_by expression
 	parsed, err := parseRankBy(req.RankBy, req.VectorEncoding)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateVectorDims(loaded.State, parsed); err != nil {
 		return nil, err
 	}
 
@@ -539,6 +543,49 @@ func parseVector(v any, vectorEncoding string) ([]float32, error) {
 		}
 		return decoded, nil
 	}
+}
+
+func validateVectorDims(state *namespace.State, parsed *ParsedRankBy) error {
+	if parsed == nil || parsed.Type != RankByVector {
+		return nil
+	}
+
+	expected, ok, err := expectedVectorDims(state)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidVectorDims, err)
+	}
+	if !ok {
+		return nil
+	}
+
+	if len(parsed.QueryVector) != expected {
+		return fmt.Errorf("%w: expected %d dimensions, got %d", ErrInvalidVectorDims, expected, len(parsed.QueryVector))
+	}
+	return nil
+}
+
+func expectedVectorDims(state *namespace.State) (int, bool, error) {
+	if state == nil {
+		return 0, false, nil
+	}
+	if state.Vector != nil && state.Vector.Dims > 0 {
+		return state.Vector.Dims, true, nil
+	}
+	if state.Schema == nil || state.Schema.Attributes == nil {
+		return 0, false, nil
+	}
+	attr, ok := state.Schema.Attributes["vector"]
+	if !ok || attr.Vector == nil || attr.Vector.Type == "" {
+		return 0, false, nil
+	}
+	dims, _, err := vector.ParseVectorType(attr.Vector.Type)
+	if err != nil {
+		return 0, false, err
+	}
+	if dims <= 0 {
+		return 0, false, nil
+	}
+	return dims, true, nil
 }
 
 // executeVectorQuery executes a vector ANN query.
@@ -1987,6 +2034,9 @@ func (h *Handler) executeSubQuery(ctx context.Context, ns string, loaded *namesp
 	// Parse the rank_by expression
 	parsed, err := parseRankBy(req.RankBy, req.VectorEncoding)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateVectorDims(loaded.State, parsed); err != nil {
 		return nil, err
 	}
 

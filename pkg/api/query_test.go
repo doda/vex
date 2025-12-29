@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
@@ -232,6 +234,66 @@ func TestQueryAPIResponse(t *testing.T) {
 			t.Error("performance should include server_total_ms")
 		}
 	}
+}
+
+func TestQueryAPIVectorDimsValidation(t *testing.T) {
+	cfg := &config.Config{}
+	router := NewRouter(cfg)
+
+	store := objectstore.NewMemoryStore()
+	if err := router.SetStore(store); err != nil {
+		t.Fatalf("Failed to set store: %v", err)
+	}
+	defer router.Close()
+
+	ctx := httptest.NewRequest("GET", "/", nil).Context()
+	loaded, err := router.StateManager().Create(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to create namespace: %v", err)
+	}
+	if _, err := router.StateManager().Update(ctx, "test-ns", loaded.ETag, func(state *namespace.State) error {
+		state.Vector = &namespace.VectorConfig{
+			Dims:           3,
+			DType:          "f32",
+			DistanceMetric: string(vector.MetricCosineDistance),
+			ANN:            true,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Failed to update vector config: %v", err)
+	}
+
+	t.Run("rejects incorrect dims", func(t *testing.T) {
+		body := map[string]any{
+			"rank_by": []any{"vector", "ANN", []any{1.0, 2.0}},
+		}
+		bodyBytes, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d", rec.Code)
+		}
+	})
+
+	t.Run("accepts correct dims", func(t *testing.T) {
+		body := map[string]any{
+			"rank_by": []any{"vector", "ANN", []any{1.0, 2.0, 3.0}},
+		}
+		bodyBytes, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+	})
 }
 
 func TestQueryAPIWithAuth(t *testing.T) {

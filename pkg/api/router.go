@@ -825,7 +825,7 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrBadRequest("limit/top_k must be between 1 and 10,000"))
 				return
 			}
-			if errors.Is(err, query.ErrInvalidRankBy) || errors.Is(err, query.ErrInvalidFilter) || errors.Is(err, query.ErrAttributeConflict) || errors.Is(err, query.ErrInvalidVectorEncoding) || errors.Is(err, query.ErrInvalidConsistency) {
+			if errors.Is(err, query.ErrInvalidRankBy) || errors.Is(err, query.ErrInvalidFilter) || errors.Is(err, query.ErrAttributeConflict) || errors.Is(err, query.ErrInvalidVectorEncoding) || errors.Is(err, query.ErrInvalidVectorDims) || errors.Is(err, query.ErrInvalidConsistency) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
 				return
 			}
@@ -1007,7 +1007,7 @@ func (r *Router) handleMultiQuery(w http.ResponseWriter, req *http.Request, ns s
 				r.writeAPIError(w, ErrBadRequest("limit/top_k must be between 1 and 10,000"))
 				return
 			}
-			if errors.Is(err, query.ErrInvalidRankBy) || errors.Is(err, query.ErrInvalidFilter) || errors.Is(err, query.ErrAttributeConflict) || errors.Is(err, query.ErrInvalidVectorEncoding) || errors.Is(err, query.ErrInvalidConsistency) {
+			if errors.Is(err, query.ErrInvalidRankBy) || errors.Is(err, query.ErrInvalidFilter) || errors.Is(err, query.ErrAttributeConflict) || errors.Is(err, query.ErrInvalidVectorEncoding) || errors.Is(err, query.ErrInvalidVectorDims) || errors.Is(err, query.ErrInvalidConsistency) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
 				return
 			}

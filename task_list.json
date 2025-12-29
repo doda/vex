@@ -2426,7 +2426,7 @@
       "Submit a vector query with incorrect dims and verify HTTP 400",
       "Submit correct dims and verify normal results"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/index/reader.go",
       "internal/query/handler.go"

@@ -1033,3 +1033,17 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenge: IVF reader constructor signature mismatch after dtype change.
 - Resolution: added nClusters to NewIVFReaderWithDType and updated call sites.
+[2025-12-29T18:47:59Z] Completed vector-query-dimension-validate: PASS
+- Added query-side dimension validation against namespace vector schema and surfaced mismatches as 400.
+- Validation applies to single queries and multi-queries before execution.
+- Added handler and API tests for vector dimension mismatch and correct-dim success.
+- Files changed: internal/query/handler.go.
+- Files changed: internal/query/handler_test.go.
+- Files changed: pkg/api/router.go.
+- Files changed: pkg/api/query_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/query -run TestQueryHandler_Handle -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./pkg/api -run TestQueryAPIVectorDimsValidation -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

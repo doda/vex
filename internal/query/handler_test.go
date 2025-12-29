@@ -2,12 +2,14 @@ package query
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
+	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -521,6 +523,17 @@ func TestQueryHandler_Handle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create namespace: %v", err)
 	}
+	if _, err := stateMan.Update(ctx, "test-ns", "", func(state *namespace.State) error {
+		state.Vector = &namespace.VectorConfig{
+			Dims:           3,
+			DType:          "f32",
+			DistanceMetric: string(vector.MetricCosineDistance),
+			ANN:            true,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("failed to update vector config: %v", err)
+	}
 
 	// Create mock tail store with test documents
 	mockTail := &mockTailStore{
@@ -555,6 +568,17 @@ func TestQueryHandler_Handle(t *testing.T) {
 		}
 		if resp.Rows[0].Dist == nil {
 			t.Error("expected $dist to be set for vector query")
+		}
+	})
+
+	t.Run("vector query invalid dims", func(t *testing.T) {
+		req := &QueryRequest{
+			RankBy: []any{"vector", "ANN", []any{1.0, 0.0}},
+			Limit:  10,
+		}
+		_, err := h.Handle(ctx, "test-ns", req)
+		if err == nil || !errors.Is(err, ErrInvalidVectorDims) {
+			t.Errorf("expected ErrInvalidVectorDims, got %v", err)
 		}
 	})
 
