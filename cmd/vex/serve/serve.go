@@ -37,7 +37,7 @@ func Run(args []string) {
 	}
 
 	// Initialize cluster routing with static membership from config
-	clusterRouter := routing.New(cfg.ListenAddr)
+	clusterRouter := routing.New(cfg.RoutingAddr())
 	membershipProvider := membership.NewFromConfig(cfg.Membership)
 	membershipMgr := membership.NewManager(membershipProvider, clusterRouter)
 

@@ -308,6 +308,23 @@ func TestSelfAddr(t *testing.T) {
 	}
 }
 
+func TestHomeNodeAddressNormalization(t *testing.T) {
+	r := New(":8080")
+	r.SetNodes([]Node{{ID: "node1", Addr: "localhost:8080"}})
+
+	if !r.IsHomeNode("test") {
+		t.Errorf("expected IsHomeNode to be true with normalized listen addr")
+	}
+
+	nodes := r.Nodes()
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
+	if nodes[0].Addr != "localhost:8080" {
+		t.Errorf("expected normalized node addr localhost:8080, got %s", nodes[0].Addr)
+	}
+}
+
 func TestWeightDeterminism(t *testing.T) {
 	// Verify computeWeight is deterministic
 	w1 := computeWeight("node1", "namespace1")

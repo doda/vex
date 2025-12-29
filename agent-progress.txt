@@ -1134,3 +1134,15 @@ KEY DEPENDENCIES:
 - Tests: /usr/local/go/bin/go test ./internal/cache -run "PerNamespaceBudgetCaps|CustomNamespaceCap" -count=1 (pass).
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
+
+[2025-12-29T20:30:54Z] Completed routing-self-addr-normalization: PASS
+- Implemented routing address normalization for self and node addresses plus a routing-safe listen helper.
+- Normalized node addresses on SetNodes and canonicalized self for IsHomeNode comparisons.
+- Updated serve to use normalized routing address without changing bind behavior.
+- Added routing test coverage for :8080 vs localhost:8080 home detection.
+- Key files changed: internal/routing/rendezvous.go; internal/routing/rendezvous_test.go; internal/config/config.go; cmd/vex/serve/serve.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/routing -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./pkg/api -run "TestWriteNoProxyWhenHomeNode|TestQueryNoProxyWhenHomeNode" -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: init.sh timed out on first run.
+- Resolution: reran init.sh with extended timeout.

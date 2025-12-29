@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 )
@@ -104,6 +105,12 @@ func (c *Config) GetCompatMode() CompatMode {
 		return DefaultCompatMode
 	}
 	return mode
+}
+
+// RoutingAddr returns a normalized address for routing comparisons.
+// It does not change the listen address used to bind the server.
+func (c *Config) RoutingAddr() string {
+	return normalizeRoutingAddr(c.ListenAddr)
 }
 
 // IndexerConfig holds indexer-specific configuration.
@@ -384,4 +391,23 @@ func parseNodeList(s string) []string {
 		}
 	}
 	return nodes
+}
+
+func normalizeRoutingAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return addr
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+
+	switch host {
+	case "", "0.0.0.0", "::", "127.0.0.1", "::1", "localhost":
+		host = "localhost"
+	}
+
+	return net.JoinHostPort(host, port)
 }

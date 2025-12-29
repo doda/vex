@@ -2560,7 +2560,7 @@
       "Configure listen addr as :8080 and membership addr as localhost:8080 and verify local node is recognized as home",
       "Confirm proxying only happens when node is not home"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/config/config.go",
       "internal/routing/rendezvous.go"

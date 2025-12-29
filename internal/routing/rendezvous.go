@@ -3,7 +3,9 @@ package routing
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"net"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -24,7 +26,7 @@ type Router struct {
 // New creates a new Router with the given self address.
 func New(selfAddr string) *Router {
 	return &Router{
-		self:  selfAddr,
+		self:  normalizeAddr(selfAddr),
 		nodes: []Node{},
 	}
 }
@@ -34,7 +36,10 @@ func (r *Router) SetNodes(nodes []Node) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nodes = make([]Node, len(nodes))
-	copy(r.nodes, nodes)
+	for i, node := range nodes {
+		node.Addr = normalizeAddr(node.Addr)
+		r.nodes[i] = node
+	}
 }
 
 // Nodes returns a copy of the current node list.
@@ -139,4 +144,23 @@ func computeWeight(nodeID, namespace string) uint64 {
 	h.Write([]byte(namespace))
 	sum := h.Sum(nil)
 	return binary.BigEndian.Uint64(sum[:8])
+}
+
+func normalizeAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return addr
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+
+	switch host {
+	case "", "0.0.0.0", "::", "127.0.0.1", "::1", "localhost":
+		host = "localhost"
+	}
+
+	return net.JoinHostPort(host, port)
 }
