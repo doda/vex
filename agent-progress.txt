@@ -1239,3 +1239,14 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-29T22:42:26Z] Completed indexer-include-nonvector-docs: PASS
+- Implemented WAL extraction to include non-vector upserts and count non-vector docs in L0 segment stats.
+- Added indexer test that builds docs-only segments and verifies order-by query uses indexed docs after tail advances.
+- Files changed: internal/indexer/l0_builder.go.
+- Files changed: internal/indexer/vector_incremental_test.go.
+- Files changed: internal/indexer/non_vector_docs_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run TestIndexerIncludesNonVectorDocs -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: gofmt unavailable in environment.
+- Resolution: kept edits formatted manually and limited changes to needed scope.

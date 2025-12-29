@@ -2703,7 +2703,7 @@
       "Write documents without vectors, run indexing, and confirm they appear in indexed doc storage",
       "Advance WAL tail past indexed_wal_seq and verify the docs are still returned by queries"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/indexer/l0_builder.go"

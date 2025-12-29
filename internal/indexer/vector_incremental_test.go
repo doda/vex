@@ -625,7 +625,7 @@ func TestExtractVectorDocuments(t *testing.T) {
 		)
 		entry.SubBatches = append(entry.SubBatches, batch)
 
-		docs, dims := extractVectorDocuments([]*wal.WalEntry{entry})
+		docs, dims := extractDocuments([]*wal.WalEntry{entry})
 
 		if len(docs) != 1 {
 			t.Fatalf("expected 1 doc, got %d", len(docs))
@@ -659,7 +659,7 @@ func TestExtractVectorDocuments(t *testing.T) {
 		)
 		entry2.SubBatches = append(entry2.SubBatches, batch2)
 
-		docs, _ := extractVectorDocuments([]*wal.WalEntry{entry1, entry2})
+		docs, _ := extractDocuments([]*wal.WalEntry{entry1, entry2})
 
 		if len(docs) != 1 {
 			t.Fatalf("expected 1 doc after dedup, got %d", len(docs))
@@ -686,7 +686,7 @@ func TestExtractVectorDocuments(t *testing.T) {
 		batch2.AddDelete(&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 1}})
 		entry2.SubBatches = append(entry2.SubBatches, batch2)
 
-		docs, _ := extractVectorDocuments([]*wal.WalEntry{entry1, entry2})
+		docs, _ := extractDocuments([]*wal.WalEntry{entry1, entry2})
 
 		if len(docs) != 1 {
 			t.Fatalf("expected 1 doc after delete, got %d", len(docs))
