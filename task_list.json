@@ -2717,7 +2717,7 @@
       "Write docs, apply patch_rows/patch_by_filter, run indexing, and verify indexed results reflect patched fields",
       "Confirm patched docs stay updated after tail advances"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/indexer/l0_builder.go"

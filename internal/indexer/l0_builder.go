@@ -88,8 +88,16 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 		}, nil
 	}
 
+	var baseDocs map[uint64]baseDocument
+	if hasPatchMutations(entries) {
+		baseDocs, err = p.loadBaseDocuments(ctx, ns, state)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load base documents: %w", err)
+		}
+	}
+
 	// Extract documents from WAL entries (including non-vector upserts)
-	docs, dims := extractDocuments(entries)
+	docs, dims := extractDocuments(entries, baseDocs)
 	if len(docs) == 0 {
 		// No vectors or tombstones in this WAL range, just track the bytes processed
 		return &WALProcessResult{
@@ -141,9 +149,16 @@ type vectorDocument struct {
 	deleted   bool
 }
 
+type baseDocument struct {
+	attrs   map[string]any
+	vec     []float32
+	walSeq  uint64
+	deleted bool
+}
+
 // extractDocuments extracts documents from WAL entries.
 // Returns the deduped documents and the vector dimensions (if any).
-func extractDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
+func extractDocuments(entries []*wal.WalEntry, baseDocs map[uint64]baseDocument) ([]vectorDocument, int) {
 	// Track latest version of each document (last-write-wins)
 	docMap := make(map[string]*vectorDocument)
 	var dims int
@@ -162,6 +177,7 @@ func extractDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 				if docKey == "" {
 					continue
 				}
+				numericID := numericIDForKey(docKey)
 
 				switch mutation.Type {
 				case wal.MutationType_MUTATION_TYPE_DELETE:
@@ -169,6 +185,7 @@ func extractDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 						id:      docID,
 						idKey:   docKey,
 						walSeq:  entry.Seq,
+						numericID: numericID,
 						deleted: true,
 					}
 
@@ -190,9 +207,46 @@ func extractDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 						id:      docID,
 						idKey:   docKey,
 						walSeq:  entry.Seq,
+						numericID: numericID,
 						vec:     vec,
 						attrs:   attrs,
 						deleted: false,
+					}
+
+				case wal.MutationType_MUTATION_TYPE_PATCH:
+					patchAttrs := make(map[string]any, len(mutation.Attributes))
+					for name, value := range mutation.Attributes {
+						patchAttrs[name] = attributeValueToAny(value)
+					}
+
+					if existing, ok := docMap[docKey]; ok {
+						if existing.deleted {
+							continue
+						}
+						existing.attrs = mergeAttributes(existing.attrs, patchAttrs)
+						existing.walSeq = entry.Seq
+						continue
+					}
+
+					if baseDocs == nil {
+						continue
+					}
+					base, ok := baseDocs[numericID]
+					if !ok || base.deleted {
+						continue
+					}
+					merged := mergeAttributes(base.attrs, patchAttrs)
+					if dims == 0 && len(base.vec) > 0 {
+						dims = len(base.vec)
+					}
+					docMap[docKey] = &vectorDocument{
+						id:        docID,
+						idKey:     docKey,
+						walSeq:    entry.Seq,
+						numericID: numericID,
+						vec:       base.vec,
+						attrs:     merged,
+						deleted:   false,
 					}
 				}
 			}
@@ -212,10 +266,26 @@ func extractDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 		return docs[i].idKey < docs[j].idKey
 	})
 	for i := range docs {
-		docs[i].numericID = numericIDForKey(docs[i].idKey)
+		if docs[i].numericID == 0 {
+			docs[i].numericID = numericIDForKey(docs[i].idKey)
+		}
 	}
 
 	return docs, dims
+}
+
+func mergeAttributes(base map[string]any, patch map[string]any) map[string]any {
+	if len(base) == 0 && len(patch) == 0 {
+		return nil
+	}
+	merged := make(map[string]any, len(base)+len(patch))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range patch {
+		merged[k] = v
+	}
+	return merged
 }
 
 // decodeVector decodes a raw byte slice into float32 vector.
@@ -595,6 +665,92 @@ func (p *L0SegmentProcessor) publishSegment(ctx context.Context, ns string, segm
 	}, nil
 }
 
+func hasPatchMutations(entries []*wal.WalEntry) bool {
+	for _, entry := range entries {
+		for _, batch := range entry.SubBatches {
+			for _, mutation := range batch.Mutations {
+				if mutation.Type == wal.MutationType_MUTATION_TYPE_PATCH {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+type baseDocColumn struct {
+	ID         string
+	NumericID  uint64
+	WALSeq     uint64
+	Deleted    bool
+	Attributes map[string]any
+	Vector     []float32
+}
+
+func (p *L0SegmentProcessor) loadBaseDocuments(ctx context.Context, ns string, state *namespace.State) (map[uint64]baseDocument, error) {
+	if state == nil || state.Index.ManifestKey == "" {
+		return nil, nil
+	}
+
+	manifest, err := p.loadManifest(ctx, state.Index.ManifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+
+	baseDocs := make(map[uint64]baseDocument)
+	for _, seg := range manifest.Segments {
+		if seg.DocsKey == "" {
+			continue
+		}
+		reader, _, err := p.store.Get(ctx, seg.DocsKey, nil)
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(data) == 0 {
+			continue
+		}
+
+		var docs []baseDocColumn
+		if err := json.Unmarshal(data, &docs); err != nil {
+			return nil, fmt.Errorf("failed to parse docs data: %w", err)
+		}
+
+		for _, doc := range docs {
+			numericID := doc.NumericID
+			if numericID == 0 && doc.ID != "" {
+				if parsedID, err := document.ParseID(doc.ID); err == nil {
+					idKey := documentIDKeyFromID(parsedID)
+					numericID = numericIDForKey(idKey)
+				}
+			}
+			if numericID == 0 {
+				continue
+			}
+
+			existing, ok := baseDocs[numericID]
+			if ok && existing.walSeq > doc.WALSeq {
+				continue
+			}
+			baseDocs[numericID] = baseDocument{
+				attrs:   doc.Attributes,
+				vec:     doc.Vector,
+				walSeq:  doc.WALSeq,
+				deleted: doc.Deleted,
+			}
+		}
+	}
+
+	return baseDocs, nil
+}
+
 // loadManifest loads a manifest from object storage.
 func (p *L0SegmentProcessor) loadManifest(ctx context.Context, manifestKey string) (*index.Manifest, error) {
 	if manifestKey == "" {
@@ -621,6 +777,19 @@ func (p *L0SegmentProcessor) loadManifest(ctx context.Context, manifestKey strin
 	}
 
 	return &manifest, nil
+}
+
+func documentIDKeyFromID(id document.ID) string {
+	switch id.Type() {
+	case document.IDTypeU64:
+		return fmt.Sprintf("u64:%d", id.U64())
+	case document.IDTypeUUID:
+		return fmt.Sprintf("uuid:%x", id.UUID())
+	case document.IDTypeString:
+		return fmt.Sprintf("str:%s", id.String())
+	default:
+		return ""
+	}
 }
 
 // intSqrt computes integer square root.
