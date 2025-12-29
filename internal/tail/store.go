@@ -22,6 +22,7 @@ import (
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/guardrails"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 	"google.golang.org/protobuf/proto"
@@ -137,6 +138,7 @@ type TailStore struct {
 	objectStore objectstore.Store
 	diskCache   *cache.DiskCache
 	ramCache    *cache.MemoryCache
+	guardrails  *guardrails.Manager
 
 	// Per-namespace tail state
 	namespaces map[string]*namespaceTail
@@ -171,6 +173,11 @@ type walEntryCache struct {
 
 // New creates a new TailStore.
 func New(cfg Config, store objectstore.Store, diskCache *cache.DiskCache, ramCache *cache.MemoryCache) *TailStore {
+	return NewWithGuardrails(cfg, store, diskCache, ramCache, nil)
+}
+
+// NewWithGuardrails creates a new TailStore with optional guardrails enforcement.
+func NewWithGuardrails(cfg Config, store objectstore.Store, diskCache *cache.DiskCache, ramCache *cache.MemoryCache, guard *guardrails.Manager) *TailStore {
 	if cfg.MaxRAMBytes == 0 {
 		cfg = DefaultConfig()
 	}
@@ -180,17 +187,18 @@ func New(cfg Config, store objectstore.Store, diskCache *cache.DiskCache, ramCac
 		objectStore: store,
 		diskCache:   diskCache,
 		ramCache:    ramCache,
+		guardrails:  guard,
 		namespaces:  make(map[string]*namespaceTail),
 	}
 }
 
 // getOrCreateNamespace gets or creates the namespace tail state.
-func (ts *TailStore) getOrCreateNamespace(namespace string) *namespaceTail {
+func (ts *TailStore) getOrCreateNamespace(namespace string) (*namespaceTail, bool) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
 	if nt, ok := ts.namespaces[namespace]; ok {
-		return nt
+		return nt, false
 	}
 
 	nt := &namespaceTail{
@@ -198,7 +206,7 @@ func (ts *TailStore) getOrCreateNamespace(namespace string) *namespaceTail {
 		documents:  make(map[string]*Document),
 	}
 	ts.namespaces[namespace] = nt
-	return nt
+	return nt, true
 }
 
 // getNamespace gets the namespace tail state if it exists.
@@ -209,11 +217,19 @@ func (ts *TailStore) getNamespace(namespace string) *namespaceTail {
 }
 
 func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, upToSeq uint64) error {
-	nt := ts.getOrCreateNamespace(namespace)
-	nt.mu.Lock()
-	defer nt.mu.Unlock()
+	nt, created := ts.getOrCreateNamespace(namespace)
+	if ts.guardrails != nil {
+		_, isNew, err := ts.guardrails.Load(namespace, nil)
+		if err != nil {
+			return err
+		}
+		if isNew {
+			ts.syncGuardrailsNamespaces()
+		}
+	}
 
 	// Determine which sequences we need to load
+	nt.mu.Lock()
 	startSeq := afterSeq + 1
 	if nt.upToSeq > afterSeq {
 		startSeq = nt.upToSeq + 1
@@ -221,6 +237,27 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 
 	if startSeq > upToSeq {
 		// Already have everything
+		nt.mu.Unlock()
+		return nil
+	}
+	nt.mu.Unlock()
+
+	if created && ts.guardrails != nil {
+		if err := ts.guardrails.AcquireColdFill(ctx); err != nil {
+			return err
+		}
+		defer ts.guardrails.ReleaseColdFill()
+	}
+
+	nt.mu.Lock()
+	defer nt.mu.Unlock()
+
+	startSeq = afterSeq + 1
+	if nt.upToSeq > afterSeq {
+		startSeq = nt.upToSeq + 1
+	}
+
+	if startSeq > upToSeq {
 		return nil
 	}
 
@@ -288,8 +325,22 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 			compressed: compressed,
 		}
 
+		if ts.guardrails != nil {
+			if err := ts.guardrails.CheckTailBytes(namespace, entryCache.sizeBytes); err != nil {
+				return ErrTailTooLarge
+			}
+		}
+
 		nt.ramEntries[seq] = entryCache
 		nt.tailBytes += entryCache.sizeBytes
+		if ts.guardrails != nil {
+			if err := ts.guardrails.SetTailBytes(namespace, nt.tailBytes); err != nil {
+				return err
+			}
+		}
+		if seq > nt.upToSeq {
+			nt.upToSeq = seq
+		}
 
 		// Update deduplicated document view
 		for _, doc := range docs {
@@ -303,7 +354,6 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 	}
 
 	nt.afterSeq = afterSeq
-	nt.upToSeq = upToSeq
 
 	return nil
 }
@@ -503,10 +553,18 @@ func (ts *TailStore) Clear(namespace string) {
 	defer ts.mu.Unlock()
 
 	delete(ts.namespaces, namespace)
+	if ts.guardrails != nil {
+		ts.guardrails.Evict(namespace)
+	}
 }
 
 func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
-	nt := ts.getOrCreateNamespace(namespace)
+	nt, _ := ts.getOrCreateNamespace(namespace)
+	if ts.guardrails != nil {
+		if _, isNew, err := ts.guardrails.Load(namespace, nil); err == nil && isNew {
+			ts.syncGuardrailsNamespaces()
+		}
+	}
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
 
@@ -523,8 +581,19 @@ func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
 		sizeBytes: sizeBytes,
 	}
 
+	if ts.guardrails != nil {
+		if err := ts.guardrails.CheckTailBytes(namespace, entryCache.sizeBytes); err != nil {
+			return
+		}
+	}
+
 	nt.ramEntries[entry.Seq] = entryCache
 	nt.tailBytes += entryCache.sizeBytes
+	if ts.guardrails != nil {
+		if err := ts.guardrails.SetTailBytes(namespace, nt.tailBytes); err != nil {
+			return
+		}
+	}
 
 	// Update deduplicated document view
 	for _, doc := range docs {
@@ -547,6 +616,9 @@ func (ts *TailStore) Close() error {
 	defer ts.mu.Unlock()
 
 	ts.namespaces = make(map[string]*namespaceTail)
+	if ts.guardrails != nil {
+		ts.guardrails.Clear()
+	}
 	return nil
 }
 
@@ -732,4 +804,24 @@ func estimateEntrySize(entry *wal.WalEntry) int64 {
 		}
 	}
 	return estimatedSize
+}
+
+func (ts *TailStore) syncGuardrailsNamespaces() {
+	if ts.guardrails == nil {
+		return
+	}
+
+	allowed := make(map[string]struct{})
+	for _, ns := range ts.guardrails.Namespaces() {
+		allowed[ns] = struct{}{}
+	}
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	for ns := range ts.namespaces {
+		if _, ok := allowed[ns]; !ok {
+			delete(ts.namespaces, ns)
+		}
+	}
 }

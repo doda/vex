@@ -1146,3 +1146,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: init.sh timed out on first run.
 - Resolution: reran init.sh with extended timeout.
+[2025-12-30T04:15:00Z] Completed guardrails-wireup-runtime: PASS
+- Wired guardrails manager into tail store construction in router with guardrails config defaults.
+- Enforced per-namespace tail caps and cold-fill limits in tail refresh/add paths; guardrails eviction now syncs tail namespaces.
+- Added tail tests for guardrails tail cap enforcement and cold-fill concurrency blocking.
+- Key files changed: internal/tail/store.go, pkg/api/router.go, internal/tail/store_test.go, task_list.json.
+- Tests run: /usr/local/go/bin/go test ./internal/tail -count=1 (pass).
+- Tests run: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: ensuring cold fill limit test observes waiting without flakiness.
+- Resolution: added bounded polling loop with timeout for guardrails stats.
+- Follow-ups: none.

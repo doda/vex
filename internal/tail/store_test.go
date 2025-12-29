@@ -7,10 +7,12 @@ import (
 	"io"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/guardrails"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -73,6 +75,20 @@ func (m *mockObjectStore) List(ctx context.Context, opts *objectstore.ListOption
 		objects = append(objects, objectstore.ObjectInfo{Key: key, Size: int64(len(data))})
 	}
 	return &objectstore.ListResult{Objects: objects}, nil
+}
+
+type blockingStore struct {
+	*mockObjectStore
+	blockCh chan struct{}
+}
+
+func (b *blockingStore) Get(ctx context.Context, key string, opts *objectstore.GetOptions) (io.ReadCloser, *objectstore.ObjectInfo, error) {
+	select {
+	case <-b.blockCh:
+		return b.mockObjectStore.Get(ctx, key, opts)
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
 }
 
 func createTestWALEntry(namespace string, seq uint64, docs []testDoc) (*wal.WalEntry, []byte) {
@@ -653,6 +669,107 @@ func TestTailStore_Clear(t *testing.T) {
 
 	if bytes := ts.TailBytes("test-ns"); bytes != 0 {
 		t.Errorf("expected 0 bytes after clear, got %d", bytes)
+	}
+}
+
+func TestTailStore_RefreshHonorsGuardrailsTailCap(t *testing.T) {
+	store := newMockStore()
+	entry1, data1 := createTestWALEntry("guard-ns", 1, []testDoc{
+		{id: 1, attrs: map[string]any{"payload": "small"}},
+	})
+	_, data2 := createTestWALEntry("guard-ns", 2, []testDoc{
+		{id: 2, attrs: map[string]any{"payload": "larger payload"}},
+	})
+
+	store.objects["vex/namespaces/guard-ns/"+wal.KeyForSeq(entry1.Seq)] = data1
+	store.objects["vex/namespaces/guard-ns/"+wal.KeyForSeq(2)] = data2
+
+	guard := guardrails.New(guardrails.Config{
+		MaxNamespaces:            10,
+		MaxTailBytesPerNamespace: int64(len(data1)),
+		MaxConcurrentColdFills:   2,
+	})
+	ts := NewWithGuardrails(DefaultConfig(), store, nil, nil, guard)
+	defer ts.Close()
+
+	err := ts.Refresh(context.Background(), "guard-ns", 0, 2)
+	if !errors.Is(err, ErrTailTooLarge) {
+		t.Fatalf("expected ErrTailTooLarge, got %v", err)
+	}
+
+	nt := ts.getNamespace("guard-ns")
+	if nt == nil {
+		t.Fatal("expected namespace to be loaded")
+	}
+	if _, ok := nt.ramEntries[1]; !ok {
+		t.Fatal("expected seq 1 to be loaded")
+	}
+	if _, ok := nt.ramEntries[2]; ok {
+		t.Fatal("expected seq 2 to be skipped due to cap")
+	}
+
+	state := guard.Get("guard-ns")
+	if state == nil {
+		t.Fatal("expected guardrails state to be loaded")
+	}
+	if state.TailBytes != int64(len(data1)) {
+		t.Fatalf("expected guardrails tail bytes %d, got %d", len(data1), state.TailBytes)
+	}
+}
+
+func TestTailStore_ColdFillGuardrailsLimit(t *testing.T) {
+	store := &blockingStore{
+		mockObjectStore: newMockStore(),
+		blockCh:         make(chan struct{}),
+	}
+
+	entry1, data1 := createTestWALEntry("cold-a", 1, []testDoc{{id: 1}})
+	entry2, data2 := createTestWALEntry("cold-b", 1, []testDoc{{id: 1}})
+	store.objects["vex/namespaces/cold-a/"+wal.KeyForSeq(entry1.Seq)] = data1
+	store.objects["vex/namespaces/cold-b/"+wal.KeyForSeq(entry2.Seq)] = data2
+
+	guard := guardrails.New(guardrails.Config{
+		MaxNamespaces:            10,
+		MaxTailBytesPerNamespace: 1024 * 1024,
+		MaxConcurrentColdFills:   1,
+	})
+	ts := NewWithGuardrails(DefaultConfig(), store, nil, nil, guard)
+	defer ts.Close()
+
+	errCh := make(chan error, 2)
+	ctx := context.Background()
+
+	go func() {
+		errCh <- ts.Refresh(ctx, "cold-a", 0, 1)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	go func() {
+		errCh <- ts.Refresh(ctx, "cold-b", 0, 1)
+	}()
+
+	waiting := false
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		stats := guard.Stats()
+		if stats.ColdFillsActive == 1 && stats.ColdFillsWaiting > 0 {
+			waiting = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !waiting {
+		stats := guard.Stats()
+		t.Fatalf("expected cold fill waiting, got active=%d waiting=%d", stats.ColdFillsActive, stats.ColdFillsWaiting)
+	}
+
+	close(store.blockCh)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("unexpected refresh error: %v", err)
+		}
 	}
 }
 

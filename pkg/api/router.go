@@ -18,6 +18,7 @@ import (
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/guardrails"
 	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/namespace"
@@ -98,6 +99,7 @@ type Router struct {
 	cacheWarmer  *warmer.Warmer     // background cache warmer
 	diskCache    *cache.DiskCache   // NVMe SSD cache
 	ramCache     *cache.MemoryCache // RAM cache for hot index structures
+	guardrails   *guardrails.Manager
 }
 
 func NewRouter(cfg *config.Config) *Router {
@@ -133,7 +135,8 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 	// Set up state manager, tail store, write handler, and batcher if store is available
 	if store != nil {
 		r.stateManager = namespace.NewStateManager(store)
-		r.tailStore = tail.New(tail.DefaultConfig(), store, nil, nil)
+		r.guardrails = guardrails.New(guardrails.FromConfig(cfg.Guardrails))
+		r.tailStore = tail.NewWithGuardrails(tail.DefaultConfig(), store, nil, nil, r.guardrails)
 		// Get compat mode from config, defaulting to turbopuffer
 		compatMode := string(cfg.GetCompatMode())
 		writeHandler, err := write.NewHandlerWithOptions(store, r.stateManager, r.tailStore, compatMode)
@@ -1647,7 +1650,10 @@ func (r *Router) SetStore(store objectstore.Store) error {
 	r.store = store
 	if store != nil {
 		r.stateManager = namespace.NewStateManager(store)
-		r.tailStore = tail.New(tail.DefaultConfig(), store, r.diskCache, r.ramCache)
+		if r.guardrails == nil {
+			r.guardrails = guardrails.New(guardrails.FromConfig(r.cfg.Guardrails))
+		}
+		r.tailStore = tail.NewWithGuardrails(tail.DefaultConfig(), store, r.diskCache, r.ramCache, r.guardrails)
 		// Get compat mode from config, defaulting to turbopuffer
 		compatMode := string(r.cfg.GetCompatMode())
 		writeHandler, err := write.NewHandlerWithOptions(store, r.stateManager, r.tailStore, compatMode)
