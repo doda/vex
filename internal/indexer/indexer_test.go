@@ -290,7 +290,7 @@ func TestIndexerProcessesWALRange(t *testing.T) {
 	}
 
 	// Process WAL range
-	entries, totalBytes, err := indexer.ProcessWALRange(ctx, ns, start, end)
+	entries, totalBytes, lastSeq, err := indexer.ProcessWALRange(ctx, ns, start, end)
 	if err != nil {
 		t.Fatalf("failed to process WAL range: %v", err)
 	}
@@ -301,6 +301,9 @@ func TestIndexerProcessesWALRange(t *testing.T) {
 
 	if totalBytes == 0 {
 		t.Error("expected non-zero bytes")
+	}
+	if lastSeq != end {
+		t.Errorf("expected lastSeq=%d, got %d", end, lastSeq)
 	}
 
 	// Verify entries are in order
@@ -558,6 +561,42 @@ func TestIndexerAdvancesIndexedWALSeq(t *testing.T) {
 	}
 	if hasUnindexed {
 		t.Error("expected no unindexed WAL after processing")
+	}
+
+	indexer.Stop()
+}
+
+func TestIndexerStopsAtMissingWAL(t *testing.T) {
+	store := newMockStore()
+	stateManager := namespace.NewStateManager(store)
+
+	ns := "missing-wal-test"
+	createNamespaceState(t, store, ns, 3, 0)
+	createWALEntry(t, store, ns, 1)
+	createWALEntry(t, store, ns, 3)
+
+	config := &IndexerConfig{
+		PollInterval:          20 * time.Millisecond,
+		NamespacePollInterval: 1 * time.Second,
+	}
+
+	indexer := New(store, stateManager, config, nil)
+
+	err := indexer.WatchNamespace(ns)
+	if err != nil {
+		t.Fatalf("failed to watch namespace: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	ctx := context.Background()
+	loaded, err := stateManager.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+
+	if loaded.State.Index.IndexedWALSeq != 1 {
+		t.Errorf("expected indexed_wal_seq=1, got %d", loaded.State.Index.IndexedWALSeq)
 	}
 
 	indexer.Stop()

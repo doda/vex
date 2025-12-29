@@ -1047,3 +1047,14 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-29T22:10:00Z] Completed indexer-wal-gap-advance: PASS
+- Prevented indexer from advancing indexed_wal_seq past missing WAL entries by tracking last processed seq.
+- L0 segment builder now uses last readable WAL for segment end_wal_seq and state updates.
+- Added indexer test coverage for missing WAL gaps and L0 manifest end_wal_seq assertions.
+- Files changed: internal/indexer/indexer.go.
+- Files changed: internal/indexer/l0_builder.go.
+- Files changed: internal/indexer/indexer_test.go.
+- Files changed: internal/indexer/vector_incremental_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run "MissingWAL" -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).

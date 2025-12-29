@@ -98,6 +98,10 @@ type WALProcessResult struct {
 	ManifestSeq uint64
 	// IndexedWALSeq is the WAL sequence covered by the new manifest.
 	IndexedWALSeq uint64
+	// ProcessedWALSeq is the last WAL sequence successfully processed.
+	ProcessedWALSeq uint64
+	// ProcessedWALSeqSet indicates ProcessedWALSeq should be used when advancing index state.
+	ProcessedWALSeqSet bool
 	// ManifestWritten indicates if a new manifest was published.
 	ManifestWritten bool
 }
@@ -144,11 +148,15 @@ func New(store objectstore.Store, stateManager *namespace.StateManager, config *
 // defaultProcessor reads WAL entries in the range and returns total bytes read.
 // This is a fallback processor that reads WAL but doesn't build indexes.
 func (i *Indexer) defaultProcessor(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
-	_, totalBytes, err := i.ProcessWALRange(ctx, ns, startSeq, endSeq)
+	_, totalBytes, lastSeq, err := i.ProcessWALRange(ctx, ns, startSeq, endSeq)
 	if err != nil {
 		return nil, err
 	}
-	return &WALProcessResult{BytesIndexed: totalBytes}, nil
+	return &WALProcessResult{
+		BytesIndexed:       totalBytes,
+		ProcessedWALSeq:    lastSeq,
+		ProcessedWALSeqSet: true,
+	}, nil
 }
 
 // Start begins the indexer's background processing.
@@ -394,13 +402,17 @@ func (w *namespaceWatcher) checkAndProcess() {
 		}
 	} else {
 		// Processor didn't write a manifest, so we need to advance state ourselves
+		advanceSeq := endSeq
+		if result.ProcessedWALSeqSet {
+			advanceSeq = result.ProcessedWALSeq
+		}
 		updatedState, err = w.indexer.stateManager.AdvanceIndex(
 			ctx,
 			w.namespace,
 			loaded.ETag,
 			state.Index.ManifestKey, // Keep current manifest
 			state.Index.ManifestSeq, // Keep current manifest seq
-			endSeq,                  // Advance indexed_wal_seq
+			advanceSeq,              // Advance indexed_wal_seq
 			result.BytesIndexed,
 		)
 		if err != nil {
@@ -451,15 +463,17 @@ func (w *namespaceWatcher) markPendingRebuildsReady(ctx context.Context, loaded 
 	}
 }
 
-// ProcessWALRange reads WAL entries in the range (startSeq, endSeq] and returns total bytes.
+// ProcessWALRange reads WAL entries in the range (startSeq, endSeq] and returns total bytes
+// plus the last successfully read WAL sequence.
 // This is a helper method that can be used by index builders.
-func (i *Indexer) ProcessWALRange(ctx context.Context, ns string, startSeq, endSeq uint64) ([]*wal.WalEntry, int64, error) {
+func (i *Indexer) ProcessWALRange(ctx context.Context, ns string, startSeq, endSeq uint64) ([]*wal.WalEntry, int64, uint64, error) {
 	var entries []*wal.WalEntry
 	var totalBytes int64
+	lastSeq := startSeq
 
 	decoder, err := wal.NewDecoder()
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to create decoder: %w", err)
+		return nil, 0, startSeq, fmt.Errorf("failed to create decoder: %w", err)
 	}
 	defer decoder.Close()
 
@@ -471,13 +485,14 @@ func (i *Indexer) ProcessWALRange(ctx context.Context, ns string, startSeq, endS
 				// Return what we have so far
 				break
 			}
-			return nil, 0, fmt.Errorf("failed to read WAL entry %d: %w", seq, err)
+			return nil, 0, startSeq, fmt.Errorf("failed to read WAL entry %d: %w", seq, err)
 		}
 		entries = append(entries, entry)
 		totalBytes += bytes
+		lastSeq = seq
 	}
 
-	return entries, totalBytes, nil
+	return entries, totalBytes, lastSeq, nil
 }
 
 // readWALEntry reads and decodes a single WAL entry.

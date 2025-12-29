@@ -72,20 +72,28 @@ func (p *L0SegmentProcessor) AsWALProcessor() WALProcessor {
 // The etag parameter is the current namespace state ETag for optimistic locking.
 func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
 	// Read WAL entries
-	entries, totalBytes, err := p.indexer.ProcessWALRange(ctx, ns, startSeq, endSeq)
+	entries, totalBytes, lastSeq, err := p.indexer.ProcessWALRange(ctx, ns, startSeq, endSeq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read WAL range: %w", err)
 	}
 
 	if len(entries) == 0 {
-		return &WALProcessResult{BytesIndexed: 0}, nil
+		return &WALProcessResult{
+			BytesIndexed:       0,
+			ProcessedWALSeq:    lastSeq,
+			ProcessedWALSeqSet: true,
+		}, nil
 	}
 
 	// Extract documents with vectors from WAL entries
 	docs, dims := extractVectorDocuments(entries)
 	if len(docs) == 0 || dims == 0 {
 		// No vectors in this WAL range, just track the bytes processed
-		return &WALProcessResult{BytesIndexed: totalBytes}, nil
+		return &WALProcessResult{
+			BytesIndexed:       totalBytes,
+			ProcessedWALSeq:    lastSeq,
+			ProcessedWALSeqSet: true,
+		}, nil
 	}
 
 	dtype := vector.DTypeF32
@@ -97,7 +105,7 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 	}
 
 	// Build L0 segment with IVF index
-	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, endSeq, docs, dims, dtype)
+	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, lastSeq, docs, dims, dtype)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build L0 segment: %w", err)
 	}
@@ -112,7 +120,11 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 		return result, nil
 	}
 
-	return &WALProcessResult{BytesIndexed: totalBytes}, nil
+	return &WALProcessResult{
+		BytesIndexed:       totalBytes,
+		ProcessedWALSeq:    lastSeq,
+		ProcessedWALSeqSet: true,
+	}, nil
 }
 
 // vectorDocument represents a document with vector data for indexing.

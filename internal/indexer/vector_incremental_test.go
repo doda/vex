@@ -308,6 +308,82 @@ func TestVectorIncrementalUpdates_Step2_IndexerFoldsTailToIVF(t *testing.T) {
 	})
 }
 
+func TestIndexerSkipsMissingWALSegmentEnd(t *testing.T) {
+	store := newMockStore()
+	stateMan := namespace.NewStateManager(store)
+
+	ctx := context.Background()
+	_, err := stateMan.Create(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to create namespace: %v", err)
+	}
+
+	docs1 := []vectorTestDoc{
+		{id: 1, vector: []float32{1.0, 0.0, 0.0, 0.0}},
+	}
+	_, data1 := createVectorWALEntry("test-ns", 1, docs1)
+	key1 := "vex/namespaces/test-ns/" + wal.KeyForSeq(1)
+
+	docs3 := []vectorTestDoc{
+		{id: 2, vector: []float32{0.0, 1.0, 0.0, 0.0}},
+	}
+	_, data3 := createVectorWALEntry("test-ns", 3, docs3)
+	key3 := "vex/namespaces/test-ns/" + wal.KeyForSeq(3)
+
+	store.mu.Lock()
+	store.objects[key1] = mockObject{data: data1, etag: "etag1"}
+	store.objects[key3] = mockObject{data: data3, etag: "etag3"}
+	store.mu.Unlock()
+
+	loaded, err := stateMan.Load(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to load namespace: %v", err)
+	}
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, key1, int64(len(data1)), nil)
+	if err != nil {
+		t.Fatalf("Failed to advance WAL for seq1: %v", err)
+	}
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, "vex/namespaces/test-ns/"+wal.KeyForSeq(2), 0, nil)
+	if err != nil {
+		t.Fatalf("Failed to advance WAL for seq2: %v", err)
+	}
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, key3, int64(len(data3)), nil)
+	if err != nil {
+		t.Fatalf("Failed to advance WAL for seq3: %v", err)
+	}
+
+	idxer := New(store, stateMan, DefaultConfig(), nil)
+	processor := NewL0SegmentProcessor(store, stateMan, nil, idxer)
+
+	result, err := processor.ProcessWAL(ctx, "test-ns", 0, 3, loaded.State, loaded.ETag)
+	if err != nil {
+		t.Fatalf("ProcessWAL failed: %v", err)
+	}
+	if result == nil || !result.ManifestWritten {
+		t.Fatalf("expected manifest to be written")
+	}
+
+	reader := index.NewReader(store, nil, nil)
+	manifest, err := reader.LoadManifest(ctx, result.ManifestKey)
+	if err != nil {
+		t.Fatalf("failed to load manifest: %v", err)
+	}
+	if manifest == nil || len(manifest.Segments) != 1 {
+		t.Fatalf("expected 1 segment in manifest")
+	}
+	if manifest.Segments[0].EndWALSeq != 1 {
+		t.Errorf("expected segment end_wal_seq=1, got %d", manifest.Segments[0].EndWALSeq)
+	}
+
+	loaded, err = stateMan.Load(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to reload namespace: %v", err)
+	}
+	if loaded.State.Index.IndexedWALSeq != 1 {
+		t.Errorf("expected indexed_wal_seq=1, got %d", loaded.State.Index.IndexedWALSeq)
+	}
+}
+
 // TestVectorIncrementalUpdates_Step3_L0SegmentsBuiltQuickly verifies:
 // Step 3: Test L0 segments built quickly from WAL
 func TestVectorIncrementalUpdates_Step3_L0SegmentsBuiltQuickly(t *testing.T) {

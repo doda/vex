@@ -2440,7 +2440,7 @@
       "Simulate a missing WAL object and verify indexed_wal_seq does not advance past it",
       "Verify segment end_wal_seq matches the last processed WAL"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/indexer/indexer.go",
       "internal/indexer/l0_builder.go"
