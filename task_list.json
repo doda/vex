@@ -2819,7 +2819,7 @@
       "Record cache hits/misses for multiple namespaces and verify metrics include namespace labels",
       "Confirm metrics still aggregate correctly by cache_type"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/metrics/metrics.go"

@@ -106,34 +106,58 @@ func TestCacheHitMissMetrics(t *testing.T) {
 	CacheMisses.Reset()
 
 	// Test disk cache metrics
-	IncCacheHit("disk")
-	IncCacheHit("disk")
-	IncCacheMiss("disk")
+	IncCacheHit("disk", "namespace-a")
+	IncCacheHit("disk", "namespace-a")
+	IncCacheMiss("disk", "namespace-a")
+	IncCacheHit("disk", "namespace-b")
+	IncCacheMiss("disk", "namespace-b")
 
-	hitsVal := testutil.ToFloat64(CacheHits.WithLabelValues("disk"))
-	missesVal := testutil.ToFloat64(CacheMisses.WithLabelValues("disk"))
+	hitsVal := testutil.ToFloat64(CacheHits.WithLabelValues("disk", "namespace-a"))
+	missesVal := testutil.ToFloat64(CacheMisses.WithLabelValues("disk", "namespace-a"))
+	hitsValNsB := testutil.ToFloat64(CacheHits.WithLabelValues("disk", "namespace-b"))
+	missesValNsB := testutil.ToFloat64(CacheMisses.WithLabelValues("disk", "namespace-b"))
 
 	if hitsVal != 2 {
-		t.Errorf("expected disk hits 2, got %f", hitsVal)
+		t.Errorf("expected namespace-a disk hits 2, got %f", hitsVal)
 	}
 	if missesVal != 1 {
-		t.Errorf("expected disk misses 1, got %f", missesVal)
+		t.Errorf("expected namespace-a disk misses 1, got %f", missesVal)
+	}
+	if hitsValNsB != 1 {
+		t.Errorf("expected namespace-b disk hits 1, got %f", hitsValNsB)
+	}
+	if missesValNsB != 1 {
+		t.Errorf("expected namespace-b disk misses 1, got %f", missesValNsB)
 	}
 
 	// Test RAM cache metrics
-	IncCacheHit("ram")
-	IncCacheMiss("ram")
-	IncCacheMiss("ram")
-	IncCacheMiss("ram")
+	IncCacheHit("ram", "namespace-a")
+	IncCacheMiss("ram", "namespace-a")
+	IncCacheMiss("ram", "namespace-a")
+	IncCacheMiss("ram", "namespace-a")
+	IncCacheHit("ram", "namespace-b")
 
-	ramHits := testutil.ToFloat64(CacheHits.WithLabelValues("ram"))
-	ramMisses := testutil.ToFloat64(CacheMisses.WithLabelValues("ram"))
+	ramHits := testutil.ToFloat64(CacheHits.WithLabelValues("ram", "namespace-a"))
+	ramMisses := testutil.ToFloat64(CacheMisses.WithLabelValues("ram", "namespace-a"))
+	ramHitsNsB := testutil.ToFloat64(CacheHits.WithLabelValues("ram", "namespace-b"))
 
 	if ramHits != 1 {
-		t.Errorf("expected ram hits 1, got %f", ramHits)
+		t.Errorf("expected namespace-a ram hits 1, got %f", ramHits)
 	}
 	if ramMisses != 3 {
-		t.Errorf("expected ram misses 3, got %f", ramMisses)
+		t.Errorf("expected namespace-a ram misses 3, got %f", ramMisses)
+	}
+	if ramHitsNsB != 1 {
+		t.Errorf("expected namespace-b ram hits 1, got %f", ramHitsNsB)
+	}
+
+	diskTotal := hitsVal + hitsValNsB + missesVal + missesValNsB
+	if diskTotal != 5 {
+		t.Errorf("expected disk cache total events 5, got %f", diskTotal)
+	}
+	ramTotal := ramHits + ramMisses + ramHitsNsB
+	if ramTotal != 5 {
+		t.Errorf("expected ram cache total events 5, got %f", ramTotal)
 	}
 }
 

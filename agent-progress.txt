@@ -1331,3 +1331,15 @@ KEY DEPENDENCIES:
 - Challenges: gofmt unavailable in environment.
 - Resolution: kept edits formatted manually.
 - Follow-ups: none.
+[2025-12-30T13:10:00Z] Completed metrics-cache-hits-per-namespace: PASS
+- Added namespace labels to cache hit/miss metrics and updated increment helpers.
+- Updated disk/RAM cache hit/miss recording to include namespace values.
+- Extended cache metrics tests to cover multiple namespaces and per cache_type aggregation.
+- Files changed: internal/metrics/metrics.go.
+- Files changed: internal/cache/memory.go.
+- Files changed: internal/cache/disk.go.
+- Files changed: internal/metrics/metrics_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/metrics -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.

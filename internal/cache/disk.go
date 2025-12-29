@@ -162,8 +162,8 @@ func (dc *DiskCache) Get(key CacheKey) (string, error) {
 
 	ent, ok := dc.entries[hash]
 	if !ok {
-		metrics.IncCacheMiss("disk")
 		namespace := extractNamespaceFromKey(key.ObjectKey)
+		metrics.IncCacheMiss("disk", namespace)
 		dc.tempTracker.RecordMiss(namespace)
 		dc.updateTemperatureMetrics(namespace)
 		return "", ErrCacheMiss
@@ -177,8 +177,8 @@ func (dc *DiskCache) Get(key CacheKey) (string, error) {
 	now := time.Now()
 	os.Chtimes(ent.path, now, now)
 
-	metrics.IncCacheHit("disk")
 	namespace := extractNamespaceFromKey(key.ObjectKey)
+	metrics.IncCacheHit("disk", namespace)
 	dc.tempTracker.RecordHit(namespace)
 	dc.updateTemperatureMetrics(namespace)
 	return ent.path, nil

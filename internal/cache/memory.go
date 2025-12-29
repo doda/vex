@@ -151,14 +151,14 @@ func (mc *MemoryCache) Get(key MemoryCacheKey) ([]byte, error) {
 	ent, ok := mc.entries[entryKey]
 	if !ok {
 		mc.misses++
-		metrics.IncCacheMiss("ram")
+		metrics.IncCacheMiss("ram", key.Namespace)
 		mc.tempTracker.RecordMiss(key.Namespace)
 		mc.updateTemperatureMetrics(key.Namespace)
 		return nil, ErrRAMCacheMiss
 	}
 
 	mc.hits++
-	metrics.IncCacheHit("ram")
+	metrics.IncCacheHit("ram", key.Namespace)
 	mc.tempTracker.RecordHit(key.Namespace)
 	mc.updateTemperatureMetrics(key.Namespace)
 
