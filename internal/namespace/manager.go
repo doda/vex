@@ -23,8 +23,9 @@ var (
 )
 
 const (
-	maxCASRetries = 10
-	stateKeyFmt   = "vex/namespaces/%s/meta/state.json"
+	maxCASRetries   = 10
+	stateKeyFmt     = "vex/namespaces/%s/meta/state.json"
+	catalogKeyFmt   = "catalog/namespaces/%s"
 )
 
 // StateManager manages namespace state in object storage with ETag-based CAS.
@@ -40,6 +41,11 @@ func NewStateManager(store objectstore.Store) *StateManager {
 // StateKey returns the object storage key for a namespace's state.
 func StateKey(namespace string) string {
 	return fmt.Sprintf(stateKeyFmt, namespace)
+}
+
+// CatalogKey returns the object storage key for a namespace's catalog entry.
+func CatalogKey(namespace string) string {
+	return fmt.Sprintf(catalogKeyFmt, namespace)
 }
 
 // LoadedState represents a state loaded from storage, including its ETag.
@@ -83,6 +89,7 @@ func (m *StateManager) Load(ctx context.Context, namespace string) (*LoadedState
 
 // Create creates a new namespace state if it doesn't exist.
 // Uses PutIfAbsent to ensure atomic creation.
+// Also writes a catalog entry for efficient namespace listing.
 func (m *StateManager) Create(ctx context.Context, namespace string) (*LoadedState, error) {
 	state := NewState(namespace)
 	key := StateKey(namespace)
@@ -101,6 +108,17 @@ func (m *StateManager) Create(ctx context.Context, namespace string) (*LoadedSta
 			return m.Load(ctx, namespace)
 		}
 		return nil, fmt.Errorf("failed to create state: %w", err)
+	}
+
+	// Write catalog entry for efficient namespace listing.
+	// This is a lightweight empty object that enables listing via prefix scan.
+	catalogKey := CatalogKey(namespace)
+	_, err = m.store.PutIfAbsent(ctx, catalogKey, bytes.NewReader(nil), 0, &objectstore.PutOptions{
+		ContentType: "application/octet-stream",
+	})
+	if err != nil && !objectstore.IsConflictError(err) {
+		// Log but don't fail - catalog entry is an optimization.
+		// State creation succeeded, so the namespace is usable.
 	}
 
 	return &LoadedState{

@@ -1728,93 +1728,63 @@ func parsePageSize(s string) (int, error) {
 	return n, nil
 }
 
-// listNamespacesFromStore lists namespaces from object storage with pagination.
+// listNamespacesFromStore lists namespaces from catalog objects with pagination.
 // Returns namespace entries, next_cursor (if more results), and any error.
+// Catalog objects are stored under: catalog/namespaces/<namespace>
+// This is more efficient than scanning state.json files.
 func listNamespacesFromStore(ctx context.Context, store objectstore.Store, cursor, prefix string, pageSize int) ([]map[string]interface{}, string, error) {
-	// Namespaces are stored under: vex/namespaces/<namespace>/meta/state.json
-	// We list with prefix "vex/namespaces/" and extract namespace names.
-	// For prefix filtering, we add the user prefix to the path.
-	listPrefix := "vex/namespaces/"
+	// Catalog entries are stored under: catalog/namespaces/<namespace>
+	// We list with prefix "catalog/namespaces/" and extract namespace names.
+	listPrefix := "catalog/namespaces/"
 	if prefix != "" {
-		listPrefix = "vex/namespaces/" + prefix
+		listPrefix = "catalog/namespaces/" + prefix
 	}
 
-	// To handle pagination across namespace directories, we use a delimiter approach
-	// or scan state.json files. For simplicity, we'll scan for state.json files
-	// and extract unique namespace names.
-
-	// We request more objects than needed to find enough unique namespaces
-	// because we're filtering for state.json files only.
+	// Request exactly pageSize + 1 to detect if there are more results
 	result, err := store.List(ctx, &objectstore.ListOptions{
 		Prefix:    listPrefix,
 		Marker:    cursor,
-		MaxKeys:   pageSize * 10, // Request more to account for non-state.json files
+		MaxKeys:   pageSize + 1,
 		Delimiter: "",
 	})
 	if err != nil {
 		return nil, "", err
 	}
 
-	// Extract unique namespace names from state.json paths
-	seen := make(map[string]bool)
+	// Extract namespace names from catalog keys
 	namespaces := make([]map[string]interface{}, 0, pageSize)
 	var lastKey string
-	brokeEarly := false
-	brokeBeforeEnd := false
 
-	for i, obj := range result.Objects {
-		// Match pattern: vex/namespaces/<namespace>/meta/state.json
-		if !strings.HasSuffix(obj.Key, "/meta/state.json") {
-			continue
-		}
-
-		// Extract namespace name
-		// Key format: vex/namespaces/<namespace>/meta/state.json
+	for _, obj := range result.Objects {
+		// Key format: catalog/namespaces/<namespace>
 		parts := strings.Split(obj.Key, "/")
-		if len(parts) < 4 {
+		if len(parts) != 3 {
 			continue
 		}
-		nsName := parts[2] // "vex", "namespaces", "<namespace>", "meta", "state.json"
+		nsName := parts[2] // "catalog", "namespaces", "<namespace>"
 
-		// Skip if already seen (shouldn't happen with state.json files)
-		if seen[nsName] {
-			continue
-		}
-		seen[nsName] = true
-
-		// Apply prefix filter if specified
+		// Apply prefix filter if specified (already filtered by list prefix, but double-check)
 		if prefix != "" && !strings.HasPrefix(nsName, prefix) {
 			continue
+		}
+
+		// Stop if we have enough
+		if len(namespaces) >= pageSize {
+			break
 		}
 
 		namespaces = append(namespaces, map[string]interface{}{
 			"id": nsName,
 		})
 		lastKey = obj.Key
-
-		// Stop if we have enough
-		if len(namespaces) >= pageSize {
-			brokeEarly = true
-			if i < len(result.Objects)-1 {
-				brokeBeforeEnd = true
-			}
-			break
-		}
 	}
 
 	// Determine next_cursor
 	var nextCursor string
-	if brokeEarly {
-		if brokeBeforeEnd || result.IsTruncated {
-			// Use the last namespace key as the cursor for pagination.
-			nextCursor = lastKey
-		}
-	} else if result.IsTruncated {
-		// We exhausted this page without hitting pageSize; continue from the last listed object.
-		nextCursor = result.NextMarker
-		if nextCursor == "" {
-			nextCursor = lastKey
-		}
+	// If we got more than pageSize results, or the listing was truncated, there's more
+	if len(result.Objects) > pageSize || result.IsTruncated {
+		// Use the last key we actually included as the cursor for pagination
+		nextCursor = lastKey
 	}
 
 	return namespaces, nextCursor, nil

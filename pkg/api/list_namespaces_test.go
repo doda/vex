@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -507,5 +508,90 @@ func TestListNamespaces_FallbackMode(t *testing.T) {
 
 	if len(namespaces) != 0 {
 		t.Errorf("expected empty namespaces in fallback mode, got %d", len(namespaces))
+	}
+}
+
+// TestListNamespaces_CatalogBased verifies that listing uses catalog entries.
+// This ensures catalog/namespaces/<namespace> objects are used for listing.
+func TestListNamespaces_CatalogBased(t *testing.T) {
+	cfg := config.Default()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	// Create namespaces by writing to them (this creates catalog entries)
+	namesToCreate := []string{"ns1", "ns2", "ns3"}
+	for _, ns := range namesToCreate {
+		body := map[string]any{
+			"upsert_rows": []any{
+				map[string]any{"id": 1, "name": "test"},
+			},
+		}
+		bodyBytes, _ := json.Marshal(body)
+
+		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Result().StatusCode != http.StatusOK {
+			t.Fatalf("failed to create namespace %s: %d", ns, w.Result().StatusCode)
+		}
+	}
+
+	// Verify catalog entries exist
+	ctx := context.Background()
+	for _, ns := range namesToCreate {
+		catalogKey := "catalog/namespaces/" + ns
+		_, _, err := store.Get(ctx, catalogKey, nil)
+		if err != nil {
+			t.Errorf("expected catalog entry for %s to exist, got error: %v", ns, err)
+		}
+	}
+
+	// List namespaces
+	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// Verify namespaces array
+	namespaces, ok := result["namespaces"].([]interface{})
+	if !ok {
+		t.Fatalf("expected namespaces to be an array")
+	}
+
+	if len(namespaces) != 3 {
+		t.Errorf("expected 3 namespaces, got %d", len(namespaces))
+	}
+
+	// Verify each namespace from catalog
+	found := make(map[string]bool)
+	for _, ns := range namespaces {
+		nsMap, ok := ns.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected namespace entry to be object, got %T", ns)
+		}
+		id, ok := nsMap["id"].(string)
+		if !ok {
+			t.Fatalf("expected namespace id to be string, got %T", nsMap["id"])
+		}
+		found[id] = true
+	}
+
+	for _, name := range namesToCreate {
+		if !found[name] {
+			t.Errorf("expected to find namespace %s from catalog", name)
+		}
 	}
 }

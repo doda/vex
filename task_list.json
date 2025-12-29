@@ -2171,7 +2171,7 @@
       "Create namespaces and ensure catalog objects exist",
       "Call list endpoint with prefix/pagination and verify results come from catalog entries"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "pkg/api/router.go"
     ]

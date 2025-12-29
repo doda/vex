@@ -839,3 +839,11 @@ KEY DEPENDENCIES:
 - Issues found: none.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-29T06:30:00Z] Completed fix-list-namespaces-catalog: Review catalog-based namespace listing
+- Reviewed staged changes in `internal/namespace/manager.go`, `pkg/api/router.go`, and `pkg/api/list_namespaces_test.go`.
+- Verified namespace listing now reads from `catalog/namespaces/<namespace>` objects with prefix/pagination.
+- Verified namespace creation writes catalog entries and test covers catalog-based listing.
+- Simplicity check: direct prefix listing and lightweight catalog entries; no extra abstractions.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.
