@@ -693,6 +693,10 @@ func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 			r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
 			return
 		}
+		if errors.Is(err, write.ErrConditionalRequiresTail) {
+			r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
+			return
+		}
 		if errors.Is(err, write.ErrInvalidID) || errors.Is(err, write.ErrInvalidAttribute) || errors.Is(err, write.ErrInvalidRequest) || errors.Is(err, write.ErrInvalidFilter) || errors.Is(err, write.ErrDeleteByFilterTooMany) || errors.Is(err, write.ErrPatchByFilterTooMany) || errors.Is(err, write.ErrVectorPatchForbidden) || errors.Is(err, write.ErrSchemaTypeChange) || errors.Is(err, write.ErrInvalidSchema) {
 			r.writeAPIError(w, ErrBadRequest(err.Error()))
 			return

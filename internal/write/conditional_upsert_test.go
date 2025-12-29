@@ -2,6 +2,7 @@ package write
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/cache"
@@ -423,5 +424,32 @@ func TestConditionalUpsert_NotEq_Condition(t *testing.T) {
 
 	if resp.RowsUpserted != 1 {
 		t.Errorf("expected 1 row upserted with NotEq condition, got %d", resp.RowsUpserted)
+	}
+}
+
+func TestConditionalUpsert_WithoutTailStore_Error(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	req := &WriteRequest{
+		RequestID: "cond-upsert",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "test", "version": 1},
+		},
+		UpsertCondition: []any{"version", "Eq", 1},
+	}
+
+	_, err = handler.Handle(context.Background(), "test-ns", req)
+	if err == nil {
+		t.Fatal("expected error without tail store, got nil")
+	}
+	if !errors.Is(err, ErrConditionalRequiresTail) {
+		t.Fatalf("expected ErrConditionalRequiresTail, got %v", err)
 	}
 }

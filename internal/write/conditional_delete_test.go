@@ -2,6 +2,7 @@ package write
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/document"
@@ -475,8 +476,8 @@ func TestConditionalDelete_ParseWriteRequest(t *testing.T) {
 	}
 }
 
-func TestConditionalDelete_WithoutTailStore_NoOp(t *testing.T) {
-	// Test that conditional deletes are skipped when no tail store is available
+func TestConditionalDelete_WithoutTailStore_Error(t *testing.T) {
+	// Test that conditional deletes error when no tail store is available
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
 
@@ -502,20 +503,18 @@ func TestConditionalDelete_WithoutTailStore_NoOp(t *testing.T) {
 		t.Fatalf("failed to insert: %v", err)
 	}
 
-	// Now try conditional delete - should be skipped (no tail store to evaluate)
+	// Now try conditional delete - should fail (no tail store to evaluate)
 	deleteReq := &WriteRequest{
 		RequestID:       "cond-delete",
 		Deletes:         []any{1},
 		DeleteCondition: []any{"version", "Eq", 1},
 	}
 
-	resp, err := handler.Handle(ctx, "test-ns", deleteReq)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err = handler.Handle(ctx, "test-ns", deleteReq)
+	if err == nil {
+		t.Fatal("expected error without tail store, got nil")
 	}
-
-	// Should be 0 because conditional deletes require tail store
-	if resp.RowsDeleted != 0 {
-		t.Errorf("expected 0 rows deleted without tail store, got %d", resp.RowsDeleted)
+	if !errors.Is(err, ErrConditionalRequiresTail) {
+		t.Fatalf("expected ErrConditionalRequiresTail, got %v", err)
 	}
 }

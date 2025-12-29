@@ -2,10 +2,13 @@ package write
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/document"
+	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/wal"
+	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 func TestConditionalPatch_DocMissing_Skip(t *testing.T) {
@@ -421,5 +424,32 @@ func TestConditionalPatch_InvalidCondition_Error(t *testing.T) {
 	_, err := handler.Handle(ctx, ns, req)
 	if err == nil {
 		t.Error("expected error for invalid condition, got nil")
+	}
+}
+
+func TestConditionalPatch_WithoutTailStore_Error(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	req := &WriteRequest{
+		RequestID: "cond-patch",
+		PatchRows: []map[string]any{
+			{"id": 1, "status": "updated"},
+		},
+		PatchCondition: []any{"status", "Eq", "active"},
+	}
+
+	_, err = handler.Handle(context.Background(), "test-ns", req)
+	if err == nil {
+		t.Fatal("expected error without tail store, got nil")
+	}
+	if !errors.Is(err, ErrConditionalRequiresTail) {
+		t.Fatalf("expected ErrConditionalRequiresTail, got %v", err)
 	}
 }

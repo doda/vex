@@ -915,3 +915,14 @@ KEY DEPENDENCIES:
 - Tests run: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-29T16:48:41Z] Completed write-conditional-requires-snapshot: PASS
+- Implemented snapshot-required errors for conditional upsert/patch/delete when tail store is unavailable.
+- Wrapped conditional refresh failures with snapshot-required error for consistent 503 handling.
+- Added new tests for conditional upsert/patch/delete without tail store to assert error paths.
+- Updated API error mapping for conditional snapshot requirements.
+- Files changed: internal/write/handler.go.
+- Files changed: pkg/api/router.go.
+- Files changed: internal/write/conditional_upsert_test.go.
+- Files changed: internal/write/conditional_patch_test.go.
+- Files changed: internal/write/conditional_delete_test.go.
+- Tests: /usr/local/go/bin/go test ./internal/write -run Conditional -count=1 (pass).

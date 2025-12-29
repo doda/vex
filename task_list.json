@@ -2280,7 +2280,7 @@
       "Disable tail/snapshot and send conditional upsert/patch/delete and verify error",
       "Enable snapshot and verify conditions apply correctly"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/write/handler.go"
     ]

@@ -32,21 +32,22 @@ const (
 )
 
 var (
-	ErrInvalidRequest            = errors.New("invalid write request")
-	ErrInvalidID                 = errors.New("invalid document ID")
-	ErrInvalidAttribute          = errors.New("invalid attribute")
-	ErrDuplicateIDColumn         = errors.New("duplicate IDs in columnar format")
-	ErrVectorPatchForbidden      = errors.New("vector attribute cannot be patched")
-	ErrDeleteByFilterTooMany     = errors.New("delete_by_filter exceeds maximum rows limit")
-	ErrPatchByFilterTooMany      = errors.New("patch_by_filter exceeds maximum rows limit")
-	ErrInvalidFilter             = errors.New("invalid filter expression")
-	ErrSourceNamespaceNotFound   = errors.New("source namespace not found")
-	ErrFilterOpRequiresTail      = errors.New("filter operation requires tail store")
-	ErrSchemaTypeChange          = errors.New("changing attribute type is not allowed")
-	ErrInvalidSchema             = errors.New("invalid schema")
-	ErrBackpressure              = errors.New("write rejected: unindexed data exceeds 2GB threshold")
-	ErrInvalidDistanceMetric     = errors.New("invalid distance_metric")
-	ErrDotProductNotAllowed      = errors.New("dot_product distance metric is not supported in turbopuffer compatibility mode")
+	ErrInvalidRequest          = errors.New("invalid write request")
+	ErrInvalidID               = errors.New("invalid document ID")
+	ErrInvalidAttribute        = errors.New("invalid attribute")
+	ErrDuplicateIDColumn       = errors.New("duplicate IDs in columnar format")
+	ErrVectorPatchForbidden    = errors.New("vector attribute cannot be patched")
+	ErrDeleteByFilterTooMany   = errors.New("delete_by_filter exceeds maximum rows limit")
+	ErrPatchByFilterTooMany    = errors.New("patch_by_filter exceeds maximum rows limit")
+	ErrInvalidFilter           = errors.New("invalid filter expression")
+	ErrSourceNamespaceNotFound = errors.New("source namespace not found")
+	ErrFilterOpRequiresTail    = errors.New("filter operation requires tail store")
+	ErrConditionalRequiresTail = errors.New("conditional write requires tail snapshot")
+	ErrSchemaTypeChange        = errors.New("changing attribute type is not allowed")
+	ErrInvalidSchema           = errors.New("invalid schema")
+	ErrBackpressure            = errors.New("write rejected: unindexed data exceeds 2GB threshold")
+	ErrInvalidDistanceMetric   = errors.New("invalid distance_metric")
+	ErrDotProductNotAllowed    = errors.New("dot_product distance metric is not supported in turbopuffer compatibility mode")
 )
 
 // DeleteByFilterRequest represents a delete_by_filter operation.
@@ -113,9 +114,9 @@ type Handler struct {
 	stateMan    *namespace.StateManager
 	encoder     *wal.Encoder
 	canon       *wal.Canonicalizer
-	tailStore   tail.Store         // Optional tail store for filter evaluation
-	idempotency *IdempotencyStore  // Optional idempotency store for de-duplication
-	compatMode  string             // Compatibility mode: "turbopuffer" or "vex"
+	tailStore   tail.Store        // Optional tail store for filter evaluation
+	idempotency *IdempotencyStore // Optional idempotency store for de-duplication
+	compatMode  string            // Compatibility mode: "turbopuffer" or "vex"
 }
 
 // NewHandler creates a new write handler.
@@ -366,7 +367,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// Update namespace state to advance WAL head with schema delta and disable_backpressure flag
 	updatedState, err := h.stateMan.AdvanceWALWithOptions(ctx, ns, loaded.ETag, walKeyRelative, int64(len(result.Data)), namespace.AdvanceWALOptions{
-		SchemaDelta:        schemaDelta,
+		SchemaDelta:         schemaDelta,
 		DisableBackpressure: req.DisableBackpressure,
 	})
 	if err != nil {
@@ -702,21 +703,14 @@ func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string,
 // The condition can contain $ref_new references that are resolved
 // to values from the new document being upserted.
 func (h *Handler) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch) error {
-	// We need a tail store to read existing documents
-	// If no tail store, we cannot evaluate conditions against existing docs
-	// In this case, treat all upserts as unconditional (applying them all)
+	// We need a tail store to read existing documents for snapshot evaluation
 	if h.tailStore == nil {
-		for _, row := range rows {
-			if err := h.processUpsertRow(row, batch); err != nil {
-				return err
-			}
-		}
-		return nil
+		return fmt.Errorf("%w: conditional upsert requires tail store", ErrConditionalRequiresTail)
 	}
 
 	// Refresh tail to ensure we have current data
 	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
-		return fmt.Errorf("failed to refresh tail for conditional upsert: %w", err)
+		return fmt.Errorf("%w: failed to refresh tail for conditional upsert: %v", ErrConditionalRequiresTail, err)
 	}
 
 	for _, row := range rows {
@@ -805,16 +799,14 @@ func (h *Handler) shouldApplyConditionalUpsert(existingDoc *tail.Document, condi
 // The condition can contain $ref_new references that are resolved
 // to values from the patch data being applied.
 func (h *Handler) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch) error {
-	// We need a tail store to read existing documents
-	// If no tail store, we cannot evaluate conditions against existing docs
-	// In this case, skip all patches since we can't verify doc existence
+	// We need a tail store to read existing documents for snapshot evaluation
 	if h.tailStore == nil {
-		return nil
+		return fmt.Errorf("%w: conditional patch requires tail store", ErrConditionalRequiresTail)
 	}
 
 	// Refresh tail to ensure we have current data
 	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
-		return fmt.Errorf("failed to refresh tail for conditional patch: %w", err)
+		return fmt.Errorf("%w: failed to refresh tail for conditional patch: %v", ErrConditionalRequiresTail, err)
 	}
 
 	for _, row := range rows {
@@ -903,16 +895,14 @@ func (h *Handler) shouldApplyConditionalPatch(existingDoc *tail.Document, condit
 // For $ref_new references in conditions, all attributes are supplied as null
 // since deletion has no "new" values.
 func (h *Handler) processConditionalDeletes(ctx context.Context, ns string, snapshotSeq uint64, ids []any, condition any, batch *wal.WriteSubBatch) error {
-	// We need a tail store to read existing documents
-	// If no tail store, we cannot evaluate conditions against existing docs
-	// In this case, skip all deletes since we can't verify doc existence/conditions
+	// We need a tail store to read existing documents for snapshot evaluation
 	if h.tailStore == nil {
-		return nil
+		return fmt.Errorf("%w: conditional delete requires tail store", ErrConditionalRequiresTail)
 	}
 
 	// Refresh tail to ensure we have current data
 	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
-		return fmt.Errorf("failed to refresh tail for conditional delete: %w", err)
+		return fmt.Errorf("%w: failed to refresh tail for conditional delete: %v", ErrConditionalRequiresTail, err)
 	}
 
 	for _, rawID := range ids {
