@@ -213,7 +213,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		return nil, fmt.Errorf("failed to load namespace state: %w", err)
 	}
 
-	// Check backpressure: reject writes when unindexed data > 2GB unless disable_backpressure is set
+	// Check backpressure early to avoid work when already above threshold.
 	if !req.DisableBackpressure && loaded.State.WAL.BytesUnindexedEst > MaxUnindexedBytes {
 		releaseOnError(ErrBackpressure)
 		return nil, ErrBackpressure
@@ -350,6 +350,12 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		return nil, err
 	}
 
+	// Check backpressure including the incoming write size.
+	if !req.DisableBackpressure && loaded.State.WAL.BytesUnindexedEst+result.LogicalBytes > MaxUnindexedBytes {
+		releaseOnError(ErrBackpressure)
+		return nil, ErrBackpressure
+	}
+
 	// Write WAL entry to object storage with If-None-Match for idempotency
 	walKeyRelative := wal.KeyForSeq(nextSeq)
 	walKey := "vex/namespaces/" + ns + "/" + walKeyRelative
@@ -366,7 +372,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	rebuildChanges := DetectSchemaRebuildChanges(req.Schema, loaded.State.Schema)
 
 	// Update namespace state to advance WAL head with schema delta and disable_backpressure flag
-	updatedState, err := h.stateMan.AdvanceWALWithOptions(ctx, ns, loaded.ETag, walKeyRelative, int64(len(result.Data)), namespace.AdvanceWALOptions{
+	updatedState, err := h.stateMan.AdvanceWALWithOptions(ctx, ns, loaded.ETag, walKeyRelative, result.LogicalBytes, namespace.AdvanceWALOptions{
 		SchemaDelta:         schemaDelta,
 		DisableBackpressure: req.DisableBackpressure,
 	})

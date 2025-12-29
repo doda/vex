@@ -5,6 +5,7 @@ package write
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -71,23 +73,23 @@ type namespaceBatch struct {
 	startTime   time.Time
 	size        int64 // estimated uncompressed size
 	schemaDelta *namespace.Schema
-	flushed     bool  // set to true once flush starts, prevents double-flush
+	flushed     bool // set to true once flush starts, prevents double-flush
 }
 
 // Batcher batches write requests per namespace, committing at most 1 WAL entry per second.
 type Batcher struct {
-	cfg           BatcherConfig
-	store         objectstore.Store
-	stateMan      *namespace.StateManager
-	canon         *wal.Canonicalizer
-	tailStore     tail.Store
-	idempotency   *IdempotencyStore
-	compatMode    string // Compatibility mode: "turbopuffer" or "vex"
+	cfg         BatcherConfig
+	store       objectstore.Store
+	stateMan    *namespace.StateManager
+	canon       *wal.Canonicalizer
+	tailStore   tail.Store
+	idempotency *IdempotencyStore
+	compatMode  string // Compatibility mode: "turbopuffer" or "vex"
 
-	mu       sync.Mutex
-	batches  map[string]*namespaceBatch // namespace -> pending batch
-	closed   bool
-	closeWg  sync.WaitGroup
+	mu      sync.Mutex
+	batches map[string]*namespaceBatch // namespace -> pending batch
+	closed  bool
+	closeWg sync.WaitGroup
 }
 
 // NewBatcher creates a new write batcher.
@@ -317,6 +319,18 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	results := make([]*WriteResponse, len(batch.writes))
 	var schemaDelta *namespace.Schema
 	var anyDisableBackpressure bool
+	baseSize, err := wal.LogicalSize(walEntry)
+	if err != nil {
+		batchErr := fmt.Errorf("failed to size WAL entry: %w", err)
+		for _, pw := range batch.writes {
+			if pw.reserved {
+				b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+			}
+			pw.result <- batchResult{err: batchErr}
+		}
+		return
+	}
+	bytesEstimate := loaded.State.WAL.BytesUnindexedEst + baseSize
 
 	// Process each write request into its own sub-batch
 	// Use each write's own context for its processing
@@ -339,7 +353,7 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 		default:
 		}
 
-		resp, subBatch, writeSchemaDelta, err := b.processWrite(writeCtx, batch.namespace, loaded.State, pw.req)
+		resp, subBatch, writeSchemaDelta, incomingBytes, err := b.processWrite(writeCtx, batch.namespace, loaded.State, pw.req, bytesEstimate)
 		if err != nil {
 			// Record error for this specific write and release reservation
 			results[i] = nil
@@ -352,6 +366,7 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 
 		results[i] = resp
 		walEntry.SubBatches = append(walEntry.SubBatches, subBatch)
+		bytesEstimate += incomingBytes
 
 		// Track if any write in batch used disable_backpressure
 		if pw.req.DisableBackpressure {
@@ -428,8 +443,8 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	}
 
 	// Update namespace state (use batchCtx for durability)
-	_, err = b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, loaded.ETag, walKeyRelative, int64(len(result.Data)), namespace.AdvanceWALOptions{
-		SchemaDelta:        schemaDelta,
+	_, err = b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, loaded.ETag, walKeyRelative, result.LogicalBytes, namespace.AdvanceWALOptions{
+		SchemaDelta:         schemaDelta,
 		DisableBackpressure: anyDisableBackpressure,
 	})
 	if err != nil {
@@ -460,16 +475,11 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 
 // processWrite processes a single write request and returns its sub-batch.
 // This is similar to Handler.Handle but returns the sub-batch instead of committing.
-func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.State, req *WriteRequest) (*WriteResponse, *wal.WriteSubBatch, *namespace.Schema, error) {
-	// Check backpressure: reject writes when unindexed data > 2GB unless disable_backpressure is set
-	if !req.DisableBackpressure && state.WAL.BytesUnindexedEst > MaxUnindexedBytes {
-		return nil, nil, nil, ErrBackpressure
-	}
-
+func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.State, req *WriteRequest, bytesEstimate int64) (*WriteResponse, *wal.WriteSubBatch, *namespace.Schema, int64, error) {
 	// Validate distance_metric against compat mode if specified
 	if req.DistanceMetric != "" {
 		if err := ValidateDistanceMetric(req.DistanceMetric, b.compatMode); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, 0, err
 		}
 	}
 
@@ -479,7 +489,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	if req.Schema != nil {
 		schemaDelta, err = ValidateAndConvertSchemaUpdate(req.Schema, state.Schema)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, 0, err
 		}
 	}
 
@@ -501,7 +511,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	if req.DeleteByFilter != nil {
 		remaining, err := handler.processDeleteByFilter(ctx, ns, state.WAL.HeadSeq, req.DeleteByFilter, subBatch, state.Schema)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, 0, err
 		}
 		rowsRemaining = remaining
 	}
@@ -510,7 +520,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	if req.PatchByFilter != nil {
 		remaining, err := handler.processPatchByFilter(ctx, ns, state.WAL.HeadSeq, req.PatchByFilter, subBatch, state.Schema)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, 0, err
 		}
 		if remaining {
 			rowsRemaining = true
@@ -520,24 +530,24 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	// PHASE 3: copy_from_namespace runs AFTER patch_by_filter, BEFORE explicit upserts/patches/deletes
 	if req.CopyFromNamespace != "" {
 		if err := handler.processCopyFromNamespace(ctx, req.CopyFromNamespace, subBatch); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, 0, err
 		}
 	}
 
 	// PHASE 4: Process upsert_rows with last-write-wins deduplication
 	dedupedUpserts, err := handler.deduplicateUpsertRows(req.UpsertRows)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, 0, err
 	}
 
 	if req.UpsertCondition != nil {
 		if err := handler.processConditionalUpserts(ctx, ns, state.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, 0, err
 		}
 	} else {
 		for _, row := range dedupedUpserts {
 			if err := handler.processUpsertRow(row, subBatch); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, 0, err
 			}
 		}
 	}
@@ -545,17 +555,17 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	// PHASE 5: Process patch_rows with last-write-wins deduplication
 	dedupedPatches, err := handler.deduplicatePatchRows(req.PatchRows)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, 0, err
 	}
 
 	if req.PatchCondition != nil {
 		if err := handler.processConditionalPatches(ctx, ns, state.WAL.HeadSeq, dedupedPatches, req.PatchCondition, subBatch); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, 0, err
 		}
 	} else {
 		for _, row := range dedupedPatches {
 			if err := handler.processPatchRow(row, subBatch); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, 0, err
 			}
 		}
 	}
@@ -563,23 +573,30 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	// PHASE 6: Process deletes
 	if req.DeleteCondition != nil {
 		if err := handler.processConditionalDeletes(ctx, ns, state.WAL.HeadSeq, req.Deletes, req.DeleteCondition, subBatch); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, 0, err
 		}
 	} else {
 		for _, id := range req.Deletes {
 			if err := handler.processDelete(id, subBatch); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, 0, err
 			}
 		}
 	}
 
-	return &WriteResponse{
+	resp := &WriteResponse{
 		RowsAffected:  subBatch.Stats.RowsAffected,
 		RowsUpserted:  subBatch.Stats.RowsUpserted,
 		RowsPatched:   subBatch.Stats.RowsPatched,
 		RowsDeleted:   subBatch.Stats.RowsDeleted,
 		RowsRemaining: rowsRemaining,
-	}, subBatch, schemaDelta, nil
+	}
+
+	incomingBytes := subBatchLogicalBytes(subBatch)
+	if !req.DisableBackpressure && bytesEstimate+incomingBytes > MaxUnindexedBytes {
+		return nil, nil, nil, 0, ErrBackpressure
+	}
+
+	return resp, subBatch, schemaDelta, incomingBytes, nil
 }
 
 // estimateWriteSize estimates the uncompressed size of a write request.
@@ -608,6 +625,19 @@ func (b *Batcher) estimateWriteSize(req *WriteRequest) int64 {
 	size += int64(len(req.Deletes)) * 20
 
 	return size
+}
+
+func subBatchLogicalBytes(subBatch *wal.WriteSubBatch) int64 {
+	if subBatch == nil {
+		return 0
+	}
+	msgSize := proto.Size(subBatch)
+	return int64(1 + varintLen(uint64(msgSize)) + msgSize)
+}
+
+func varintLen(v uint64) int {
+	var buf [binary.MaxVarintLen64]byte
+	return binary.PutUvarint(buf[:], v)
 }
 
 // estimateValueSize estimates the size of a value in bytes.

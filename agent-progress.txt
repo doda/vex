@@ -926,3 +926,13 @@ KEY DEPENDENCIES:
 - Files changed: internal/write/conditional_patch_test.go.
 - Files changed: internal/write/conditional_delete_test.go.
 - Tests: /usr/local/go/bin/go test ./internal/write -run Conditional -count=1 (pass).
+[2025-12-29T19:05:00Z] Completed write-backpressure-include-incoming: PASS
+- Implemented backpressure check to include incoming logical WAL bytes in write handler and batcher.
+- Updated batcher to track logical bytes per sub-batch and advance state using logical size.
+- Added backpressure tests for incoming size rejection and below-threshold success.
+- Key files changed: internal/write/handler.go, internal/write/batcher.go, internal/write/backpressure_test.go.
+- Task list updated: task_list.json set write-backpressure-include-incoming to passes=true.
+- Tests run: /usr/local/go/bin/go test ./internal/write -run Backpressure -count=1 (pass).
+- Tests run: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

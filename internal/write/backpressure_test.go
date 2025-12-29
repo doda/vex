@@ -101,6 +101,85 @@ func TestBackpressure_DisableBackpressureAllowsWritesAboveThreshold(t *testing.T
 	}
 }
 
+func TestBackpressure_IncludesIncomingWriteSize(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	ns := "test-backpressure-incoming-size"
+
+	loaded, err := stateMan.Create(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	_, err = stateMan.Update(ctx, ns, loaded.ETag, func(state *namespace.State) error {
+		state.WAL.BytesUnindexedEst = MaxUnindexedBytes - 1
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update state: %v", err)
+	}
+
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	req := &WriteRequest{
+		RequestID: "req-incoming-1",
+		UpsertRows: []map[string]any{
+			{"id": "doc1", "field": "value"},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req)
+	if err != ErrBackpressure {
+		t.Fatalf("expected ErrBackpressure, got: %v", err)
+	}
+}
+
+func TestBackpressure_AllowsWritesBelowThresholdWithIncomingSize(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	ns := "test-backpressure-incoming-ok"
+
+	loaded, err := stateMan.Create(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	_, err = stateMan.Update(ctx, ns, loaded.ETag, func(state *namespace.State) error {
+		state.WAL.BytesUnindexedEst = MaxUnindexedBytes - 10*1024*1024
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update state: %v", err)
+	}
+
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	req := &WriteRequest{
+		RequestID: "req-incoming-2",
+		UpsertRows: []map[string]any{
+			{"id": "doc1", "field": "value"},
+		},
+	}
+
+	resp, err := handler.Handle(ctx, ns, req)
+	if err != nil {
+		t.Fatalf("expected write to succeed, got error: %v", err)
+	}
+	if resp.RowsUpserted != 1 {
+		t.Fatalf("expected 1 row upserted, got %d", resp.RowsUpserted)
+	}
+}
+
 func TestBackpressure_BytesUnindexedEstIsTrackedInState(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()

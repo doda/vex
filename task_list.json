@@ -2293,7 +2293,7 @@
       "Set bytes_unindexed_est near 2GB and send a write that crosses the threshold to verify 429",
       "Verify smaller writes below threshold succeed"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/write/handler.go"
     ]
