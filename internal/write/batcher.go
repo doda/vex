@@ -492,6 +492,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 			return nil, nil, nil, 0, err
 		}
 	}
+	schemaCollector := newSchemaCollector(state.Schema, schemaDelta)
 
 	// Create sub-batch for this request
 	subBatch := wal.NewWriteSubBatch(req.RequestID)
@@ -518,7 +519,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 
 	// PHASE 2: patch_by_filter runs AFTER delete_by_filter, BEFORE other operations
 	if req.PatchByFilter != nil {
-		remaining, err := handler.processPatchByFilter(ctx, ns, state.WAL.HeadSeq, req.PatchByFilter, subBatch, state.Schema)
+		remaining, err := handler.processPatchByFilter(ctx, ns, state.WAL.HeadSeq, req.PatchByFilter, subBatch, state.Schema, schemaCollector)
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}
@@ -529,7 +530,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 
 	// PHASE 3: copy_from_namespace runs AFTER patch_by_filter, BEFORE explicit upserts/patches/deletes
 	if req.CopyFromNamespace != "" {
-		if err := handler.processCopyFromNamespace(ctx, req.CopyFromNamespace, subBatch); err != nil {
+		if err := handler.processCopyFromNamespace(ctx, req.CopyFromNamespace, subBatch, schemaCollector); err != nil {
 			return nil, nil, nil, 0, err
 		}
 	}
@@ -541,12 +542,12 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	}
 
 	if req.UpsertCondition != nil {
-		if err := handler.processConditionalUpserts(ctx, ns, state.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch); err != nil {
+		if err := handler.processConditionalUpserts(ctx, ns, state.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch, schemaCollector); err != nil {
 			return nil, nil, nil, 0, err
 		}
 	} else {
 		for _, row := range dedupedUpserts {
-			if err := handler.processUpsertRow(row, subBatch); err != nil {
+			if err := handler.processUpsertRow(row, subBatch, schemaCollector); err != nil {
 				return nil, nil, nil, 0, err
 			}
 		}
@@ -559,12 +560,12 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	}
 
 	if req.PatchCondition != nil {
-		if err := handler.processConditionalPatches(ctx, ns, state.WAL.HeadSeq, dedupedPatches, req.PatchCondition, subBatch); err != nil {
+		if err := handler.processConditionalPatches(ctx, ns, state.WAL.HeadSeq, dedupedPatches, req.PatchCondition, subBatch, schemaCollector); err != nil {
 			return nil, nil, nil, 0, err
 		}
 	} else {
 		for _, row := range dedupedPatches {
-			if err := handler.processPatchRow(row, subBatch); err != nil {
+			if err := handler.processPatchRow(row, subBatch, schemaCollector); err != nil {
 				return nil, nil, nil, 0, err
 			}
 		}
@@ -581,6 +582,15 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 				return nil, nil, nil, 0, err
 			}
 		}
+	}
+
+	schemaDelta = mergeSchemaDelta(schemaDelta, schemaCollector.Delta())
+	if schemaDelta != nil {
+		walDeltas, err := schemaDeltaToWAL(schemaDelta)
+		if err != nil {
+			return nil, nil, nil, 0, err
+		}
+		subBatch.SchemaDeltas = append(subBatch.SchemaDeltas, walDeltas...)
 	}
 
 	resp := &WriteResponse{
@@ -680,44 +690,44 @@ func (p *writeProcessor) processDeleteByFilter(ctx context.Context, ns string, s
 	return h.processDeleteByFilter(ctx, ns, snapshotSeq, req, batch, nsSchema)
 }
 
-func (p *writeProcessor) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema) (bool, error) {
+func (p *writeProcessor) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema, schemaCollector *schemaCollector) (bool, error) {
 	h := &Handler{
 		store:     p.store,
 		stateMan:  p.stateMan,
 		canon:     p.canon,
 		tailStore: p.tailStore,
 	}
-	return h.processPatchByFilter(ctx, ns, snapshotSeq, req, batch, nsSchema)
+	return h.processPatchByFilter(ctx, ns, snapshotSeq, req, batch, nsSchema, schemaCollector)
 }
 
-func (p *writeProcessor) processCopyFromNamespace(ctx context.Context, sourceNs string, batch *wal.WriteSubBatch) error {
+func (p *writeProcessor) processCopyFromNamespace(ctx context.Context, sourceNs string, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{
 		store:     p.store,
 		stateMan:  p.stateMan,
 		canon:     p.canon,
 		tailStore: p.tailStore,
 	}
-	return h.processCopyFromNamespace(ctx, sourceNs, batch)
+	return h.processCopyFromNamespace(ctx, sourceNs, batch, schemaCollector)
 }
 
-func (p *writeProcessor) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch) error {
+func (p *writeProcessor) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{
 		store:     p.store,
 		stateMan:  p.stateMan,
 		canon:     p.canon,
 		tailStore: p.tailStore,
 	}
-	return h.processConditionalUpserts(ctx, ns, snapshotSeq, rows, condition, batch)
+	return h.processConditionalUpserts(ctx, ns, snapshotSeq, rows, condition, batch, schemaCollector)
 }
 
-func (p *writeProcessor) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch) error {
+func (p *writeProcessor) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{
 		store:     p.store,
 		stateMan:  p.stateMan,
 		canon:     p.canon,
 		tailStore: p.tailStore,
 	}
-	return h.processConditionalPatches(ctx, ns, snapshotSeq, rows, condition, batch)
+	return h.processConditionalPatches(ctx, ns, snapshotSeq, rows, condition, batch, schemaCollector)
 }
 
 func (p *writeProcessor) processConditionalDeletes(ctx context.Context, ns string, snapshotSeq uint64, ids []any, condition any, batch *wal.WriteSubBatch) error {
@@ -740,14 +750,14 @@ func (p *writeProcessor) deduplicatePatchRows(rows []map[string]any) ([]map[stri
 	return h.deduplicatePatchRows(rows)
 }
 
-func (p *writeProcessor) processUpsertRow(row map[string]any, batch *wal.WriteSubBatch) error {
+func (p *writeProcessor) processUpsertRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{canon: p.canon}
-	return h.processUpsertRow(row, batch)
+	return h.processUpsertRow(row, batch, schemaCollector)
 }
 
-func (p *writeProcessor) processPatchRow(row map[string]any, batch *wal.WriteSubBatch) error {
+func (p *writeProcessor) processPatchRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{canon: p.canon}
-	return h.processPatchRow(row, batch)
+	return h.processPatchRow(row, batch, schemaCollector)
 }
 
 func (p *writeProcessor) processDelete(rawID any, batch *wal.WriteSubBatch) error {

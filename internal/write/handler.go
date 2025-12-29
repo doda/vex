@@ -236,6 +236,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 			return nil, err
 		}
 	}
+	schemaCollector := newSchemaCollector(loaded.State.Schema, schemaDelta)
 
 	// Create WAL entry for the next sequence number
 	nextSeq := loaded.State.WAL.HeadSeq + 1
@@ -259,7 +260,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// PHASE 2: patch_by_filter runs AFTER delete_by_filter, BEFORE other operations
 	if req.PatchByFilter != nil {
-		remaining, err := h.processPatchByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.PatchByFilter, subBatch, loaded.State.Schema)
+		remaining, err := h.processPatchByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.PatchByFilter, subBatch, loaded.State.Schema, schemaCollector)
 		if err != nil {
 			releaseOnError(err)
 			return nil, err
@@ -272,7 +273,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// PHASE 3: copy_from_namespace runs AFTER patch_by_filter, BEFORE explicit upserts/patches/deletes
 	if req.CopyFromNamespace != "" {
-		if err := h.processCopyFromNamespace(ctx, req.CopyFromNamespace, subBatch); err != nil {
+		if err := h.processCopyFromNamespace(ctx, req.CopyFromNamespace, subBatch, schemaCollector); err != nil {
 			releaseOnError(err)
 			return nil, err
 		}
@@ -288,13 +289,13 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// If upsert_condition is specified, process conditionally
 	if req.UpsertCondition != nil {
-		if err := h.processConditionalUpserts(ctx, ns, loaded.State.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch); err != nil {
+		if err := h.processConditionalUpserts(ctx, ns, loaded.State.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch, schemaCollector); err != nil {
 			releaseOnError(err)
 			return nil, err
 		}
 	} else {
 		for _, row := range dedupedUpserts {
-			if err := h.processUpsertRow(row, subBatch); err != nil {
+			if err := h.processUpsertRow(row, subBatch, schemaCollector); err != nil {
 				releaseOnError(err)
 				return nil, err
 			}
@@ -311,13 +312,13 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// If patch_condition is specified, process conditionally
 	if req.PatchCondition != nil {
-		if err := h.processConditionalPatches(ctx, ns, loaded.State.WAL.HeadSeq, dedupedPatches, req.PatchCondition, subBatch); err != nil {
+		if err := h.processConditionalPatches(ctx, ns, loaded.State.WAL.HeadSeq, dedupedPatches, req.PatchCondition, subBatch, schemaCollector); err != nil {
 			releaseOnError(err)
 			return nil, err
 		}
 	} else {
 		for _, row := range dedupedPatches {
-			if err := h.processPatchRow(row, subBatch); err != nil {
+			if err := h.processPatchRow(row, subBatch, schemaCollector); err != nil {
 				releaseOnError(err)
 				return nil, err
 			}
@@ -338,6 +339,16 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 				return nil, err
 			}
 		}
+	}
+
+	schemaDelta = mergeSchemaDelta(schemaDelta, schemaCollector.Delta())
+	if schemaDelta != nil {
+		walDeltas, err := schemaDeltaToWAL(schemaDelta)
+		if err != nil {
+			releaseOnError(err)
+			return nil, err
+		}
+		subBatch.SchemaDeltas = append(subBatch.SchemaDeltas, walDeltas...)
 	}
 
 	walEntry.SubBatches = append(walEntry.SubBatches, subBatch)
@@ -518,7 +529,7 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 // Phase 1: Evaluate filter at snapshot, select matching IDs (bounded by limit)
 // Phase 2: Re-evaluate filter and patch IDs that still match
 // Returns true if rows_remaining (more rows matched than limit)
-func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema) (bool, error) {
+func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema, schemaCollector *schemaCollector) (bool, error) {
 	// Parse the filter
 	f, err := filter.Parse(req.Filter)
 	if err != nil {
@@ -605,6 +616,11 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 		}
 		attrs[k] = v
 	}
+	if schemaCollector != nil {
+		if err := schemaCollector.ObserveAttributes(attrs); err != nil {
+			return false, err
+		}
+	}
 	canonAttrs, err := h.canon.CanonicalizeAttributes(attrs)
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrInvalidAttribute, err)
@@ -649,7 +665,7 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 // processCopyFromNamespace performs a server-side bulk copy from a source namespace.
 // It reads all documents from the source namespace at a consistent snapshot
 // and adds them as upserts to the current batch.
-func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string, batch *wal.WriteSubBatch) error {
+func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	// We need a tail store to read source documents
 	if h.tailStore == nil {
 		return fmt.Errorf("%w: tail store required for copy_from_namespace", ErrInvalidRequest)
@@ -676,6 +692,11 @@ func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string,
 	for _, doc := range docs {
 		if doc.Deleted {
 			continue
+		}
+		if schemaCollector != nil {
+			if err := schemaCollector.ObserveAttributes(doc.Attributes); err != nil {
+				return err
+			}
 		}
 
 		protoID := wal.DocumentIDFromID(doc.ID)
@@ -708,7 +729,7 @@ func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string,
 //
 // The condition can contain $ref_new references that are resolved
 // to values from the new document being upserted.
-func (h *Handler) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch) error {
+func (h *Handler) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	// We need a tail store to read existing documents for snapshot evaluation
 	if h.tailStore == nil {
 		return fmt.Errorf("%w: conditional upsert requires tail store", ErrConditionalRequiresTail)
@@ -751,7 +772,7 @@ func (h *Handler) processConditionalUpserts(ctx context.Context, ns string, snap
 			return err
 		}
 		if shouldApply {
-			if err := h.processUpsertRow(row, batch); err != nil {
+			if err := h.processUpsertRow(row, batch, schemaCollector); err != nil {
 				return err
 			}
 		}
@@ -804,7 +825,7 @@ func (h *Handler) shouldApplyConditionalUpsert(existingDoc *tail.Document, condi
 //
 // The condition can contain $ref_new references that are resolved
 // to values from the patch data being applied.
-func (h *Handler) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch) error {
+func (h *Handler) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	// We need a tail store to read existing documents for snapshot evaluation
 	if h.tailStore == nil {
 		return fmt.Errorf("%w: conditional patch requires tail store", ErrConditionalRequiresTail)
@@ -847,7 +868,7 @@ func (h *Handler) processConditionalPatches(ctx context.Context, ns string, snap
 			return err
 		}
 		if shouldApply {
-			if err := h.processPatchRow(row, batch); err != nil {
+			if err := h.processPatchRow(row, batch, schemaCollector); err != nil {
 				return err
 			}
 		}
@@ -994,7 +1015,7 @@ func vectorToBytes(v []float32) []byte {
 }
 
 // processUpsertRow processes a single row for upsert.
-func (h *Handler) processUpsertRow(row map[string]any, batch *wal.WriteSubBatch) error {
+func (h *Handler) processUpsertRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	// Extract and validate ID
 	rawID, ok := row["id"]
 	if !ok {
@@ -1029,6 +1050,11 @@ func (h *Handler) processUpsertRow(row map[string]any, batch *wal.WriteSubBatch)
 		attrs[k] = v
 	}
 
+	if schemaCollector != nil {
+		if err := schemaCollector.ObserveAttributes(attrs); err != nil {
+			return err
+		}
+	}
 	canonAttrs, err := h.canon.CanonicalizeAttributes(attrs)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidAttribute, err)
@@ -1052,7 +1078,7 @@ func (h *Handler) processDelete(rawID any, batch *wal.WriteSubBatch) error {
 // processPatchRow processes a single row for patching.
 // Patches update only specified attributes - they do not include vectors.
 // If the document does not exist, the patch is silently ignored (recorded but no-op at apply time).
-func (h *Handler) processPatchRow(row map[string]any, batch *wal.WriteSubBatch) error {
+func (h *Handler) processPatchRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	// Extract and validate ID
 	rawID, ok := row["id"]
 	if !ok {
@@ -1082,6 +1108,11 @@ func (h *Handler) processPatchRow(row map[string]any, batch *wal.WriteSubBatch) 
 		attrs[k] = v
 	}
 
+	if schemaCollector != nil {
+		if err := schemaCollector.ObserveAttributes(attrs); err != nil {
+			return err
+		}
+	}
 	canonAttrs, err := h.canon.CanonicalizeAttributes(attrs)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidAttribute, err)

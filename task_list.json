@@ -2306,7 +2306,7 @@
       "Write documents without explicit schema and verify schema is inferred and persisted",
       "Replay WAL and verify schema matches original inference"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/write/handler.go",
       "internal/schema"
