@@ -816,6 +816,67 @@ func (r *Reader) GetManifestSegments(ctx context.Context, manifestKey string) ([
 	return manifest.Segments, nil
 }
 
+// IndexedDocument represents a document read from an index segment.
+// Uses default JSON field names to match the compactor's docs column format.
+type IndexedDocument struct {
+	ID         string
+	NumericID  uint64
+	WALSeq     uint64
+	Deleted    bool
+	Attributes map[string]any
+}
+
+// LoadSegmentDocs loads documents from all segments in a manifest.
+// Documents are returned with their WAL sequence for deduplication.
+func (r *Reader) LoadSegmentDocs(ctx context.Context, manifestKey string) ([]IndexedDocument, error) {
+	if manifestKey == "" || r.store == nil {
+		return nil, nil
+	}
+
+	manifest, err := r.LoadManifest(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+
+	var allDocs []IndexedDocument
+	for _, seg := range manifest.Segments {
+		docs, err := r.loadDocsFromSegment(ctx, seg)
+		if err != nil {
+			// Log error and continue with other segments
+			continue
+		}
+		allDocs = append(allDocs, docs...)
+	}
+
+	return allDocs, nil
+}
+
+// loadDocsFromSegment reads documents from a single segment.
+func (r *Reader) loadDocsFromSegment(ctx context.Context, seg Segment) ([]IndexedDocument, error) {
+	if seg.DocsKey == "" {
+		return nil, nil
+	}
+
+	data, err := r.loadObject(ctx, seg.DocsKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	// Decode column format (JSON encoded docs, matching compactor format)
+	var docs []IndexedDocument
+	if err := json.Unmarshal(data, &docs); err != nil {
+		return nil, fmt.Errorf("failed to parse docs data: %w", err)
+	}
+
+	return docs, nil
+}
+
 // Clear removes cached readers for a namespace.
 func (r *Reader) Clear(namespace string) {
 	r.mu.Lock()

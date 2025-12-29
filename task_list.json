@@ -2130,7 +2130,7 @@
       "Index data, run rank_by order-by query, and confirm results include indexed docs",
       "Verify $dist is omitted and ordering is correct across segments and tail"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/query/handler.go"
     ]

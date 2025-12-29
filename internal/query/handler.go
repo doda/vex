@@ -330,7 +330,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		case RankByVector:
 			rows, err = h.executeVectorQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByAttr:
-			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req, tailByteCap)
+			rows, err = h.executeAttrQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByBM25:
 			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req)
 		case RankByComposite:
@@ -788,27 +788,85 @@ func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResult
 
 // executeAttrQuery executes an order-by attribute query.
 // tailByteCap of 0 means no limit (strong consistency); >0 means eventual consistency byte cap.
-func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
-	if h.tailStore == nil {
-		return nil, nil
+// This function queries both indexed segments and tail data, merging results with
+// tail taking precedence for deduplication (newer data).
+func (h *Handler) executeAttrQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
+	// Collect all documents from both index and tail
+	var allDocs []*tail.Document
+
+	// Step 1: Load documents from indexed segments if available
+	indexedWALSeq := loaded.State.Index.IndexedWALSeq
+	if loaded.State.Index.ManifestKey != "" && h.indexReader != nil {
+		indexedDocs, err := h.indexReader.LoadSegmentDocs(ctx, loaded.State.Index.ManifestKey)
+		if err == nil && len(indexedDocs) > 0 {
+			// Convert indexed documents to tail.Document format
+			for _, idoc := range indexedDocs {
+				// Skip deleted documents from index
+				if idoc.Deleted {
+					continue
+				}
+
+				// Parse document ID
+				var docID document.ID
+				if idoc.NumericID != 0 {
+					docID = document.NewU64ID(idoc.NumericID)
+				} else if idoc.ID != "" {
+					var err error
+					docID, err = document.ParseID(idoc.ID)
+					if err != nil {
+						// Fall back to string ID if parse fails
+						docID, _ = document.NewStringID(idoc.ID)
+					}
+				} else {
+					continue // Skip documents with no valid ID
+				}
+
+				doc := &tail.Document{
+					ID:         docID,
+					WalSeq:     idoc.WALSeq,
+					Attributes: idoc.Attributes,
+					Deleted:    false,
+				}
+
+				// Apply filter if present
+				if f != nil {
+					filterDoc := make(map[string]any)
+					filterDoc["id"] = docIDToAny(doc.ID)
+					for k, v := range doc.Attributes {
+						filterDoc[k] = v
+					}
+					if !f.Eval(filterDoc) {
+						continue
+					}
+				}
+
+				allDocs = append(allDocs, doc)
+			}
+		}
 	}
 
-	// Scan documents, using byte-limited scan for eventual consistency
-	var docs []*tail.Document
-	var err error
-	if tailByteCap > 0 {
-		docs, err = h.tailStore.ScanWithByteLimit(ctx, ns, f, tailByteCap)
-	} else {
-		docs, err = h.tailStore.Scan(ctx, ns, f)
-	}
-	if err != nil {
-		return nil, err
+	// Step 2: Get documents from tail (unindexed data)
+	if h.tailStore != nil {
+		var tailDocs []*tail.Document
+		var err error
+		if tailByteCap > 0 {
+			tailDocs, err = h.tailStore.ScanWithByteLimit(ctx, ns, f, tailByteCap)
+		} else {
+			tailDocs, err = h.tailStore.Scan(ctx, ns, f)
+		}
+		if err != nil {
+			return nil, err
+		}
+		allDocs = append(allDocs, tailDocs...)
 	}
 
-	// Sort by the specified attribute
-	sort.Slice(docs, func(i, j int) bool {
-		vi := getDocAttrValue(docs[i], parsed.Field)
-		vj := getDocAttrValue(docs[j], parsed.Field)
+	// Step 3: Deduplicate documents - tail (newer WAL seq) takes precedence
+	allDocs = h.deduplicateAttrQueryDocs(allDocs, indexedWALSeq)
+
+	// Step 4: Sort by the specified attribute
+	sort.Slice(allDocs, func(i, j int) bool {
+		vi := getDocAttrValue(allDocs[i], parsed.Field)
+		vj := getDocAttrValue(allDocs[j], parsed.Field)
 		cmp := compareValues(vi, vj)
 		if parsed.Direction == "desc" {
 			return cmp > 0
@@ -816,17 +874,17 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *Parse
 		return cmp < 0
 	})
 
-	// Apply limit with optional per diversification
+	// Step 5: Apply limit with optional per diversification
 	var selected []*tail.Document
 	if len(req.Per) > 0 {
 		// Diversification: limit N results per distinct value of the per attribute
-		selected = applyPerDiversification(docs, req.Per, req.Limit)
+		selected = applyPerDiversification(allDocs, req.Per, req.Limit)
 	} else {
 		// Simple limit
-		if len(docs) > req.Limit {
-			selected = docs[:req.Limit]
+		if len(allDocs) > req.Limit {
+			selected = allDocs[:req.Limit]
 		} else {
-			selected = docs
+			selected = allDocs
 		}
 	}
 
@@ -840,6 +898,47 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, parsed *Parse
 	}
 
 	return rows, nil
+}
+
+// deduplicateAttrQueryDocs removes duplicate documents, keeping the one with highest WAL seq.
+// For documents with the same ID, the one from tail (higher WAL seq) takes precedence.
+// Deleted (tombstoned) documents are excluded from results.
+func (h *Handler) deduplicateAttrQueryDocs(docs []*tail.Document, indexedWALSeq uint64) []*tail.Document {
+	if len(docs) == 0 {
+		return docs
+	}
+
+	// Track best version of each document by ID
+	docMap := make(map[string]*tail.Document)
+
+	for _, doc := range docs {
+		idStr := doc.ID.String()
+		existing, found := docMap[idStr]
+		if !found {
+			// First occurrence of this doc
+			if !doc.Deleted {
+				docMap[idStr] = doc
+			}
+		} else {
+			// Compare WAL sequences - higher wins
+			if doc.WalSeq > existing.WalSeq {
+				if doc.Deleted {
+					// Newer version is deleted, remove from results
+					delete(docMap, idStr)
+				} else {
+					docMap[idStr] = doc
+				}
+			}
+		}
+	}
+
+	// Convert map back to slice
+	result := make([]*tail.Document, 0, len(docMap))
+	for _, doc := range docMap {
+		result = append(result, doc)
+	}
+
+	return result
 }
 
 // executeBM25Query executes a BM25 full-text search query.
@@ -1839,7 +1938,7 @@ func (h *Handler) executeSubQuery(ctx context.Context, ns string, loaded *namesp
 		case RankByVector:
 			rows, err = h.executeVectorQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByAttr:
-			rows, err = h.executeAttrQuery(ctx, ns, parsed, f, req, tailByteCap)
+			rows, err = h.executeAttrQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByBM25:
 			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req)
 		case RankByComposite:
