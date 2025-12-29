@@ -31,7 +31,6 @@ import (
 var (
 	ErrNamespaceNotFound = errors.New("namespace not found")
 	ErrSeqNotFound       = errors.New("WAL sequence not found")
-	ErrTailTooLarge      = errors.New("unindexed tail exceeds limit")
 )
 
 // Document represents a materialized document in the tail.
@@ -310,40 +309,41 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 			}
 		}
 
-		// Decode and materialize
-		entry, err := decoder.Decode(compressed)
-		if err != nil {
-			return err
+		sizeBytes := int64(len(compressed))
+		keepInRAM := ts.shouldKeepInRAM(nt, sizeBytes)
+		var entry *wal.WalEntry
+		var docs []*Document
+		if keepInRAM {
+			entry, err = decoder.Decode(compressed)
+			if err != nil {
+				return err
+			}
+			docs = materializeEntry(entry)
 		}
-
-		docs := materializeEntry(entry)
 		entryState := &walEntryState{
 			entry:     entry,
 			documents: docs,
-			sizeBytes: int64(len(compressed)),
+			sizeBytes: sizeBytes,
 			fullKey:   fullKey,
-			inRAM:     true,
-		}
-
-		if ts.guardrails != nil {
-			if err := ts.guardrails.CheckTailBytes(namespace, entryState.sizeBytes); err != nil {
-				return ErrTailTooLarge
-			}
+			inRAM:     keepInRAM,
 		}
 
 		nt.entries[seq] = entryState
 		nt.tailBytes += entryState.sizeBytes
-		nt.ramBytes += entryState.sizeBytes
-		if ts.guardrails != nil {
-			if err := ts.guardrails.SetTailBytes(namespace, nt.tailBytes); err != nil {
-				return err
-			}
+		if keepInRAM {
+			nt.ramBytes += entryState.sizeBytes
 		}
 		if seq > nt.upToSeq {
 			nt.upToSeq = seq
 		}
 
 		if err := ts.enforceRAMCapLocked(nt); err != nil {
+			return err
+		}
+		if err := ts.enforceGuardrailsCapLocked(nt); err != nil {
+			return err
+		}
+		if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
 			return err
 		}
 	}
@@ -548,11 +548,14 @@ func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
 
-	docs := materializeEntry(entry)
-
 	sizeBytes, ok := compressedEntrySize(entry)
 	if !ok {
 		sizeBytes = estimateEntrySize(entry)
+	}
+	keepInRAM := ts.shouldKeepInRAM(nt, sizeBytes)
+	var docs []*Document
+	if keepInRAM {
+		docs = materializeEntry(entry)
 	}
 
 	fullKey := "vex/namespaces/" + namespace + "/" + wal.KeyForSeq(entry.Seq)
@@ -561,25 +564,33 @@ func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
 		documents: docs,
 		sizeBytes: sizeBytes,
 		fullKey:   fullKey,
-		inRAM:     true,
+		inRAM:     keepInRAM,
 	}
 
-	if ts.guardrails != nil {
-		if err := ts.guardrails.CheckTailBytes(namespace, entryState.sizeBytes); err != nil {
-			return
+	if !entryState.inRAM {
+		if ts.diskCache != nil && entryState.entry != nil {
+			if err := ts.spillEntryLocked(entryState); err != nil {
+				return
+			}
+		} else {
+			entryState.entry = nil
+			entryState.documents = nil
 		}
 	}
 
 	nt.entries[entry.Seq] = entryState
 	nt.tailBytes += entryState.sizeBytes
-	nt.ramBytes += entryState.sizeBytes
-	if ts.guardrails != nil {
-		if err := ts.guardrails.SetTailBytes(namespace, nt.tailBytes); err != nil {
-			return
-		}
+	if entryState.inRAM {
+		nt.ramBytes += entryState.sizeBytes
 	}
 
 	if err := ts.enforceRAMCapLocked(nt); err != nil {
+		return
+	}
+	if err := ts.enforceGuardrailsCapLocked(nt); err != nil {
+		return
+	}
+	if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
 		return
 	}
 
@@ -786,6 +797,74 @@ func (ts *TailStore) enforceRAMCapLocked(nt *namespaceTail) error {
 		nt.ramBytes -= entry.sizeBytes
 	}
 
+	return nil
+}
+
+func (ts *TailStore) enforceGuardrailsCapLocked(nt *namespaceTail) error {
+	if ts.guardrails == nil {
+		return nil
+	}
+
+	capBytes := ts.guardrails.GetConfig().MaxTailBytesPerNamespace
+	if capBytes <= 0 {
+		return nil
+	}
+
+	for nt.ramBytes > capBytes {
+		var oldestSeq uint64
+		found := false
+		for seq, entry := range nt.entries {
+			if entry == nil || !entry.inRAM {
+				continue
+			}
+			if !found || seq < oldestSeq {
+				oldestSeq = seq
+				found = true
+			}
+		}
+
+		if !found {
+			break
+		}
+
+		entry := nt.entries[oldestSeq]
+		if entry == nil || !entry.inRAM {
+			break
+		}
+
+		if err := ts.spillEntryLocked(entry); err != nil {
+			return err
+		}
+		nt.ramBytes -= entry.sizeBytes
+	}
+
+	return nil
+}
+
+func (ts *TailStore) shouldKeepInRAM(nt *namespaceTail, sizeBytes int64) bool {
+	if ts.guardrails == nil {
+		return true
+	}
+
+	capBytes := ts.guardrails.GetConfig().MaxTailBytesPerNamespace
+	if capBytes <= 0 {
+		return true
+	}
+
+	return nt.ramBytes+sizeBytes <= capBytes
+}
+
+func (ts *TailStore) updateGuardrailsTailBytesLocked(namespace string, nt *namespaceTail) error {
+	if ts.guardrails == nil {
+		return nil
+	}
+
+	if err := ts.guardrails.SetTailBytes(namespace, nt.ramBytes); err != nil {
+		if errors.Is(err, guardrails.ErrTailBytesExceeded) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 
