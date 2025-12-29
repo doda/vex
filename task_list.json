@@ -2360,7 +2360,7 @@
       "Configure pending_rebuilds and run multi-query to verify 202 response",
       "Verify single-query behavior remains unchanged"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/query/handler.go"
     ]

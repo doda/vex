@@ -97,7 +97,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		// We use different query types to verify the ordering is preserved
 		body := map[string]any{
 			"queries": []any{
-				map[string]any{"rank_by": []any{"id", "desc"}, "limit": 10},    // Regular query
+				map[string]any{"rank_by": []any{"id", "desc"}, "limit": 10},         // Regular query
 				map[string]any{"aggregate_by": map[string]any{"c": []any{"Count"}}}, // Aggregation query
 			},
 		}
@@ -285,6 +285,32 @@ func TestMultiQueryAPI(t *testing.T) {
 
 		if w.Code != http.StatusOK {
 			t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("pending rebuild returns 202 for multi-query", func(t *testing.T) {
+		loaded, err := stateMan.Load(ctx, "test-ns")
+		if err != nil {
+			t.Fatalf("Failed to load namespace: %v", err)
+		}
+		if _, err := stateMan.AddPendingRebuild(ctx, "test-ns", loaded.ETag, "filter", "score"); err != nil {
+			t.Fatalf("Failed to add pending rebuild: %v", err)
+		}
+
+		body := map[string]any{
+			"queries": []any{
+				map[string]any{"rank_by": []any{"id", "asc"}, "filters": []any{"score", "Gt", int64(50)}, "limit": 10},
+			},
+		}
+		bodyBytes, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusAccepted {
+			t.Errorf("expected status %d, got %d: %s", http.StatusAccepted, w.Code, w.Body.String())
 		}
 	})
 

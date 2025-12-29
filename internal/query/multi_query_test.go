@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/document"
@@ -259,6 +260,24 @@ func TestHandleMultiQuery(t *testing.T) {
 		// Should have 2 groups: category a and category b
 		if len(resp.Results[0].AggregationGroups) != 2 {
 			t.Errorf("expected 2 aggregation groups, got %d", len(resp.Results[0].AggregationGroups))
+		}
+	})
+
+	t.Run("pending rebuild returns index rebuilding error", func(t *testing.T) {
+		loaded, err := stateMan.Create(ctx, "rebuild-ns")
+		if err != nil {
+			t.Fatalf("failed to create rebuild namespace: %v", err)
+		}
+		if _, err := stateMan.AddPendingRebuild(ctx, "rebuild-ns", loaded.ETag, RebuildKindFilter, "category"); err != nil {
+			t.Fatalf("failed to add pending rebuild: %v", err)
+		}
+
+		queries := []map[string]any{
+			{"rank_by": []any{"id", "asc"}, "filters": []any{"category", "Eq", "a"}, "limit": 10},
+		}
+		_, err = h.HandleMultiQuery(ctx, "rebuild-ns", queries, "")
+		if !errors.Is(err, ErrIndexRebuilding) {
+			t.Errorf("expected ErrIndexRebuilding, got %v", err)
 		}
 	})
 }

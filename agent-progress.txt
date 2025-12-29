@@ -978,3 +978,16 @@ KEY DEPENDENCIES:
 - Files changed: internal/query/bm25_index_scan_test.go, internal/query/rank_clause_test.go.
 - Tests: /usr/local/go/bin/go test ./internal/query -run EventualSearchesOnly128MiBOfTail -count=1 (pass); ./init.sh (pass).
 - Challenges: none.
+[2025-12-29T19:30:00Z] Completed query-multiq-index-rebuild-202: PASS
+- Implemented pending rebuild checks for multi-query subqueries to surface ErrIndexRebuilding.
+- Added internal multi-query test for pending rebuild error propagation.
+- Added API tests for multi-query 202 and single-query pending rebuild 202.
+- Files changed: internal/query/handler.go.
+- Files changed: internal/query/multi_query_test.go.
+- Files changed: pkg/api/multi_query_test.go.
+- Files changed: pkg/api/query_test.go.
+- Task list updated: task_list.json set query-multiq-index-rebuild-202 passes=true.
+- Tests: /usr/local/go/bin/go test ./internal/query -run TestHandleMultiQuery -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./pkg/api -run "TestMultiQueryAPI|TestQueryAPIPendingRebuild|TestQueryAPIIndexBuilding" -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: none.

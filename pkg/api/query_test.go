@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 func TestQueryAPI(t *testing.T) {
@@ -57,9 +58,9 @@ func TestQueryAPI(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:      "missing rank_by returns 400",
-			namespace: "test-ns",
-			body:      map[string]any{},
+			name:           "missing rank_by returns 400",
+			namespace:      "test-ns",
+			body:           map[string]any{},
 			wantStatus:     http.StatusBadRequest,
 			wantErrContain: "rank_by is required",
 		},
@@ -301,6 +302,48 @@ func TestQueryAPIIndexBuilding(t *testing.T) {
 
 	if rec.Code != http.StatusAccepted {
 		t.Errorf("expected 202 Accepted for building index, got %d", rec.Code)
+	}
+}
+
+func TestQueryAPIPendingRebuild(t *testing.T) {
+	cfg := &config.Config{}
+	router := NewRouter(cfg)
+
+	store := objectstore.NewMemoryStore()
+	if err := router.SetStore(store); err != nil {
+		t.Fatalf("Failed to set store: %v", err)
+	}
+	defer router.Close()
+
+	ctx := httptest.NewRequest("GET", "/", nil).Context()
+	loaded, err := router.StateManager().Create(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to create namespace: %v", err)
+	}
+	if _, err := router.StateManager().AddPendingRebuild(ctx, "test-ns", loaded.ETag, "filter", "score"); err != nil {
+		t.Fatalf("Failed to add pending rebuild: %v", err)
+	}
+
+	router.SetState(&ServerState{
+		Namespaces: map[string]*NamespaceState{
+			"test-ns": {Exists: true},
+		},
+		ObjectStore: ObjectStoreState{Available: true},
+	})
+
+	body := map[string]any{
+		"rank_by": []any{"id", "asc"},
+		"filters": []any{"score", "Gt", int64(50)},
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Errorf("expected 202 Accepted for pending rebuild, got %d", rec.Code)
 	}
 }
 

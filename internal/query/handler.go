@@ -2007,6 +2007,11 @@ func (h *Handler) executeSubQuery(ctx context.Context, ns string, loaded *namesp
 		}
 	}
 
+	// Check for pending index rebuilds that affect this subquery
+	if err := CheckPendingRebuilds(loaded.State, f, parsed); err != nil {
+		return nil, err
+	}
+
 	// Check if this is an aggregation query
 	if req.AggregateBy != nil {
 		// Parse aggregations
