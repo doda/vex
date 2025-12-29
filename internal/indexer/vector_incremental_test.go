@@ -3,6 +3,7 @@ package indexer
 import (
 	"bytes"
 	"context"
+	"io"
 	"math"
 	"testing"
 	"time"
@@ -307,6 +308,95 @@ func TestVectorIncrementalUpdates_Step2_IndexerFoldsTailToIVF(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestL0SegmentUsesNamespaceMetric(t *testing.T) {
+	store := newMockStore()
+	stateMan := namespace.NewStateManager(store)
+
+	ctx := context.Background()
+	loaded, err := stateMan.Create(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to create namespace: %v", err)
+	}
+	loaded, err = stateMan.Update(ctx, "test-ns", loaded.ETag, func(state *namespace.State) error {
+		state.Vector = &namespace.VectorConfig{
+			Dims:           4,
+			DType:          "f32",
+			DistanceMetric: "euclidean_squared",
+			ANN:            true,
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to update namespace: %v", err)
+	}
+
+	docs := []vectorTestDoc{
+		{id: 1, vector: []float32{1.0, 0.0, 0.0, 0.0}},
+		{id: 2, vector: []float32{0.0, 1.0, 0.0, 0.0}},
+		{id: 3, vector: []float32{0.0, 0.0, 1.0, 0.0}},
+	}
+	_, data := createVectorWALEntry("test-ns", 1, docs)
+	store.mu.Lock()
+	store.objects["vex/namespaces/test-ns/wal/00000000000000000001.wal.zst"] = mockObject{data: data, etag: "etag1"}
+	store.mu.Unlock()
+
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, "vex/namespaces/test-ns/wal/00000000000000000001.wal.zst", int64(len(data)), nil)
+	if err != nil {
+		t.Fatalf("Failed to advance WAL: %v", err)
+	}
+
+	idxer := New(store, stateMan, DefaultConfig(), nil)
+	processor := NewL0SegmentProcessor(store, stateMan, &L0SegmentBuilderConfig{
+		TargetSizeBytes: index.DefaultL0TargetSizeBytes,
+		Metric:          vector.MetricCosineDistance,
+	}, idxer)
+
+	result, err := processor.ProcessWAL(ctx, "test-ns", 0, 1, loaded.State, loaded.ETag)
+	if err != nil {
+		t.Fatalf("ProcessWAL failed: %v", err)
+	}
+	if result == nil || !result.ManifestWritten {
+		t.Fatalf("expected manifest to be written")
+	}
+
+	reader := index.NewReader(store, nil, nil)
+	manifest, err := reader.LoadManifest(ctx, result.ManifestKey)
+	if err != nil {
+		t.Fatalf("failed to load manifest: %v", err)
+	}
+	if len(manifest.Segments) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(manifest.Segments))
+	}
+	seg := manifest.Segments[0]
+	if seg.IVFKeys == nil {
+		t.Fatalf("expected IVF keys in segment")
+	}
+
+	centroidReader, _, err := store.Get(ctx, seg.IVFKeys.CentroidsKey, nil)
+	if err != nil {
+		t.Fatalf("failed to read centroids: %v", err)
+	}
+	centroidData, err := io.ReadAll(centroidReader)
+	centroidReader.Close()
+	if err != nil {
+		t.Fatalf("failed to read centroids data: %v", err)
+	}
+
+	dims, _, metric, dtype, _, err := vector.ReadCentroidsFile(bytes.NewReader(centroidData))
+	if err != nil {
+		t.Fatalf("failed to decode centroids: %v", err)
+	}
+	if dims != 4 {
+		t.Errorf("expected dims=4, got %d", dims)
+	}
+	if dtype != vector.DTypeF32 {
+		t.Errorf("expected dtype f32, got %s", dtype)
+	}
+	if metric != vector.MetricEuclideanSquared {
+		t.Errorf("expected metric %s, got %s", vector.MetricEuclideanSquared, metric)
+	}
 }
 
 func TestL0SegmentRecordsTombstones(t *testing.T) {

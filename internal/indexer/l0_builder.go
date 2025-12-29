@@ -117,9 +117,18 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 		}
 	}
 
+	metric := p.config.Metric
+	if state.Vector != nil && state.Vector.DistanceMetric != "" {
+		resolved, err := vector.ParseMetric(state.Vector.DistanceMetric)
+		if err != nil {
+			return nil, fmt.Errorf("invalid namespace distance metric %q: %w", state.Vector.DistanceMetric, err)
+		}
+		metric = resolved
+	}
+
 	// Build L0 segment with IVF index
 	schemaDef := buildSchemaDefinition(state)
-	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, lastSeq, docs, dims, dtype, schemaDef)
+	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, lastSeq, docs, dims, dtype, metric, schemaDef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build L0 segment: %w", err)
 	}
@@ -448,7 +457,7 @@ type vectorDocColumn struct {
 }
 
 // buildL0Segment builds an L0 segment with IVF index from the documents.
-func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType, schemaDef *schema.Definition) (*index.Segment, error) {
+func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType, metric vector.DistanceMetric, schemaDef *schema.Definition) (*index.Segment, error) {
 	if len(docs) == 0 {
 		return nil, nil
 	}
@@ -501,7 +510,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	var clusterDataKey string
 	if len(vectorDocs) > 0 {
 		// Build IVF index
-		builder := vector.NewIVFBuilderWithDType(dims, dtype, p.config.Metric, nClusters)
+		builder := vector.NewIVFBuilderWithDType(dims, dtype, metric, nClusters)
 		for _, doc := range vectorDocs {
 			if err := builder.AddVector(doc.numericID, doc.vec); err != nil {
 				return nil, fmt.Errorf("failed to add vector %s: %w", doc.id.String(), err)

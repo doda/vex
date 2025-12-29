@@ -1273,3 +1273,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: gofmt unavailable in environment.
 - Resolution: kept formatting consistent with existing style.
+[2025-12-30T09:20:00Z] Completed indexer-distance-metric-per-namespace: PASS
+- Used namespace state distance_metric when building IVF segments to honor euclidean_squared settings.
+- Added L0 segment test to assert centroids header metric follows namespace state even when config differs.
+- Files changed: internal/indexer/l0_builder.go.
+- Files changed: internal/indexer/vector_incremental_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run TestL0SegmentUsesNamespaceMetric -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/query -run TestEuclideanSquaredMetric -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
