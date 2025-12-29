@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vexsearch/vex/internal/document"
+	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/wal"
@@ -89,6 +90,7 @@ type Batcher struct {
 	stateMan    *namespace.StateManager
 	canon       *wal.Canonicalizer
 	tailStore   tail.Store
+	indexReader *index.Reader
 	idempotency *IdempotencyStore
 	compatMode  string // Compatibility mode: "turbopuffer" or "vex"
 
@@ -129,6 +131,7 @@ func NewBatcherWithConfigAndCompatMode(store objectstore.Store, stateMan *namesp
 		stateMan:     stateMan,
 		canon:        wal.NewCanonicalizer(),
 		tailStore:    tailStore,
+		indexReader:  index.NewReader(store, nil, nil),
 		idempotency:  NewIdempotencyStore(),
 		batches:      make(map[string]*namespaceBatch),
 		commitStates: make(map[string]*namespaceCommitState),
@@ -533,15 +536,16 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 
 	// Create a handler-like processor for this write
 	handler := &writeProcessor{
-		store:     b.store,
-		stateMan:  b.stateMan,
-		canon:     b.canon,
-		tailStore: b.tailStore,
+		store:       b.store,
+		stateMan:    b.stateMan,
+		canon:       b.canon,
+		tailStore:   b.tailStore,
+		indexReader: b.indexReader,
 	}
 
 	// PHASE 1: delete_by_filter runs BEFORE all other operations
 	if req.DeleteByFilter != nil {
-		remaining, err := handler.processDeleteByFilter(ctx, ns, state.WAL.HeadSeq, req.DeleteByFilter, subBatch, state.Schema)
+		remaining, err := handler.processDeleteByFilter(ctx, ns, state.WAL.HeadSeq, state, req.DeleteByFilter, subBatch)
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}
@@ -550,7 +554,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 
 	// PHASE 2: patch_by_filter runs AFTER delete_by_filter, BEFORE other operations
 	if req.PatchByFilter != nil {
-		remaining, err := handler.processPatchByFilter(ctx, ns, state.WAL.HeadSeq, req.PatchByFilter, subBatch, state.Schema, schemaCollector)
+		remaining, err := handler.processPatchByFilter(ctx, ns, state.WAL.HeadSeq, state, req.PatchByFilter, subBatch, schemaCollector)
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}
@@ -573,7 +577,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	}
 
 	if req.UpsertCondition != nil {
-		if err := handler.processConditionalUpserts(ctx, ns, state.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch, schemaCollector); err != nil {
+		if err := handler.processConditionalUpserts(ctx, ns, state.WAL.HeadSeq, state, dedupedUpserts, req.UpsertCondition, subBatch, schemaCollector); err != nil {
 			return nil, nil, nil, 0, err
 		}
 	} else {
@@ -591,7 +595,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 	}
 
 	if req.PatchCondition != nil {
-		if err := handler.processConditionalPatches(ctx, ns, state.WAL.HeadSeq, dedupedPatches, req.PatchCondition, subBatch, schemaCollector); err != nil {
+		if err := handler.processConditionalPatches(ctx, ns, state.WAL.HeadSeq, state, dedupedPatches, req.PatchCondition, subBatch, schemaCollector); err != nil {
 			return nil, nil, nil, 0, err
 		}
 	} else {
@@ -634,7 +638,7 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 
 	// PHASE 6: Process deletes
 	if req.DeleteCondition != nil {
-		if err := handler.processConditionalDeletes(ctx, ns, state.WAL.HeadSeq, req.Deletes, req.DeleteCondition, subBatch); err != nil {
+		if err := handler.processConditionalDeletes(ctx, ns, state.WAL.HeadSeq, state, req.Deletes, req.DeleteCondition, subBatch); err != nil {
 			return nil, nil, nil, 0, err
 		}
 	} else {
@@ -732,73 +736,80 @@ func estimateValueSize(v any) int64 {
 // writeProcessor wraps the processing logic for individual writes.
 // It reuses the logic from Handler but without committing.
 type writeProcessor struct {
-	store     objectstore.Store
-	stateMan  *namespace.StateManager
-	canon     *wal.Canonicalizer
-	tailStore tail.Store
+	store       objectstore.Store
+	stateMan    *namespace.StateManager
+	canon       *wal.Canonicalizer
+	tailStore   tail.Store
+	indexReader *index.Reader
 }
 
 // The following methods delegate to the Handler implementation.
 // We create a temporary Handler instance to reuse the existing logic.
 
-func (p *writeProcessor) processDeleteByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *DeleteByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema) (bool, error) {
+func (p *writeProcessor) processDeleteByFilter(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, req *DeleteByFilterRequest, batch *wal.WriteSubBatch) (bool, error) {
 	h := &Handler{
-		store:     p.store,
-		stateMan:  p.stateMan,
-		canon:     p.canon,
-		tailStore: p.tailStore,
+		store:       p.store,
+		stateMan:    p.stateMan,
+		canon:       p.canon,
+		tailStore:   p.tailStore,
+		indexReader: p.indexReader,
 	}
-	return h.processDeleteByFilter(ctx, ns, snapshotSeq, req, batch, nsSchema)
+	return h.processDeleteByFilter(ctx, ns, snapshotSeq, state, req, batch)
 }
 
-func (p *writeProcessor) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema, schemaCollector *schemaCollector) (bool, error) {
+func (p *writeProcessor) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, req *PatchByFilterRequest, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) (bool, error) {
 	h := &Handler{
-		store:     p.store,
-		stateMan:  p.stateMan,
-		canon:     p.canon,
-		tailStore: p.tailStore,
+		store:       p.store,
+		stateMan:    p.stateMan,
+		canon:       p.canon,
+		tailStore:   p.tailStore,
+		indexReader: p.indexReader,
 	}
-	return h.processPatchByFilter(ctx, ns, snapshotSeq, req, batch, nsSchema, schemaCollector)
+	return h.processPatchByFilter(ctx, ns, snapshotSeq, state, req, batch, schemaCollector)
 }
 
 func (p *writeProcessor) processCopyFromNamespace(ctx context.Context, sourceNs string, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{
-		store:     p.store,
-		stateMan:  p.stateMan,
-		canon:     p.canon,
-		tailStore: p.tailStore,
+		store:       p.store,
+		stateMan:    p.stateMan,
+		canon:       p.canon,
+		tailStore:   p.tailStore,
+		indexReader: p.indexReader,
 	}
 	return h.processCopyFromNamespace(ctx, sourceNs, batch, schemaCollector)
 }
 
-func (p *writeProcessor) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
+func (p *writeProcessor) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{
-		store:     p.store,
-		stateMan:  p.stateMan,
-		canon:     p.canon,
-		tailStore: p.tailStore,
+		store:       p.store,
+		stateMan:    p.stateMan,
+		canon:       p.canon,
+		tailStore:   p.tailStore,
+		indexReader: p.indexReader,
 	}
-	return h.processConditionalUpserts(ctx, ns, snapshotSeq, rows, condition, batch, schemaCollector)
+	return h.processConditionalUpserts(ctx, ns, snapshotSeq, state, rows, condition, batch, schemaCollector)
 }
 
-func (p *writeProcessor) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
+func (p *writeProcessor) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{
-		store:     p.store,
-		stateMan:  p.stateMan,
-		canon:     p.canon,
-		tailStore: p.tailStore,
+		store:       p.store,
+		stateMan:    p.stateMan,
+		canon:       p.canon,
+		tailStore:   p.tailStore,
+		indexReader: p.indexReader,
 	}
-	return h.processConditionalPatches(ctx, ns, snapshotSeq, rows, condition, batch, schemaCollector)
+	return h.processConditionalPatches(ctx, ns, snapshotSeq, state, rows, condition, batch, schemaCollector)
 }
 
-func (p *writeProcessor) processConditionalDeletes(ctx context.Context, ns string, snapshotSeq uint64, ids []any, condition any, batch *wal.WriteSubBatch) error {
+func (p *writeProcessor) processConditionalDeletes(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, ids []any, condition any, batch *wal.WriteSubBatch) error {
 	h := &Handler{
-		store:     p.store,
-		stateMan:  p.stateMan,
-		canon:     p.canon,
-		tailStore: p.tailStore,
+		store:       p.store,
+		stateMan:    p.stateMan,
+		canon:       p.canon,
+		tailStore:   p.tailStore,
+		indexReader: p.indexReader,
 	}
-	return h.processConditionalDeletes(ctx, ns, snapshotSeq, ids, condition, batch)
+	return h.processConditionalDeletes(ctx, ns, snapshotSeq, state, ids, condition, batch)
 }
 
 func (p *writeProcessor) deduplicateUpsertRows(rows []map[string]any) ([]map[string]any, error) {
