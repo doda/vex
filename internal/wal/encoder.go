@@ -41,8 +41,9 @@ func (e *Encoder) Close() error {
 }
 
 type EncodeResult struct {
-	Data     []byte
-	Checksum [32]byte
+	Data         []byte
+	Checksum     [32]byte
+	LogicalBytes int64
 }
 
 func (e *Encoder) Encode(entry *WalEntry) (*EncodeResult, error) {
@@ -76,9 +77,20 @@ func (e *Encoder) Encode(entry *WalEntry) (*EncodeResult, error) {
 
 	data := append([]byte(nil), e.buf.Bytes()...)
 	return &EncodeResult{
-		Data:     data,
-		Checksum: checksum,
+		Data:         data,
+		Checksum:     checksum,
+		LogicalBytes: int64(len(protoBytes)),
 	}, nil
+}
+
+// LogicalSize returns the deterministic protobuf size of a WAL entry.
+func LogicalSize(entry *WalEntry) (int64, error) {
+	opts := proto.MarshalOptions{Deterministic: true}
+	data, err := opts.Marshal(entry)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(data)), nil
 }
 
 type Decoder struct {

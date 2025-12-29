@@ -2226,7 +2226,7 @@
       "Commit a write and verify bytes_unindexed_est increases by logical payload size",
       "Confirm backpressure triggers at the expected logical threshold"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/wal/committer.go",
       "internal/namespace/manager.go"

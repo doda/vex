@@ -3,6 +3,7 @@ package wal
 import (
 	"context"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strconv"
@@ -134,6 +135,12 @@ func (r *Repairer) Repair(ctx context.Context, ns string) (*RepairResult, error)
 		Namespace: ns,
 	}
 
+	decoder, err := NewDecoder()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WAL decoder: %w", err)
+	}
+	defer decoder.Close()
+
 	// Load current state
 	loaded, err := r.stateManager.Load(ctx, ns)
 	if err != nil {
@@ -165,7 +172,7 @@ func (r *Repairer) Repair(ctx context.Context, ns string) (*RepairResult, error)
 	for seq := currentSeq + 1; seq <= highestContiguous; seq++ {
 		// Verify the WAL entry actually exists before advancing
 		walKey := walKeyForNamespace(ns, seq)
-		info, err := r.store.Head(ctx, walKey)
+		_, err := r.store.Head(ctx, walKey)
 		if err != nil {
 			if objectstore.IsNotFoundError(err) {
 				// WAL doesn't exist, we've hit the real limit
@@ -179,12 +186,19 @@ func (r *Repairer) Repair(ctx context.Context, ns string) (*RepairResult, error)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read WAL seq %d: %w", seq, err)
 		}
-		// Read to get size (we don't need the content for repair)
-		var bytesWritten int64 = 0
-		if info != nil {
-			bytesWritten = info.Size
-		}
+		compressed, err := io.ReadAll(reader)
 		reader.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read WAL seq %d: %w", seq, err)
+		}
+		entry, err := decoder.Decode(compressed)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode WAL seq %d: %w", seq, err)
+		}
+		bytesWritten, err := LogicalSize(entry)
+		if err != nil {
+			return nil, fmt.Errorf("failed to size WAL seq %d: %w", seq, err)
+		}
 
 		// Update state with this WAL entry
 		walKeyRelative := KeyForSeq(seq)

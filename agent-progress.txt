@@ -874,3 +874,15 @@ KEY DEPENDENCIES:
 - Challenges: init.sh failed due to missing MinIO.
 - Resolution: added VEX_OBJECT_STORE_TYPE/root overrides and used filesystem store for init smoke test.
 - Follow-ups: none.
+[2025-12-29T16:25:14Z] Completed wal-unindexed-bytes-logical: PASS
+- Updated WAL encoding to track logical (uncompressed) protobuf byte sizes alongside compressed bytes.
+- Commit path now uses logical bytes for bytes_unindexed_est and WAL commit metrics.
+- Repair now decodes WAL entries to compute logical sizes when advancing state.
+- Added committer test to assert bytes_unindexed_est matches logical payload size.
+- Key files changed: internal/wal/encoder.go, internal/wal/committer.go, internal/wal/repair.go, internal/wal/committer_test.go.
+- Tests run: /usr/local/go/bin/go test ./internal/wal -count=1 (pass).
+- Tests run: /usr/local/go/bin/go test ./internal/write -run Backpressure -count=1 (pass).
+- Tests run: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: gofmt not on PATH.
+- Resolution: used /usr/local/go/bin/gofmt.
+- Follow-ups: none.

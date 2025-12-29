@@ -113,7 +113,7 @@ func (c *Committer) Commit(ctx context.Context, ns string, entry *WalEntry, sche
 	}
 
 	// Step 6-7: Update state.json with CAS retry loop
-	bytesWritten := int64(len(encResult.Data))
+	bytesWritten := encResult.LogicalBytes
 	walKeyRelative := KeyForSeq(seq)
 
 	result, err := c.updateStateWithRetry(ctx, ns, loaded.ETag, walKeyRelative, bytesWritten, schemaDelta)

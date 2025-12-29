@@ -3,6 +3,7 @@ package wal
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -46,6 +47,54 @@ func TestCommitBasic(t *testing.T) {
 
 	if result.BytesWritten <= 0 {
 		t.Errorf("expected positive bytes written, got %d", result.BytesWritten)
+	}
+}
+
+func TestCommitTracksLogicalBytes(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMgr := namespace.NewStateManager(store)
+	committer, err := NewCommitter(store, stateMgr)
+	if err != nil {
+		t.Fatalf("failed to create committer: %v", err)
+	}
+	defer committer.Close()
+
+	ctx := context.Background()
+	ns := "test-logical-bytes"
+
+	entry := NewWalEntry(ns, 0)
+	batch := NewWriteSubBatch("req-1")
+	batch.AddUpsert(DocumentIDFromID(document.NewU64ID(1)), map[string]*AttributeValue{
+		"payload": StringValue(strings.Repeat("a", 8*1024)),
+	}, nil, 0)
+	entry.SubBatches = append(entry.SubBatches, batch)
+
+	result, err := committer.Commit(ctx, ns, entry, nil)
+	if err != nil {
+		t.Fatalf("failed to commit: %v", err)
+	}
+
+	encoder, err := NewEncoder()
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	encResult, err := encoder.Encode(entry)
+	encoder.Close()
+	if err != nil {
+		t.Fatalf("failed to encode entry: %v", err)
+	}
+
+	if result.BytesWritten != encResult.LogicalBytes {
+		t.Fatalf("expected logical bytes %d, got %d", encResult.LogicalBytes, result.BytesWritten)
+	}
+
+	loaded, err := stateMgr.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if loaded.State.WAL.BytesUnindexedEst != encResult.LogicalBytes {
+		t.Fatalf("expected bytes_unindexed_est %d, got %d",
+			encResult.LogicalBytes, loaded.State.WAL.BytesUnindexedEst)
 	}
 }
 
