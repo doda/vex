@@ -314,6 +314,10 @@ type WriteSubBatch struct {
 	// Schema delta (new fields or type definitions added by this batch)
 	SchemaDeltas []*SchemaDelta `protobuf:"bytes,5,rep,name=schema_deltas,json=schemaDeltas,proto3" json:"schema_deltas,omitempty"`
 	// Filter-based operation details (if applicable)
+	// Supports multiple filter operations (delete_by_filter + patch_by_filter) in same request.
+	// Operations are ordered: delete_by_filter before patch_by_filter.
+	FilterOps []*FilterOperation `protobuf:"bytes,7,rep,name=filter_ops,json=filterOps,proto3" json:"filter_ops,omitempty"`
+	// Deprecated: Use filter_ops instead. Kept for backward compatibility with WAL v1.
 	FilterOp      *FilterOperation `protobuf:"bytes,6,opt,name=filter_op,json=filterOp,proto3" json:"filter_op,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -380,6 +384,13 @@ func (x *WriteSubBatch) GetStats() *SubBatchStats {
 func (x *WriteSubBatch) GetSchemaDeltas() []*SchemaDelta {
 	if x != nil {
 		return x.SchemaDeltas
+	}
+	return nil
+}
+
+func (x *WriteSubBatch) GetFilterOps() []*FilterOperation {
+	if x != nil {
+		return x.FilterOps
 	}
 	return nil
 }
@@ -1595,14 +1606,16 @@ const file_internal_wal_entry_proto_rawDesc = "" +
 	"\x11committed_unix_ms\x18\x04 \x01(\x03R\x0fcommittedUnixMs\x123\n" +
 	"\vsub_batches\x18\x05 \x03(\v2\x12.wal.WriteSubBatchR\n" +
 	"subBatches\x12\x1a\n" +
-	"\bchecksum\x18\x06 \x01(\fR\bchecksum\"\x95\x02\n" +
+	"\bchecksum\x18\x06 \x01(\fR\bchecksum\"\xca\x02\n" +
 	"\rWriteSubBatch\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12$\n" +
 	"\x0ereceived_at_ms\x18\x02 \x01(\x03R\freceivedAtMs\x12+\n" +
 	"\tmutations\x18\x03 \x03(\v2\r.wal.MutationR\tmutations\x12(\n" +
 	"\x05stats\x18\x04 \x01(\v2\x12.wal.SubBatchStatsR\x05stats\x125\n" +
-	"\rschema_deltas\x18\x05 \x03(\v2\x10.wal.SchemaDeltaR\fschemaDeltas\x121\n" +
+	"\rschema_deltas\x18\x05 \x03(\v2\x10.wal.SchemaDeltaR\fschemaDeltas\x123\n" +
+	"\n" +
+	"filter_ops\x18\a \x03(\v2\x14.wal.FilterOperationR\tfilterOps\x121\n" +
 	"\tfilter_op\x18\x06 \x01(\v2\x14.wal.FilterOperationR\bfilterOp\"\xe5\x02\n" +
 	"\bMutation\x12%\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x11.wal.MutationTypeR\x04type\x12\x1f\n" +
@@ -1767,28 +1780,29 @@ var file_internal_wal_entry_proto_depIdxs = []int32{
 	5,  // 1: wal.WriteSubBatch.mutations:type_name -> wal.Mutation
 	18, // 2: wal.WriteSubBatch.stats:type_name -> wal.SubBatchStats
 	15, // 3: wal.WriteSubBatch.schema_deltas:type_name -> wal.SchemaDelta
-	19, // 4: wal.WriteSubBatch.filter_op:type_name -> wal.FilterOperation
-	0,  // 5: wal.Mutation.type:type_name -> wal.MutationType
-	6,  // 6: wal.Mutation.id:type_name -> wal.DocumentID
-	20, // 7: wal.Mutation.attributes:type_name -> wal.Mutation.AttributesEntry
-	8,  // 8: wal.AttributeValue.string_array:type_name -> wal.StringArray
-	9,  // 9: wal.AttributeValue.int_array:type_name -> wal.IntArray
-	10, // 10: wal.AttributeValue.uint_array:type_name -> wal.UintArray
-	11, // 11: wal.AttributeValue.float_array:type_name -> wal.FloatArray
-	12, // 12: wal.AttributeValue.uuid_array:type_name -> wal.UuidArray
-	13, // 13: wal.AttributeValue.datetime_array:type_name -> wal.DatetimeArray
-	14, // 14: wal.AttributeValue.bool_array:type_name -> wal.BoolArray
-	1,  // 15: wal.SchemaDelta.type:type_name -> wal.AttributeType
-	16, // 16: wal.SchemaDelta.full_text_search:type_name -> wal.FullTextConfig
-	17, // 17: wal.SchemaDelta.vector:type_name -> wal.VectorConfig
-	2,  // 18: wal.FilterOperation.type:type_name -> wal.FilterOperationType
-	6,  // 19: wal.FilterOperation.candidate_ids:type_name -> wal.DocumentID
-	7,  // 20: wal.Mutation.AttributesEntry.value:type_name -> wal.AttributeValue
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	19, // 4: wal.WriteSubBatch.filter_ops:type_name -> wal.FilterOperation
+	19, // 5: wal.WriteSubBatch.filter_op:type_name -> wal.FilterOperation
+	0,  // 6: wal.Mutation.type:type_name -> wal.MutationType
+	6,  // 7: wal.Mutation.id:type_name -> wal.DocumentID
+	20, // 8: wal.Mutation.attributes:type_name -> wal.Mutation.AttributesEntry
+	8,  // 9: wal.AttributeValue.string_array:type_name -> wal.StringArray
+	9,  // 10: wal.AttributeValue.int_array:type_name -> wal.IntArray
+	10, // 11: wal.AttributeValue.uint_array:type_name -> wal.UintArray
+	11, // 12: wal.AttributeValue.float_array:type_name -> wal.FloatArray
+	12, // 13: wal.AttributeValue.uuid_array:type_name -> wal.UuidArray
+	13, // 14: wal.AttributeValue.datetime_array:type_name -> wal.DatetimeArray
+	14, // 15: wal.AttributeValue.bool_array:type_name -> wal.BoolArray
+	1,  // 16: wal.SchemaDelta.type:type_name -> wal.AttributeType
+	16, // 17: wal.SchemaDelta.full_text_search:type_name -> wal.FullTextConfig
+	17, // 18: wal.SchemaDelta.vector:type_name -> wal.VectorConfig
+	2,  // 19: wal.FilterOperation.type:type_name -> wal.FilterOperationType
+	6,  // 20: wal.FilterOperation.candidate_ids:type_name -> wal.DocumentID
+	7,  // 21: wal.Mutation.AttributesEntry.value:type_name -> wal.AttributeValue
+	22, // [22:22] is the sub-list for method output_type
+	22, // [22:22] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_internal_wal_entry_proto_init() }

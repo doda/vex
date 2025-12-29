@@ -172,6 +172,10 @@ func sortEntry(entry *WalEntry) {
 		sort.Slice(batch.SchemaDeltas, func(i, j int) bool {
 			return batch.SchemaDeltas[i].Name < batch.SchemaDeltas[j].Name
 		})
+		// Sort filter operations by type (delete before patch) for deterministic ordering
+		sort.Slice(batch.FilterOps, func(i, j int) bool {
+			return batch.FilterOps[i].Type < batch.FilterOps[j].Type
+		})
 	}
 }
 
@@ -339,6 +343,27 @@ func (b *WriteSubBatch) HasPendingDelete(id document.ID) bool {
 		}
 	}
 	return false
+}
+
+// AddFilterOp appends a filter operation to the sub-batch.
+// Supports multiple filter operations (delete_by_filter + patch_by_filter) in same request.
+func (b *WriteSubBatch) AddFilterOp(op *FilterOperation) {
+	b.FilterOps = append(b.FilterOps, op)
+}
+
+// GetAllFilterOps returns all filter operations, including backward compatibility
+// with the deprecated FilterOp field for old WAL entries.
+// Operations are returned in order: delete_by_filter before patch_by_filter.
+func (b *WriteSubBatch) GetAllFilterOps() []*FilterOperation {
+	// If FilterOps is non-empty, use it (new format)
+	if len(b.FilterOps) > 0 {
+		return b.FilterOps
+	}
+	// Fall back to deprecated FilterOp for old WAL entries
+	if b.FilterOp != nil {
+		return []*FilterOperation{b.FilterOp}
+	}
+	return nil
 }
 
 func StringValue(s string) *AttributeValue {

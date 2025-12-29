@@ -2198,7 +2198,7 @@
       "Send a request containing both filter ops and verify WAL encodes both",
       "Replay WAL and confirm ordering is preserved"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/wal/entry.proto",
       "internal/wal/encoder.go"

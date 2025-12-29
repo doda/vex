@@ -45,6 +45,11 @@ message WriteSubBatch {
   repeated SchemaDelta schema_deltas = 5;
 
   // Filter-based operation details (if applicable)
+  // Supports multiple filter operations (delete_by_filter + patch_by_filter) in same request.
+  // Operations are ordered: delete_by_filter before patch_by_filter.
+  repeated FilterOperation filter_ops = 7;
+
+  // Deprecated: Use filter_ops instead. Kept for backward compatibility with WAL v1.
   FilterOperation filter_op = 6;
 }
 

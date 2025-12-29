@@ -856,3 +856,11 @@ KEY DEPENDENCIES:
 - Resolved by replacing the filter_op with full patch metadata to keep WAL consistent until multi-op support lands.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-29T06:59:07Z] Completed wal-multi-filter-ops: Review multi filter ops WAL support
+- Reviewed staged changes in `internal/wal/entry.proto`, `internal/wal/encoder.go`, `internal/wal/encoder_test.go`, and `internal/write/handler.go`.
+- Verified WAL sub-batches now record multiple filter ops via `filter_ops` and `AddFilterOp`.
+- Verified deterministic ordering of filter ops (delete before patch) during WAL encoding.
+- Verified metadata tests now use `GetAllFilterOps` for backward compatibility.
+- Issues found: none.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

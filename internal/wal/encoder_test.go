@@ -600,7 +600,7 @@ func TestFilterOperation(t *testing.T) {
 
 	entry := NewWalEntry("filter-op-test", 1)
 	batch := NewWriteSubBatch("req-1")
-	batch.FilterOp = &FilterOperation{
+	batch.AddFilterOp(&FilterOperation{
 		Type:              FilterOperationType_FILTER_OPERATION_TYPE_DELETE,
 		Phase1SnapshotSeq: 5,
 		CandidateIds: []*DocumentID{
@@ -609,7 +609,7 @@ func TestFilterOperation(t *testing.T) {
 		},
 		FilterJson:   `{"status": {"$eq": "inactive"}}`,
 		AllowPartial: true,
-	}
+	})
 	entry.SubBatches = append(entry.SubBatches, batch)
 
 	result, err := encoder.Encode(entry)
@@ -622,7 +622,11 @@ func TestFilterOperation(t *testing.T) {
 		t.Fatalf("decode failed: %v", err)
 	}
 
-	filterOp := decoded.SubBatches[0].FilterOp
+	filterOps := decoded.SubBatches[0].GetAllFilterOps()
+	if len(filterOps) != 1 {
+		t.Fatalf("expected 1 filter op, got %d", len(filterOps))
+	}
+	filterOp := filterOps[0]
 	if filterOp.Type != FilterOperationType_FILTER_OPERATION_TYPE_DELETE {
 		t.Error("filter operation type mismatch")
 	}
@@ -637,6 +641,211 @@ func TestFilterOperation(t *testing.T) {
 	}
 	if !filterOp.AllowPartial {
 		t.Error("allow_partial should be true")
+	}
+}
+
+// TestMultiFilterOperations verifies that WAL sub-batches can record both
+// delete_by_filter and patch_by_filter operations in the same request.
+func TestMultiFilterOperations(t *testing.T) {
+	encoder, err := NewEncoder()
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	defer encoder.Close()
+
+	decoder, err := NewDecoder()
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+	defer decoder.Close()
+
+	entry := NewWalEntry("multi-filter-test", 1)
+	batch := NewWriteSubBatch("req-1")
+
+	// Add delete_by_filter operation
+	batch.AddFilterOp(&FilterOperation{
+		Type:              FilterOperationType_FILTER_OPERATION_TYPE_DELETE,
+		Phase1SnapshotSeq: 5,
+		CandidateIds: []*DocumentID{
+			{Id: &DocumentID_U64{U64: 1}},
+			{Id: &DocumentID_U64{U64: 2}},
+		},
+		FilterJson:   `["status", "Eq", "deleted"]`,
+		AllowPartial: true,
+	})
+
+	// Add patch_by_filter operation
+	batch.AddFilterOp(&FilterOperation{
+		Type:              FilterOperationType_FILTER_OPERATION_TYPE_PATCH,
+		Phase1SnapshotSeq: 5,
+		CandidateIds: []*DocumentID{
+			{Id: &DocumentID_U64{U64: 3}},
+			{Id: &DocumentID_U64{U64: 4}},
+		},
+		FilterJson:   `["status", "Eq", "pending"]`,
+		PatchJson:    `{"status": "processed"}`,
+		AllowPartial: false,
+	})
+
+	entry.SubBatches = append(entry.SubBatches, batch)
+
+	result, err := encoder.Encode(entry)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := decoder.Decode(result.Data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	// Verify both filter operations are preserved
+	filterOps := decoded.SubBatches[0].GetAllFilterOps()
+	if len(filterOps) != 2 {
+		t.Fatalf("expected 2 filter ops, got %d", len(filterOps))
+	}
+
+	// Verify ordering: delete before patch (sortEntry sorts by type)
+	if filterOps[0].Type != FilterOperationType_FILTER_OPERATION_TYPE_DELETE {
+		t.Errorf("first filter op should be DELETE, got %v", filterOps[0].Type)
+	}
+	if filterOps[1].Type != FilterOperationType_FILTER_OPERATION_TYPE_PATCH {
+		t.Errorf("second filter op should be PATCH, got %v", filterOps[1].Type)
+	}
+
+	// Verify delete operation details
+	deleteOp := filterOps[0]
+	if deleteOp.Phase1SnapshotSeq != 5 {
+		t.Errorf("delete op phase1_snapshot_seq mismatch: got %d, want 5", deleteOp.Phase1SnapshotSeq)
+	}
+	if len(deleteOp.CandidateIds) != 2 {
+		t.Errorf("delete op candidate_ids count mismatch: got %d, want 2", len(deleteOp.CandidateIds))
+	}
+	if deleteOp.FilterJson != `["status", "Eq", "deleted"]` {
+		t.Error("delete op filter_json mismatch")
+	}
+	if !deleteOp.AllowPartial {
+		t.Error("delete op allow_partial should be true")
+	}
+
+	// Verify patch operation details
+	patchOp := filterOps[1]
+	if patchOp.Phase1SnapshotSeq != 5 {
+		t.Errorf("patch op phase1_snapshot_seq mismatch: got %d, want 5", patchOp.Phase1SnapshotSeq)
+	}
+	if len(patchOp.CandidateIds) != 2 {
+		t.Errorf("patch op candidate_ids count mismatch: got %d, want 2", len(patchOp.CandidateIds))
+	}
+	if patchOp.FilterJson != `["status", "Eq", "pending"]` {
+		t.Error("patch op filter_json mismatch")
+	}
+	if patchOp.PatchJson != `{"status": "processed"}` {
+		t.Error("patch op patch_json mismatch")
+	}
+	if patchOp.AllowPartial {
+		t.Error("patch op allow_partial should be false")
+	}
+}
+
+// TestMultiFilterOperationsOrdering verifies that filter operations are sorted
+// by type (delete before patch) for deterministic encoding.
+func TestMultiFilterOperationsOrdering(t *testing.T) {
+	encoder, err := NewEncoder()
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	defer encoder.Close()
+
+	decoder, err := NewDecoder()
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+	defer decoder.Close()
+
+	entry := NewWalEntry("order-test", 1)
+	batch := NewWriteSubBatch("req-1")
+
+	// Add patch first, then delete (opposite of expected order)
+	batch.AddFilterOp(&FilterOperation{
+		Type:       FilterOperationType_FILTER_OPERATION_TYPE_PATCH,
+		FilterJson: `["a", "Eq", "1"]`,
+	})
+	batch.AddFilterOp(&FilterOperation{
+		Type:       FilterOperationType_FILTER_OPERATION_TYPE_DELETE,
+		FilterJson: `["b", "Eq", "2"]`,
+	})
+
+	entry.SubBatches = append(entry.SubBatches, batch)
+
+	result, err := encoder.Encode(entry)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := decoder.Decode(result.Data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	// After encoding, filter ops should be sorted: delete before patch
+	filterOps := decoded.SubBatches[0].GetAllFilterOps()
+	if len(filterOps) != 2 {
+		t.Fatalf("expected 2 filter ops, got %d", len(filterOps))
+	}
+
+	if filterOps[0].Type != FilterOperationType_FILTER_OPERATION_TYPE_DELETE {
+		t.Error("first filter op should be DELETE after sorting")
+	}
+	if filterOps[1].Type != FilterOperationType_FILTER_OPERATION_TYPE_PATCH {
+		t.Error("second filter op should be PATCH after sorting")
+	}
+}
+
+// TestBackwardCompatibility_FilterOp verifies that old WAL entries with the
+// deprecated FilterOp field can still be read using GetAllFilterOps.
+func TestBackwardCompatibility_FilterOp(t *testing.T) {
+	encoder, err := NewEncoder()
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	defer encoder.Close()
+
+	decoder, err := NewDecoder()
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+	defer decoder.Close()
+
+	entry := NewWalEntry("compat-test", 1)
+	batch := NewWriteSubBatch("req-1")
+
+	// Use the deprecated FilterOp field (simulating old WAL entry)
+	batch.FilterOp = &FilterOperation{
+		Type:       FilterOperationType_FILTER_OPERATION_TYPE_DELETE,
+		FilterJson: `["status", "Eq", "old"]`,
+	}
+	entry.SubBatches = append(entry.SubBatches, batch)
+
+	result, err := encoder.Encode(entry)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := decoder.Decode(result.Data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	// GetAllFilterOps should return the deprecated FilterOp
+	filterOps := decoded.SubBatches[0].GetAllFilterOps()
+	if len(filterOps) != 1 {
+		t.Fatalf("expected 1 filter op from backward compat, got %d", len(filterOps))
+	}
+	if filterOps[0].Type != FilterOperationType_FILTER_OPERATION_TYPE_DELETE {
+		t.Error("filter op type mismatch")
+	}
+	if filterOps[0].FilterJson != `["status", "Eq", "old"]` {
+		t.Error("filter op filter_json mismatch")
 	}
 }
 

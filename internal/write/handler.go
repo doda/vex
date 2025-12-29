@@ -469,14 +469,15 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 		candidateIDs = append(candidateIDs, doc.ID)
 	}
 
-	// Record filter operation metadata in WAL for deterministic replay
-	batch.FilterOp = &wal.FilterOperation{
+	// Record filter operation metadata in WAL for deterministic replay.
+	// Use AddFilterOp to support multiple filter operations in the same request.
+	batch.AddFilterOp(&wal.FilterOperation{
 		Type:              wal.FilterOperationType_FILTER_OPERATION_TYPE_DELETE,
 		Phase1SnapshotSeq: snapshotSeq,
 		CandidateIds:      documentIDsToProto(candidateIDs),
 		FilterJson:        filterJSON,
 		AllowPartial:      req.AllowPartial,
-	}
+	})
 
 	// Phase 2: Re-evaluate filter for each candidate and delete those that still match
 	// This implements "Read Committed" semantics - docs that newly qualify between
@@ -575,30 +576,16 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 		candidateIDs = append(candidateIDs, doc.ID)
 	}
 
-	// Record filter operation metadata in WAL for deterministic replay
-	// Note: If there's already a delete_by_filter op, we need to handle multi-filter ops.
-	// For now, we record the patch_by_filter metadata; the WAL format supports multiple ops.
-	if batch.FilterOp == nil {
-		batch.FilterOp = &wal.FilterOperation{
-			Type:              wal.FilterOperationType_FILTER_OPERATION_TYPE_PATCH,
-			Phase1SnapshotSeq: snapshotSeq,
-			CandidateIds:      documentIDsToProto(candidateIDs),
-			FilterJson:        filterJSON,
-			PatchJson:         patchJSON,
-			AllowPartial:      req.AllowPartial,
-		}
-	} else {
-		// Both delete_by_filter and patch_by_filter in same request.
-		// Replace with patch metadata to keep WAL consistent until multi-filter ops are supported.
-		batch.FilterOp = &wal.FilterOperation{
-			Type:              wal.FilterOperationType_FILTER_OPERATION_TYPE_PATCH,
-			Phase1SnapshotSeq: snapshotSeq,
-			CandidateIds:      documentIDsToProto(candidateIDs),
-			FilterJson:        filterJSON,
-			PatchJson:         patchJSON,
-			AllowPartial:      req.AllowPartial,
-		}
-	}
+	// Record filter operation metadata in WAL for deterministic replay.
+	// Use AddFilterOp to support multiple filter operations in the same request.
+	batch.AddFilterOp(&wal.FilterOperation{
+		Type:              wal.FilterOperationType_FILTER_OPERATION_TYPE_PATCH,
+		Phase1SnapshotSeq: snapshotSeq,
+		CandidateIds:      documentIDsToProto(candidateIDs),
+		FilterJson:        filterJSON,
+		PatchJson:         patchJSON,
+		AllowPartial:      req.AllowPartial,
+	})
 
 	// Canonicalize the updates once before the loop
 	attrs := make(map[string]any, len(req.Updates))
