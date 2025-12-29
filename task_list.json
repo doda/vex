@@ -2320,7 +2320,7 @@
       "Patch a missing ID and verify counts remain unchanged",
       "Patch an existing ID and verify counts increment correctly"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/write/handler.go",
       "internal/write/handler_test.go"

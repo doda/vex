@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
@@ -950,6 +951,17 @@ func TestHandler_PatchRowsUpdatesOnlySpecifiedAttributes(t *testing.T) {
 
 	ns := "test-patch-ns"
 
+	seedReq := &WriteRequest{
+		RequestID: "test-patch-seed",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "original-name"},
+			{"id": 2, "value": 123},
+		},
+	}
+	if _, err := handler.Handle(ctx, ns, seedReq); err != nil {
+		t.Fatalf("unexpected seed error: %v", err)
+	}
+
 	// patch_rows should update only specified attributes
 	req := &WriteRequest{
 		RequestID: "test-patch-1",
@@ -984,7 +996,8 @@ func TestHandler_PatchToMissingIDSilentlyIgnored(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
-	handler, err := NewHandler(store, stateMan)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
@@ -1006,13 +1019,11 @@ func TestHandler_PatchToMissingIDSilentlyIgnored(t *testing.T) {
 		t.Fatalf("unexpected error (patch to missing ID should not fail): %v", err)
 	}
 
-	// The patch is recorded in the WAL, even if the doc doesn't exist
-	// (at apply/query time it will be a no-op)
-	if resp.RowsPatched != 1 {
-		t.Errorf("expected 1 row patched (recorded), got %d", resp.RowsPatched)
+	if resp.RowsPatched != 0 {
+		t.Errorf("expected 0 rows patched for missing ID, got %d", resp.RowsPatched)
 	}
-	if resp.RowsAffected != 1 {
-		t.Errorf("expected 1 row affected, got %d", resp.RowsAffected)
+	if resp.RowsAffected != 0 {
+		t.Errorf("expected 0 rows affected for missing ID, got %d", resp.RowsAffected)
 	}
 }
 
@@ -1058,6 +1069,17 @@ func TestHandler_PatchRowsDuplicateIDsLastWriteWins(t *testing.T) {
 
 	ns := "test-patch-dupe-ns"
 
+	seedReq := &WriteRequest{
+		RequestID: "test-patch-dupe-seed",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "first"},
+			{"id": 2, "name": "unique"},
+		},
+	}
+	if _, err := handler.Handle(ctx, ns, seedReq); err != nil {
+		t.Fatalf("unexpected seed error: %v", err)
+	}
+
 	// Multiple patches to the same ID - only the last one should be applied
 	req := &WriteRequest{
 		RequestID: "test-patch-dupe",
@@ -1093,6 +1115,16 @@ func TestHandler_PatchRowsNormalizedIDDeduplication(t *testing.T) {
 	defer handler.Close()
 
 	ns := "test-patch-normalized-ns"
+
+	seedReq := &WriteRequest{
+		RequestID: "test-patch-normalized-seed",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "original"},
+		},
+	}
+	if _, err := handler.Handle(ctx, ns, seedReq); err != nil {
+		t.Fatalf("unexpected seed error: %v", err)
+	}
 
 	// Integer 1 and string "1" both normalize to u64(1) - should dedupe
 	req := &WriteRequest{
@@ -1164,7 +1196,7 @@ func TestHandler_PatchWithUpsertAndDelete(t *testing.T) {
 			{"id": 1, "name": "upserted"},
 		},
 		PatchRows: []map[string]any{
-			{"id": 2, "name": "patched"},
+			{"id": 1, "name": "patched"},
 		},
 		Deletes: []any{3},
 	}
@@ -1426,6 +1458,18 @@ func TestHandler_PatchColumnsIntegration(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 	defer handler.Close()
+
+	seedReq := &WriteRequest{
+		RequestID: "test-columnar-patch-seed",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "seed1", "value": 10},
+			{"id": 2, "name": "seed2", "value": 20},
+			{"id": 3, "name": "seed3", "value": 30},
+		},
+	}
+	if _, err := handler.Handle(ctx, "test-ns-columnar-patch", seedReq); err != nil {
+		t.Fatalf("unexpected seed error: %v", err)
+	}
 
 	// Parse columnar patch request
 	body := map[string]any{

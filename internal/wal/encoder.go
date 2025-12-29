@@ -357,6 +357,24 @@ func (b *WriteSubBatch) HasPendingDelete(id document.ID) bool {
 	return false
 }
 
+// HasPendingUpsert checks if a document ID has been upserted in this batch.
+// This is used to treat upserts in the same request as existing documents for patching.
+func (b *WriteSubBatch) HasPendingUpsert(id document.ID) bool {
+	for _, m := range b.Mutations {
+		if m.Type != MutationType_MUTATION_TYPE_UPSERT {
+			continue
+		}
+		mutationID, err := DocumentIDToID(m.Id)
+		if err != nil {
+			continue
+		}
+		if mutationID.Equal(id) {
+			return true
+		}
+	}
+	return false
+}
+
 // AddFilterOp appends a filter operation to the sub-batch.
 // Supports multiple filter operations (delete_by_filter + patch_by_filter) in same request.
 func (b *WriteSubBatch) AddFilterOp(op *FilterOperation) {

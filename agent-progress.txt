@@ -946,3 +946,14 @@ KEY DEPENDENCIES:
 - Tests run: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-29T17:40:40Z] Completed write-patch-missing-not-counted: PASS
+- Updated patch_rows handling to skip missing IDs when snapshot data is available and avoid counting them.
+- Added pending upsert detection in WAL sub-batch to treat same-request upserts as existing for patch counts.
+- Seeded patch-related tests with existing docs and adjusted missing-ID expectations.
+- Fixed delete_by_filter ordering test to patch a real document.
+- Files changed: internal/write/handler.go, internal/write/batcher.go, internal/wal/encoder.go.
+- Files changed: internal/write/handler_test.go, internal/write/delete_by_filter_test.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/write -run "PatchToMissingIDSilentlyIgnored|PatchRowsUpdatesOnlySpecifiedAttributes|PatchRowsDuplicateIDsLastWriteWins|PatchRowsNormalizedIDDeduplication|PatchColumnsIntegration|DeleteByFilter_RunsBeforeOtherOperations" -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: patch counts needed to respect same-request upserts and delete_by_filter ordering.
+- Resolution: added HasPendingUpsert and applied snapshot checks before recording patch mutations.

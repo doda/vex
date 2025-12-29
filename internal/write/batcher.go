@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/wal"
@@ -564,7 +565,37 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 			return nil, nil, nil, 0, err
 		}
 	} else {
+		patchSnapshotAvailable := false
+		if handler.tailStore != nil && len(dedupedPatches) > 0 {
+			if err := handler.tailStore.Refresh(ctx, ns, 0, state.WAL.HeadSeq); err == nil {
+				patchSnapshotAvailable = true
+			}
+		}
+
 		for _, row := range dedupedPatches {
+			if patchSnapshotAvailable {
+				rawID, ok := row["id"]
+				if !ok {
+					return nil, nil, nil, 0, fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
+				}
+				docID, err := document.ParseID(rawID)
+				if err != nil {
+					return nil, nil, nil, 0, fmt.Errorf("%w: %v", ErrInvalidID, err)
+				}
+				if !subBatch.HasPendingUpsert(docID) {
+					if subBatch.HasPendingDelete(docID) {
+						continue
+					}
+					existingDoc, err := handler.tailStore.GetDocument(ctx, ns, docID)
+					if err != nil {
+						return nil, nil, nil, 0, fmt.Errorf("failed to get existing document: %w", err)
+					}
+					if existingDoc == nil || existingDoc.Deleted {
+						continue
+					}
+				}
+			}
+
 			if err := handler.processPatchRow(row, subBatch, schemaCollector); err != nil {
 				return nil, nil, nil, 0, err
 			}

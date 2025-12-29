@@ -317,7 +317,42 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 			return nil, err
 		}
 	} else {
+		patchSnapshotAvailable := false
+		if h.tailStore != nil && len(dedupedPatches) > 0 {
+			if err := h.tailStore.Refresh(ctx, ns, 0, loaded.State.WAL.HeadSeq); err == nil {
+				patchSnapshotAvailable = true
+			}
+		}
+
 		for _, row := range dedupedPatches {
+			if patchSnapshotAvailable {
+				rawID, ok := row["id"]
+				if !ok {
+					err := fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
+					releaseOnError(err)
+					return nil, err
+				}
+				docID, err := document.ParseID(rawID)
+				if err != nil {
+					err = fmt.Errorf("%w: %v", ErrInvalidID, err)
+					releaseOnError(err)
+					return nil, err
+				}
+				if !subBatch.HasPendingUpsert(docID) {
+					if subBatch.HasPendingDelete(docID) {
+						continue
+					}
+					existingDoc, err := h.tailStore.GetDocument(ctx, ns, docID)
+					if err != nil {
+						releaseOnError(err)
+						return nil, fmt.Errorf("failed to get existing document: %w", err)
+					}
+					if existingDoc == nil || existingDoc.Deleted {
+						continue
+					}
+				}
+			}
+
 			if err := h.processPatchRow(row, subBatch, schemaCollector); err != nil {
 				releaseOnError(err)
 				return nil, err
@@ -1077,7 +1112,7 @@ func (h *Handler) processDelete(rawID any, batch *wal.WriteSubBatch) error {
 
 // processPatchRow processes a single row for patching.
 // Patches update only specified attributes - they do not include vectors.
-// If the document does not exist, the patch is silently ignored (recorded but no-op at apply time).
+// If the document does not exist, the patch is silently ignored when evaluated against a snapshot.
 func (h *Handler) processPatchRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	// Extract and validate ID
 	rawID, ok := row["id"]

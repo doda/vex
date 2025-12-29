@@ -169,6 +169,7 @@ func TestHandler_DeleteByFilter_RunsBeforeOtherOperations(t *testing.T) {
 	docs := []map[string]any{
 		{"id": 1, "category": "old", "value": 100},
 		{"id": 2, "category": "old", "value": 200},
+		{"id": 20, "category": "keep", "value": 300},
 	}
 	insertDocumentsForTest(t, ctx, handler, tailStore, ns, docs)
 
