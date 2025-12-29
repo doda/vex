@@ -2184,7 +2184,7 @@
       "Execute delete_by_filter and patch_by_filter writes and inspect WAL entry for required metadata",
       "Replay WAL and verify deterministic application"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/write/handler.go",
       "internal/wal"

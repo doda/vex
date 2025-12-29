@@ -428,6 +428,12 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 		}
 	}
 
+	// Serialize filter expression to JSON for WAL persistence
+	filterJSON, err := serializeFilterToJSON(req.Filter)
+	if err != nil {
+		return false, fmt.Errorf("failed to serialize filter: %w", err)
+	}
+
 	// Phase 1: Get candidate IDs at the current snapshot
 	// We need a tail store to evaluate the filter
 	if h.tailStore == nil {
@@ -461,6 +467,15 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 			break
 		}
 		candidateIDs = append(candidateIDs, doc.ID)
+	}
+
+	// Record filter operation metadata in WAL for deterministic replay
+	batch.FilterOp = &wal.FilterOperation{
+		Type:              wal.FilterOperationType_FILTER_OPERATION_TYPE_DELETE,
+		Phase1SnapshotSeq: snapshotSeq,
+		CandidateIds:      documentIDsToProto(candidateIDs),
+		FilterJson:        filterJSON,
+		AllowPartial:      req.AllowPartial,
 	}
 
 	// Phase 2: Re-evaluate filter for each candidate and delete those that still match
@@ -517,6 +532,16 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 		}
 	}
 
+	// Serialize filter and patch to JSON for WAL persistence
+	filterJSON, err := serializeFilterToJSON(req.Filter)
+	if err != nil {
+		return false, fmt.Errorf("failed to serialize filter: %w", err)
+	}
+	patchJSON, err := serializeUpdatesToJSON(req.Updates)
+	if err != nil {
+		return false, fmt.Errorf("failed to serialize updates: %w", err)
+	}
+
 	// Phase 1: Get candidate IDs at the current snapshot
 	// We need a tail store to evaluate the filter
 	if h.tailStore == nil {
@@ -548,6 +573,31 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 			break
 		}
 		candidateIDs = append(candidateIDs, doc.ID)
+	}
+
+	// Record filter operation metadata in WAL for deterministic replay
+	// Note: If there's already a delete_by_filter op, we need to handle multi-filter ops.
+	// For now, we record the patch_by_filter metadata; the WAL format supports multiple ops.
+	if batch.FilterOp == nil {
+		batch.FilterOp = &wal.FilterOperation{
+			Type:              wal.FilterOperationType_FILTER_OPERATION_TYPE_PATCH,
+			Phase1SnapshotSeq: snapshotSeq,
+			CandidateIds:      documentIDsToProto(candidateIDs),
+			FilterJson:        filterJSON,
+			PatchJson:         patchJSON,
+			AllowPartial:      req.AllowPartial,
+		}
+	} else {
+		// Both delete_by_filter and patch_by_filter in same request.
+		// Replace with patch metadata to keep WAL consistent until multi-filter ops are supported.
+		batch.FilterOp = &wal.FilterOperation{
+			Type:              wal.FilterOperationType_FILTER_OPERATION_TYPE_PATCH,
+			Phase1SnapshotSeq: snapshotSeq,
+			CandidateIds:      documentIDsToProto(candidateIDs),
+			FilterJson:        filterJSON,
+			PatchJson:         patchJSON,
+			AllowPartial:      req.AllowPartial,
+		}
 	}
 
 	// Canonicalize the updates once before the loop
@@ -1646,4 +1696,37 @@ func ValidateDistanceMetric(metric string, compatMode string) error {
 	default:
 		return fmt.Errorf("%w: %q is not a valid distance metric", ErrInvalidDistanceMetric, metric)
 	}
+}
+
+// serializeFilterToJSON converts a filter expression to JSON for WAL persistence.
+func serializeFilterToJSON(filter any) (string, error) {
+	if filter == nil {
+		return "", nil
+	}
+	data, err := json.Marshal(filter)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// serializeUpdatesToJSON converts update attributes to JSON for WAL persistence.
+func serializeUpdatesToJSON(updates map[string]any) (string, error) {
+	if updates == nil || len(updates) == 0 {
+		return "", nil
+	}
+	data, err := json.Marshal(updates)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// documentIDsToProto converts a slice of document.ID to WAL proto format.
+func documentIDsToProto(ids []document.ID) []*wal.DocumentID {
+	result := make([]*wal.DocumentID, len(ids))
+	for i, id := range ids {
+		result[i] = wal.DocumentIDFromID(id)
+	}
+	return result
 }
