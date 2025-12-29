@@ -2094,5 +2094,503 @@
       "Test compaction runs in background"
     ],
     "passes": true
+  },
+  {
+    "id": "fix-routing-proxy-write-query",
+    "category": "api",
+    "description": "Proxy write and query requests to the home node with fallback to local handling when proxy fails.",
+    "steps": [
+      "Send a write to a non-home node and verify it proxies to the home node",
+      "Simulate proxy failure and verify the request is handled locally without error"
+    ],
+    "passes": false,
+    "scope": [
+      "pkg/api/router.go",
+      "internal/routing"
+    ]
+  },
+  {
+    "id": "fix-vector-filter-index-scan",
+    "category": "functional",
+    "description": "Ensure vector queries with filters search indexed segments and then merge tail results instead of scanning tail only.",
+    "steps": [
+      "Index data, run a filtered vector query, and verify results include indexed docs",
+      "Verify tail overlay still merges and dedups correctly"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/query/handler.go"
+    ]
+  },
+  {
+    "id": "fix-order-by-index-scan",
+    "category": "functional",
+    "description": "Include indexed segments in order-by attribute queries instead of scanning only tail data.",
+    "steps": [
+      "Index data, run rank_by order-by query, and confirm results include indexed docs",
+      "Verify $dist is omitted and ordering is correct across segments and tail"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/query/handler.go"
+    ]
+  },
+  {
+    "id": "fix-bm25-index-scan",
+    "category": "functional",
+    "description": "Include indexed BM25 segments in BM25 queries instead of scanning only tail data.",
+    "steps": [
+      "Index data with FTS, run a BM25 query, and confirm indexed docs are returned",
+      "Verify tail overlay still applies with correct scoring"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/query/handler.go",
+      "internal/fts"
+    ]
+  },
+  {
+    "id": "enforce-strong-query-backpressure",
+    "category": "functional",
+    "description": "Return HTTP 503 for strong queries when disable_backpressure=true and unindexed bytes exceed 2GB using namespace state.",
+    "steps": [
+      "Set namespace state to disable_backpressure with unindexed_bytes > 2GB and run a strong query to verify 503",
+      "Verify eventual queries still return results in the same state"
+    ],
+    "passes": false,
+    "scope": [
+      "pkg/api/router.go",
+      "internal/query/handler.go"
+    ]
+  },
+  {
+    "id": "fix-list-namespaces-catalog",
+    "category": "functional",
+    "description": "List namespaces from catalog objects rather than scanning state.json keys.",
+    "steps": [
+      "Create namespaces and ensure catalog objects exist",
+      "Call list endpoint with prefix/pagination and verify results come from catalog entries"
+    ],
+    "passes": false,
+    "scope": [
+      "pkg/api/router.go"
+    ]
+  },
+  {
+    "id": "wal-filter-op-metadata",
+    "category": "functional",
+    "description": "Persist filter-based write metadata in WAL (phase1 snapshot, candidate IDs, filter expression, patch payload) for deterministic replay.",
+    "steps": [
+      "Execute delete_by_filter and patch_by_filter writes and inspect WAL entry for required metadata",
+      "Replay WAL and verify deterministic application"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/write/handler.go",
+      "internal/wal"
+    ]
+  },
+  {
+    "id": "wal-multi-filter-ops",
+    "category": "functional",
+    "description": "Allow WAL sub-batches to record both delete_by_filter and patch_by_filter operations in the same request.",
+    "steps": [
+      "Send a request containing both filter ops and verify WAL encodes both",
+      "Replay WAL and confirm ordering is preserved"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/wal/entry.proto",
+      "internal/wal/encoder.go"
+    ]
+  },
+  {
+    "id": "wal-deterministic-ordering",
+    "category": "functional",
+    "description": "Enforce stable sort by docID for mutations to ensure deterministic WAL encoding and last-write-wins ordering.",
+    "steps": [
+      "Run identical writes twice and confirm WAL bytes are identical",
+      "Verify same-ID mutations preserve phase ordering"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/wal/encoder.go",
+      "internal/write/handler.go"
+    ]
+  },
+  {
+    "id": "wal-unindexed-bytes-logical",
+    "category": "functional",
+    "description": "Track bytes_unindexed_est using logical bytes written rather than compressed WAL size.",
+    "steps": [
+      "Commit a write and verify bytes_unindexed_est increases by logical payload size",
+      "Confirm backpressure triggers at the expected logical threshold"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/wal/committer.go",
+      "internal/namespace/manager.go"
+    ]
+  },
+  {
+    "id": "wal-key-zero-pad",
+    "category": "functional",
+    "description": "Zero-pad WAL object keys to match the specified storage layout.",
+    "steps": [
+      "Commit a WAL entry and verify key format is wal/00000000000000000001.wal.zst",
+      "Confirm listing order remains correct with zero padding"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/wal/encoder.go"
+    ]
+  },
+  {
+    "id": "test-wal-filter-op-metadata",
+    "category": "test",
+    "description": "Add tests that assert WAL records include filter op metadata (phase1 snapshot, candidate IDs, filter/patch JSON).",
+    "steps": [
+      "Add unit test for delete_by_filter WAL metadata",
+      "Add unit test for patch_by_filter WAL metadata"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/write",
+      "internal/wal"
+    ]
+  },
+  {
+    "id": "write-filter-op-requires-tail",
+    "category": "functional",
+    "description": "Return an error when delete_by_filter or patch_by_filter cannot execute due to missing tail/snapshot state instead of silently no-op.",
+    "steps": [
+      "Disable tail store and issue delete_by_filter to verify a 5xx/400 error",
+      "Verify normal execution still succeeds when tail is available"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/write/handler.go"
+    ]
+  },
+  {
+    "id": "write-conditional-requires-snapshot",
+    "category": "functional",
+    "description": "Evaluate conditional writes against a consistent snapshot and error when snapshot data is unavailable, instead of bypassing conditions.",
+    "steps": [
+      "Disable tail/snapshot and send conditional upsert/patch/delete and verify error",
+      "Enable snapshot and verify conditions apply correctly"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/write/handler.go"
+    ]
+  },
+  {
+    "id": "write-backpressure-include-incoming",
+    "category": "functional",
+    "description": "Include incoming write size when checking backpressure so requests that would exceed 2GB are rejected.",
+    "steps": [
+      "Set bytes_unindexed_est near 2GB and send a write that crosses the threshold to verify 429",
+      "Verify smaller writes below threshold succeed"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/write/handler.go"
+    ]
+  },
+  {
+    "id": "write-schema-inference",
+    "category": "functional",
+    "description": "Infer schema from write data and record inferred types in WAL for deterministic replay.",
+    "steps": [
+      "Write documents without explicit schema and verify schema is inferred and persisted",
+      "Replay WAL and verify schema matches original inference"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/write/handler.go",
+      "internal/schema"
+    ]
+  },
+  {
+    "id": "write-patch-missing-not-counted",
+    "category": "functional",
+    "description": "Do not count patches to missing IDs in rows_patched/rows_affected as they must be ignored.",
+    "steps": [
+      "Patch a missing ID and verify counts remain unchanged",
+      "Patch an existing ID and verify counts increment correctly"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/write/handler.go",
+      "internal/write/handler_test.go"
+    ]
+  },
+  {
+    "id": "write-batcher-rate-limit",
+    "category": "functional",
+    "description": "Enforce at most one WAL entry per second per namespace even under size-triggered flushes.",
+    "steps": [
+      "Generate concurrent writes and verify only one WAL entry per second is committed",
+      "Confirm batching still respects size limits without exceeding rate"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/write/batcher.go"
+    ]
+  },
+  {
+    "id": "query-eventual-tail-cap-bm25-composite",
+    "category": "functional",
+    "description": "Apply the 128MiB tail cap to eventual BM25 and composite rank_by queries.",
+    "steps": [
+      "Run eventual BM25 query with tail larger than 128MiB and verify cap is enforced",
+      "Run eventual composite rank_by query and verify the same cap behavior"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/query/handler.go"
+    ]
+  },
+  {
+    "id": "query-multiq-index-rebuild-202",
+    "category": "functional",
+    "description": "Return HTTP 202 for multi-query requests when any subquery depends on an index that is rebuilding.",
+    "steps": [
+      "Configure pending_rebuilds and run multi-query to verify 202 response",
+      "Verify single-query behavior remains unchanged"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/query/handler.go"
+    ]
+  },
+  {
+    "id": "tail-refresh-missing-wal-error",
+    "category": "functional",
+    "description": "Fail strong queries when a WAL object referenced by state is missing instead of silently skipping it.",
+    "steps": [
+      "Simulate missing WAL object for a strong query and verify failure response",
+      "Verify eventual queries still degrade gracefully where allowed"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/tail/store.go"
+    ]
+  },
+  {
+    "id": "tail-cap-compressed-bytes",
+    "category": "functional",
+    "description": "Use compressed WAL byte sizes for eventual tail window accounting even for in-memory entries.",
+    "steps": [
+      "Add WAL entries with known compressed sizes and verify tail cap calculation uses compressed bytes",
+      "Confirm tail selection order remains newest-first"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/tail/store.go"
+    ]
+  },
+  {
+    "id": "test-eventual-tail-cap-bm25-composite",
+    "category": "test",
+    "description": "Add tests that assert eventual tail-cap behavior for BM25 and composite rank_by queries.",
+    "steps": [
+      "Add BM25 tail-cap test",
+      "Add composite rank_by tail-cap test"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/query"
+    ]
+  },
+  {
+    "id": "vector-f16-support",
+    "category": "functional",
+    "description": "Add f16 vector support in IVF build/read paths with correct byte sizing.",
+    "steps": [
+      "Index f16 vectors and verify IVF segment sizes and reads are correct",
+      "Run vector query against f16 index and verify distances are correct"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/vector/ivf.go",
+      "internal/index/reader.go"
+    ]
+  },
+  {
+    "id": "vector-query-dimension-validate",
+    "category": "functional",
+    "description": "Validate query vector dimensionality against schema and reject mismatches.",
+    "steps": [
+      "Submit a vector query with incorrect dims and verify HTTP 400",
+      "Submit correct dims and verify normal results"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/index/reader.go",
+      "internal/query/handler.go"
+    ]
+  },
+  {
+    "id": "indexer-wal-gap-advance",
+    "category": "functional",
+    "description": "Prevent indexer from advancing indexed_wal_seq past the last readable WAL entry when WAL objects are missing.",
+    "steps": [
+      "Simulate a missing WAL object and verify indexed_wal_seq does not advance past it",
+      "Verify segment end_wal_seq matches the last processed WAL"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/indexer/indexer.go",
+      "internal/indexer/l0_builder.go"
+    ]
+  },
+  {
+    "id": "indexer-support-uuid-string-ids",
+    "category": "functional",
+    "description": "Index vector documents with UUID and string IDs instead of skipping them.",
+    "steps": [
+      "Write UUID/string IDs with vectors and verify they appear in indexed segments",
+      "Query those IDs and verify results include them"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/indexer/l0_builder.go"
+    ]
+  },
+  {
+    "id": "indexer-tombstones",
+    "category": "functional",
+    "description": "Record delete tombstones in L0 vector segments so older segments do not resurface deleted docs.",
+    "steps": [
+      "Delete a doc that exists in older segments and verify it is excluded after indexing",
+      "Inspect segment metadata to confirm tombstone persistence"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/indexer/l0_builder.go"
+    ]
+  },
+  {
+    "id": "indexer-manifest-conditional-write",
+    "category": "functional",
+    "description": "Write index manifests with conditional semantics to prevent concurrent overwrite and preserve immutability.",
+    "steps": [
+      "Attempt concurrent manifest writes and verify conflicts are detected",
+      "Confirm published manifest references only fully uploaded objects"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/indexer/l0_builder.go",
+      "internal/index"
+    ]
+  },
+  {
+    "id": "fts-segment-honor-updates",
+    "category": "functional",
+    "description": "Apply patches and deletes (tombstones) when building FTS segments so removed/updated docs do not persist.",
+    "steps": [
+      "Patch and delete docs then rebuild FTS segment and verify search results reflect changes",
+      "Verify tombstones are applied during segment build"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/fts/segment.go"
+    ]
+  },
+  {
+    "id": "test-indexer-non-u64-ids",
+    "category": "test",
+    "description": "Add indexer tests for UUID and string IDs in WAL-based vector indexing.",
+    "steps": [
+      "Add test for UUID ID vector indexing",
+      "Add test for string ID vector indexing"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/indexer"
+    ]
+  },
+  {
+    "id": "cache-init-serve-path",
+    "category": "performance",
+    "description": "Initialize NVMe/RAM caches and cache warmer in the serve path so caching and warm hints are effective.",
+    "steps": [
+      "Start server and verify caches are constructed and injected into query/tail handlers",
+      "Call warm-cache endpoint and confirm prefetch tasks run"
+    ],
+    "passes": false,
+    "scope": [
+      "cmd/vex/serve/serve.go",
+      "pkg/api/router.go"
+    ]
+  },
+  {
+    "id": "warm-cache-response-empty",
+    "category": "api",
+    "description": "Return an empty success payload for warm-cache hint endpoint instead of a JSON body.",
+    "steps": [
+      "Call warm-cache endpoint and verify empty response body with 200 status"
+    ],
+    "passes": false,
+    "scope": [
+      "pkg/api/router.go"
+    ]
+  },
+  {
+    "id": "ram-cache-per-namespace-cap-config",
+    "category": "functional",
+    "description": "Expose and enforce per-namespace RAM cache caps via configuration defaults.",
+    "steps": [
+      "Set per-namespace cap in config and verify enforcement under load",
+      "Verify default cap is applied when config is unset"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/cache/memory.go",
+      "internal/config/config.go"
+    ]
+  },
+  {
+    "id": "routing-self-addr-normalization",
+    "category": "functional",
+    "description": "Normalize node addresses so home-node detection works when listen addr and membership addr use different formats.",
+    "steps": [
+      "Configure listen addr as :8080 and membership addr as localhost:8080 and verify local node is recognized as home",
+      "Confirm proxying only happens when node is not home"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/config/config.go",
+      "internal/routing/rendezvous.go"
+    ]
+  },
+  {
+    "id": "guardrails-wireup-runtime",
+    "category": "functional",
+    "description": "Wire guardrails manager into runtime to enforce per-namespace tail caps and cold-fill limits.",
+    "steps": [
+      "Enable guardrails config and verify caps are applied at runtime",
+      "Simulate concurrent cold fills and verify guardrails limit concurrency"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/guardrails",
+      "cmd/vex/serve/serve.go"
+    ]
+  },
+  {
+    "id": "logging-add-cache-temperature",
+    "category": "infra",
+    "description": "Include cache_temperature and query_execution_ms in structured request logs.",
+    "steps": [
+      "Run a query and verify logs include cache_temperature and query_execution_ms fields",
+      "Verify server_total_ms remains intact"
+    ],
+    "passes": false,
+    "scope": [
+      "internal/logging/middleware.go"
+    ]
   }
 ]
