@@ -1229,3 +1229,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-30T05:10:00Z] Completed query-filter-bitmaps-all-segments: PASS
+- Implemented filter bitmap merge across all indexed segments when running filtered ANN searches.
+- Added multi-segment filtered ANN test ensuring bitmap coverage includes later segments.
+- Files changed: internal/query/handler.go.
+- Files changed: internal/query/vector_ann_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/query -run TestANNSearchWithFilterUsesAllSegmentBitmaps -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

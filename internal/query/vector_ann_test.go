@@ -1320,6 +1320,164 @@ func TestANNSearchWithFilterUsesIndexWhenBitmapsAvailable(t *testing.T) {
 	}
 }
 
+// TestANNSearchWithFilterUsesAllSegmentBitmaps verifies filter bitmaps are merged across segments.
+func TestANNSearchWithFilterUsesAllSegmentBitmaps(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	ctx := context.Background()
+
+	loaded, err := stateMan.Create(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	dims := 4
+	builder := vector.NewIVFBuilder(dims, vector.MetricCosineDistance, 1)
+	builder.AddVector(1, []float32{1.0, 0.0, 0, 0})
+	builder.AddVector(2, []float32{0.95, 0.05, 0, 0})
+	builder.AddVector(3, []float32{0.9, 0.1, 0, 0})
+	builder.AddVector(4, []float32{0.85, 0.15, 0, 0})
+
+	ivfIndex, err := builder.Build()
+	if err != nil {
+		t.Fatalf("failed to build IVF index: %v", err)
+	}
+
+	centroidsKey := "vex/namespaces/test-ns/index/segments/seg_001/vectors.centroids.bin"
+	offsetsKey := "vex/namespaces/test-ns/index/segments/seg_001/vectors.cluster_offsets.bin"
+	clusterDataKey := "vex/namespaces/test-ns/index/segments/seg_001/vectors.clusters.pack"
+
+	store.Put(ctx, centroidsKey, bytes.NewReader(ivfIndex.GetCentroidsBytes()), int64(len(ivfIndex.GetCentroidsBytes())), nil)
+	store.Put(ctx, offsetsKey, bytes.NewReader(ivfIndex.GetClusterOffsetsBytes()), int64(len(ivfIndex.GetClusterOffsetsBytes())), nil)
+	store.Put(ctx, clusterDataKey, bytes.NewReader(ivfIndex.GetClusterDataBytes()), int64(len(ivfIndex.GetClusterDataBytes())), nil)
+
+	filterIdxSeg1 := filter.NewFilterIndex("category", schema.TypeString)
+	filterIdxSeg1.AddValue(1, "A")
+	filterIdxSeg1.AddValue(2, "A")
+	filterDataSeg1, err := filterIdxSeg1.Serialize()
+	if err != nil {
+		t.Fatalf("failed to serialize filter index (seg1): %v", err)
+	}
+
+	filterIdxSeg2 := filter.NewFilterIndex("category", schema.TypeString)
+	filterIdxSeg2.AddValue(3, "A")
+	filterIdxSeg2.AddValue(4, "A")
+	filterDataSeg2, err := filterIdxSeg2.Serialize()
+	if err != nil {
+		t.Fatalf("failed to serialize filter index (seg2): %v", err)
+	}
+
+	filterKeySeg1 := "vex/namespaces/test-ns/index/segments/seg_001/filters/category.bitmap"
+	filterKeySeg2 := "vex/namespaces/test-ns/index/segments/seg_002/filters/category.bitmap"
+	store.Put(ctx, filterKeySeg1, bytes.NewReader(filterDataSeg1), int64(len(filterDataSeg1)), nil)
+	store.Put(ctx, filterKeySeg2, bytes.NewReader(filterDataSeg2), int64(len(filterDataSeg2)), nil)
+
+	manifestKey := "vex/namespaces/test-ns/index/manifests/000000000000000001.idx.json"
+	manifest := map[string]any{
+		"format_version":  1,
+		"namespace":       "test-ns",
+		"generated_at":    "2024-01-01T00:00:00Z",
+		"indexed_wal_seq": uint64(10),
+		"segments": []map[string]any{
+			{
+				"id":            "seg_001",
+				"level":         0,
+				"start_wal_seq": uint64(1),
+				"end_wal_seq":   uint64(5),
+				"ivf_keys": map[string]any{
+					"centroids_key":       centroidsKey,
+					"cluster_offsets_key": offsetsKey,
+					"cluster_data_key":    clusterDataKey,
+					"n_clusters":          1,
+					"vector_count":        4,
+				},
+				"filter_keys": []string{filterKeySeg1},
+				"stats": map[string]any{
+					"row_count": 4,
+				},
+			},
+			{
+				"id":            "seg_002",
+				"level":         0,
+				"start_wal_seq": uint64(6),
+				"end_wal_seq":   uint64(10),
+				"ivf_keys": map[string]any{
+					"centroids_key":       centroidsKey,
+					"cluster_offsets_key": offsetsKey,
+					"cluster_data_key":    clusterDataKey,
+					"n_clusters":          1,
+					"vector_count":        4,
+				},
+				"filter_keys": []string{filterKeySeg2},
+				"stats": map[string]any{
+					"row_count": 4,
+				},
+			},
+		},
+	}
+	manifestData, _ := json.Marshal(manifest)
+	store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil)
+
+	currentETag := loaded.ETag
+	for i := 1; i <= 10; i++ {
+		updated, err := stateMan.AdvanceWAL(ctx, "test-ns", currentETag, wal.KeyForSeq(uint64(i)), 100, nil)
+		if err != nil {
+			t.Fatalf("failed to advance WAL %d: %v", i, err)
+		}
+		currentETag = updated.ETag
+	}
+
+	_, err = stateMan.Update(ctx, "test-ns", currentETag, func(state *namespace.State) error {
+		state.Index.ManifestKey = manifestKey
+		state.Index.ManifestSeq = 1
+		state.Index.IndexedWALSeq = 10
+		state.Vector = &namespace.VectorConfig{
+			Dims:           4,
+			DType:          "f32",
+			DistanceMetric: "cosine_distance",
+			ANN:            true,
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update state: %v", err)
+	}
+
+	mockTail := &vectorTestTailStore{docs: []*tail.Document{}}
+	h := NewHandler(store, stateMan, mockTail)
+
+	req := &QueryRequest{
+		RankBy:  []any{"vector", "ANN", []any{1.0, 0.0, 0.0, 0.0}},
+		Filters: []any{"category", "Eq", "A"},
+		Limit:   10,
+	}
+
+	resp, err := h.Handle(ctx, "test-ns", req)
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	if len(resp.Rows) != 4 {
+		t.Fatalf("expected 4 rows from merged segment bitmaps, got %d", len(resp.Rows))
+	}
+
+	got := make(map[uint64]bool, 4)
+	for _, row := range resp.Rows {
+		id, ok := row.ID.(uint64)
+		if !ok {
+			t.Fatalf("expected uint64 ID, got %T", row.ID)
+		}
+		got[id] = true
+	}
+
+	for _, id := range []uint64{1, 2, 3, 4} {
+		if !got[id] {
+			t.Errorf("expected doc %d in results", id)
+		}
+	}
+}
+
 // TestANNSearchWithFilterMergesTailAndIndex tests that filtered ANN queries
 // merge index results with tail results, with proper deduplication.
 func TestANNSearchWithFilterMergesTailAndIndex(t *testing.T) {

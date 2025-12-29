@@ -2689,7 +2689,7 @@
       "Index data into multiple segments and run filtered queries that match only later segments",
       "Verify results include matches from all segments and tail"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/query/handler.go"
