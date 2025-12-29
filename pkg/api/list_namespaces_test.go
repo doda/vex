@@ -9,20 +9,19 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // TestListNamespaces_EmptyStore tests that the endpoint returns empty namespaces for an empty store.
 func TestListNamespaces_EmptyStore(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
 
 	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -53,7 +52,7 @@ func TestListNamespaces_EmptyStore(t *testing.T) {
 
 // TestListNamespaces_ListsNamespaces tests that the endpoint lists namespaces.
 func TestListNamespaces_ListsNamespaces(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -71,7 +70,7 @@ func TestListNamespaces_ListsNamespaces(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusOK {
 			t.Fatalf("failed to create namespace %s: %d", ns, w.Result().StatusCode)
@@ -81,7 +80,7 @@ func TestListNamespaces_ListsNamespaces(t *testing.T) {
 	// List namespaces
 	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -127,7 +126,7 @@ func TestListNamespaces_ListsNamespaces(t *testing.T) {
 
 // TestListNamespaces_CursorPagination tests cursor-based pagination.
 func TestListNamespaces_CursorPagination(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -145,7 +144,7 @@ func TestListNamespaces_CursorPagination(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+name, bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusOK {
 			t.Fatalf("failed to create namespace %s: %d", name, w.Result().StatusCode)
@@ -155,7 +154,7 @@ func TestListNamespaces_CursorPagination(t *testing.T) {
 	// Request with page_size=2
 	req := httptest.NewRequest("GET", "/v1/namespaces?page_size=2", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -182,7 +181,7 @@ func TestListNamespaces_CursorPagination(t *testing.T) {
 	// Request second page with cursor
 	req = httptest.NewRequest("GET", "/v1/namespaces?page_size=2&cursor="+nextCursor, nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp = w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -204,7 +203,7 @@ func TestListNamespaces_CursorPagination(t *testing.T) {
 
 // TestListNamespaces_PrefixFilter tests prefix parameter for filtering.
 func TestListNamespaces_PrefixFilter(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -222,7 +221,7 @@ func TestListNamespaces_PrefixFilter(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusOK {
 			t.Fatalf("failed to create namespace %s: %d", ns, w.Result().StatusCode)
@@ -232,7 +231,7 @@ func TestListNamespaces_PrefixFilter(t *testing.T) {
 	// List with prefix=prod
 	req := httptest.NewRequest("GET", "/v1/namespaces?prefix=prod", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -262,7 +261,7 @@ func TestListNamespaces_PrefixFilter(t *testing.T) {
 
 // TestListNamespaces_PageSizeParameter tests page_size parameter.
 func TestListNamespaces_PageSizeParameter(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -280,7 +279,7 @@ func TestListNamespaces_PageSizeParameter(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+name, bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusOK {
 			t.Fatalf("failed to create namespace %s: %d", name, w.Result().StatusCode)
@@ -290,7 +289,7 @@ func TestListNamespaces_PageSizeParameter(t *testing.T) {
 	// Test page_size=3
 	req := httptest.NewRequest("GET", "/v1/namespaces?page_size=3", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -311,7 +310,7 @@ func TestListNamespaces_PageSizeParameter(t *testing.T) {
 
 // TestListNamespaces_DefaultPageSize tests default page_size is 100.
 func TestListNamespaces_DefaultPageSize(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -327,7 +326,7 @@ func TestListNamespaces_DefaultPageSize(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -336,7 +335,7 @@ func TestListNamespaces_DefaultPageSize(t *testing.T) {
 	// List without page_size - should use default 100
 	req = httptest.NewRequest("GET", "/v1/namespaces", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -349,7 +348,7 @@ func TestListNamespaces_DefaultPageSize(t *testing.T) {
 
 // TestListNamespaces_PageSizeMax tests that page_size cannot exceed 1000.
 func TestListNamespaces_PageSizeMax(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -357,7 +356,7 @@ func TestListNamespaces_PageSizeMax(t *testing.T) {
 	// Request with page_size > 1000
 	req := httptest.NewRequest("GET", "/v1/namespaces?page_size=1001", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -367,7 +366,7 @@ func TestListNamespaces_PageSizeMax(t *testing.T) {
 
 // TestListNamespaces_InvalidPageSize tests invalid page_size values.
 func TestListNamespaces_InvalidPageSize(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -386,7 +385,7 @@ func TestListNamespaces_InvalidPageSize(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/v1/namespaces?page_size="+tc.pageSize, nil)
 			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			router.ServeAuthed(w, req)
 
 			resp := w.Result()
 			if resp.StatusCode != http.StatusBadRequest {
@@ -398,7 +397,7 @@ func TestListNamespaces_InvalidPageSize(t *testing.T) {
 
 // TestListNamespaces_ResponseFormat tests response includes namespaces array and next_cursor.
 func TestListNamespaces_ResponseFormat(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -414,7 +413,7 @@ func TestListNamespaces_ResponseFormat(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -423,7 +422,7 @@ func TestListNamespaces_ResponseFormat(t *testing.T) {
 	// List namespaces
 	req = httptest.NewRequest("GET", "/v1/namespaces", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -455,7 +454,7 @@ func TestListNamespaces_ResponseFormat(t *testing.T) {
 
 // TestListNamespaces_ObjectStoreUnavailable tests 503 when object store is unavailable.
 func TestListNamespaces_ObjectStoreUnavailable(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set object store as unavailable
@@ -466,7 +465,7 @@ func TestListNamespaces_ObjectStoreUnavailable(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -476,7 +475,7 @@ func TestListNamespaces_ObjectStoreUnavailable(t *testing.T) {
 
 // TestListNamespaces_FallbackMode tests fallback behavior when no store is configured.
 func TestListNamespaces_FallbackMode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set object store as available but no actual store
@@ -487,7 +486,7 @@ func TestListNamespaces_FallbackMode(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -514,7 +513,7 @@ func TestListNamespaces_FallbackMode(t *testing.T) {
 // TestListNamespaces_CatalogBased verifies that listing uses catalog entries.
 // This ensures catalog/namespaces/<namespace> objects are used for listing.
 func TestListNamespaces_CatalogBased(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -532,7 +531,7 @@ func TestListNamespaces_CatalogBased(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusOK {
 			t.Fatalf("failed to create namespace %s: %d", ns, w.Result().StatusCode)
@@ -552,7 +551,7 @@ func TestListNamespaces_CatalogBased(t *testing.T) {
 	// List namespaces
 	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

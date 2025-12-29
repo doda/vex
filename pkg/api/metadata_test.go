@@ -9,14 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // TestMetadataEndpoint_ReturnsNamespaceMetadata tests that the metadata endpoint returns namespace metadata.
 func TestMetadataEndpoint_ReturnsNamespaceMetadata(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -32,7 +31,7 @@ func TestMetadataEndpoint_ReturnsNamespaceMetadata(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -41,7 +40,7 @@ func TestMetadataEndpoint_ReturnsNamespaceMetadata(t *testing.T) {
 	// Now get metadata
 	req = httptest.NewRequest("GET", "/v1/namespaces/test-ns/metadata", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -72,7 +71,7 @@ func TestMetadataEndpoint_ReturnsNamespaceMetadata(t *testing.T) {
 
 // TestMetadataEndpoint_IncludesSchema tests that the metadata endpoint includes the schema.
 func TestMetadataEndpoint_IncludesSchema(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -93,7 +92,7 @@ func TestMetadataEndpoint_IncludesSchema(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/schema-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(w.Result().Body)
@@ -103,7 +102,7 @@ func TestMetadataEndpoint_IncludesSchema(t *testing.T) {
 	// Get metadata
 	req = httptest.NewRequest("GET", "/v1/namespaces/schema-ns/metadata", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -142,7 +141,7 @@ func TestMetadataEndpoint_IncludesSchema(t *testing.T) {
 
 // TestMetadataEndpoint_CreatedAtUpdatedAt tests that timestamps are returned.
 func TestMetadataEndpoint_CreatedAtUpdatedAt(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -158,7 +157,7 @@ func TestMetadataEndpoint_CreatedAtUpdatedAt(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/time-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -167,7 +166,7 @@ func TestMetadataEndpoint_CreatedAtUpdatedAt(t *testing.T) {
 	// Get metadata
 	req = httptest.NewRequest("GET", "/v1/namespaces/time-ns/metadata", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -201,7 +200,7 @@ func TestMetadataEndpoint_CreatedAtUpdatedAt(t *testing.T) {
 
 // TestMetadataEndpoint_EncryptionField tests that encryption field is present with SSE default true.
 func TestMetadataEndpoint_EncryptionField(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -217,7 +216,7 @@ func TestMetadataEndpoint_EncryptionField(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/enc-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -226,7 +225,7 @@ func TestMetadataEndpoint_EncryptionField(t *testing.T) {
 	// Get metadata
 	req = httptest.NewRequest("GET", "/v1/namespaces/enc-ns/metadata", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -253,7 +252,7 @@ func TestMetadataEndpoint_EncryptionField(t *testing.T) {
 
 // TestMetadataEndpoint_IndexStatus tests index.status field.
 func TestMetadataEndpoint_IndexStatus(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -269,7 +268,7 @@ func TestMetadataEndpoint_IndexStatus(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/idx-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -278,7 +277,7 @@ func TestMetadataEndpoint_IndexStatus(t *testing.T) {
 	// Get metadata
 	req = httptest.NewRequest("GET", "/v1/namespaces/idx-ns/metadata", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -309,7 +308,7 @@ func TestMetadataEndpoint_IndexStatus(t *testing.T) {
 
 // TestMetadataEndpoint_UnindexedBytes tests that unindexed_bytes is shown when index is updating.
 func TestMetadataEndpoint_UnindexedBytes(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -325,7 +324,7 @@ func TestMetadataEndpoint_UnindexedBytes(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/unidx-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -334,7 +333,7 @@ func TestMetadataEndpoint_UnindexedBytes(t *testing.T) {
 	// Get metadata
 	req = httptest.NewRequest("GET", "/v1/namespaces/unidx-ns/metadata", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -364,14 +363,14 @@ func TestMetadataEndpoint_UnindexedBytes(t *testing.T) {
 
 // TestMetadataEndpoint_NamespaceNotFound tests that 404 is returned for non-existent namespace.
 func TestMetadataEndpoint_NamespaceNotFound(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/nonexistent-ns/metadata", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -391,7 +390,7 @@ func TestMetadataEndpoint_NamespaceNotFound(t *testing.T) {
 
 // TestMetadataEndpoint_DeletedNamespace tests that deleted namespace returns appropriate error.
 func TestMetadataEndpoint_DeletedNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -414,7 +413,7 @@ func TestMetadataEndpoint_DeletedNamespace(t *testing.T) {
 	// Get metadata
 	req := httptest.NewRequest("GET", "/v1/namespaces/deleted-ns/metadata", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -424,7 +423,7 @@ func TestMetadataEndpoint_DeletedNamespace(t *testing.T) {
 
 // TestMetadataEndpoint_ObjectStoreUnavailable tests 503 when object store is unavailable.
 func TestMetadataEndpoint_ObjectStoreUnavailable(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set object store as unavailable
@@ -435,7 +434,7 @@ func TestMetadataEndpoint_ObjectStoreUnavailable(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/test-ns/metadata", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -445,7 +444,7 @@ func TestMetadataEndpoint_ObjectStoreUnavailable(t *testing.T) {
 
 // TestMetadataEndpoint_FallbackMode tests fallback behavior when no store is configured.
 func TestMetadataEndpoint_FallbackMode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up a namespace that exists (fallback mode)
@@ -458,7 +457,7 @@ func TestMetadataEndpoint_FallbackMode(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/fallback-ns/metadata", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -491,7 +490,7 @@ func TestMetadataEndpoint_FallbackMode(t *testing.T) {
 
 // TestMetadataEndpoint_FallbackModeUpdating tests fallback mode when index is updating.
 func TestMetadataEndpoint_FallbackModeUpdating(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up a namespace with index building
@@ -508,7 +507,7 @@ func TestMetadataEndpoint_FallbackModeUpdating(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/updating-ns/metadata", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

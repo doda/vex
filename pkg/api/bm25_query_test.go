@@ -11,7 +11,7 @@ import (
 )
 
 func TestBM25QueryAPI(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	// Set up a namespace that exists
@@ -34,7 +34,7 @@ func TestBM25QueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should return 200 (no query handler set, so fallback returns empty)
 		if w.Code != http.StatusOK {
@@ -64,7 +64,7 @@ func TestBM25QueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -95,7 +95,7 @@ func TestBM25QueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Empty query is syntactically valid, should return 200 with empty results
 		if w.Code != http.StatusOK {

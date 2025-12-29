@@ -8,13 +8,11 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/vexsearch/vex/internal/config"
 )
 
 func TestQueryTimeoutEnforcement(t *testing.T) {
 	// Create a config with a very short query timeout (10ms)
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Timeout.QueryTimeoutMs = 10
 
 	// Create router
@@ -41,7 +39,7 @@ func TestQueryTimeoutEnforcement(t *testing.T) {
 
 	// Execute request
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// In fallback mode, should return 200 OK
 	if w.Code != http.StatusOK {
@@ -51,7 +49,7 @@ func TestQueryTimeoutEnforcement(t *testing.T) {
 
 func TestWriteTimeoutEnforcement(t *testing.T) {
 	// Create a config with a very short write timeout (10ms)
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Timeout.WriteTimeoutMs = 10
 
 	// Create router
@@ -76,7 +74,7 @@ func TestWriteTimeoutEnforcement(t *testing.T) {
 
 	// Execute request
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// In fallback mode (no write handler), should return 200 OK
 	if w.Code != http.StatusOK {
@@ -85,7 +83,7 @@ func TestWriteTimeoutEnforcement(t *testing.T) {
 }
 
 func TestQueryTimeoutConfigDefaults(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 
 	// Verify default query timeout is 30 seconds
 	if cfg.Timeout.GetQueryTimeout() != 30000 {
@@ -99,7 +97,7 @@ func TestQueryTimeoutConfigDefaults(t *testing.T) {
 }
 
 func TestQueryTimeoutConfigOverride(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Timeout.QueryTimeoutMs = 5000
 	cfg.Timeout.WriteTimeoutMs = 10000
 
@@ -115,7 +113,7 @@ func TestQueryTimeoutConfigOverride(t *testing.T) {
 }
 
 func TestTimeoutConfigZeroFallsBackToDefault(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Timeout.QueryTimeoutMs = 0
 	cfg.Timeout.WriteTimeoutMs = 0
 
@@ -129,7 +127,7 @@ func TestTimeoutConfigZeroFallsBackToDefault(t *testing.T) {
 }
 
 func TestTimeoutConfigNegativeFallsBackToDefault(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Timeout.QueryTimeoutMs = -100
 	cfg.Timeout.WriteTimeoutMs = -100
 
@@ -144,7 +142,7 @@ func TestTimeoutConfigNegativeFallsBackToDefault(t *testing.T) {
 
 // TestTimeoutMiddlewareApplied verifies the timeout middleware sets context deadline
 func TestTimeoutMiddlewareApplied(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Timeout.QueryTimeoutMs = 100
 
 	router := NewRouter(cfg)
@@ -182,7 +180,7 @@ func TestTimeoutMiddlewareApplied(t *testing.T) {
 
 // TestWriteTimeoutMiddlewareApplied verifies the write timeout middleware sets context deadline
 func TestWriteTimeoutMiddlewareApplied(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Timeout.WriteTimeoutMs = 200
 
 	router := NewRouter(cfg)
@@ -240,7 +238,7 @@ func TestContextTimeoutErrorReturns504(t *testing.T) {
 
 // TestTimeoutMiddlewareCancelsProperly tests that the middleware cancels the context
 func TestTimeoutMiddlewareCancelsProperly(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Timeout.QueryTimeoutMs = 50
 
 	router := NewRouter(cfg)

@@ -20,7 +20,7 @@ import (
 // 2. Test billing object is present (can be zeros)
 // 3. Test performance object with cache metrics and timing
 func TestQueryResponseFormatIntegration(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -77,7 +77,7 @@ func TestQueryResponseFormatIntegration(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -123,7 +123,7 @@ func TestQueryResponseFormatIntegration(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -165,7 +165,7 @@ func TestQueryResponseFormatIntegration(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
@@ -199,7 +199,7 @@ func TestQueryResponseFormatIntegration(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
@@ -240,7 +240,7 @@ func TestQueryResponseFormatIntegration(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -271,7 +271,7 @@ func TestQueryResponseFormatIntegration(t *testing.T) {
 
 // TestQueryResponseFormatFallback tests the fallback response format when query handler is not available.
 func TestQueryResponseFormatFallback(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -290,7 +290,7 @@ func TestQueryResponseFormatFallback(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
@@ -322,7 +322,7 @@ func TestQueryResponseFormatFallback(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
@@ -354,7 +354,7 @@ func TestQueryResponseFormatFallback(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
@@ -378,7 +378,7 @@ func TestQueryResponseFormatFallback(t *testing.T) {
 // TestQueryResponse202IncludesBillingAndPerformance verifies that 202 responses also include
 // billing and performance objects.
 func TestQueryResponse202IncludesBillingAndPerformance(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -396,7 +396,7 @@ func TestQueryResponse202IncludesBillingAndPerformance(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
+	router.ServeAuthed(rec, req)
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d", rec.Code)

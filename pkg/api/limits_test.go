@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/query"
@@ -45,7 +44,7 @@ func TestLimit_MaxUpsertBatch256MB(t *testing.T) {
 	})
 
 	t.Run("requests under 256MB are accepted", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 		router.SetState(&ServerState{
 			Namespaces:  map[string]*NamespaceState{"test-ns": {Exists: true}},
@@ -57,7 +56,7 @@ func TestLimit_MaxUpsertBatch256MB(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("expected 200, got %d", w.Code)
@@ -65,7 +64,7 @@ func TestLimit_MaxUpsertBatch256MB(t *testing.T) {
 	})
 
 	t.Run("requests over 256MB return 413", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 		router.SetState(&ServerState{
 			Namespaces:  map[string]*NamespaceState{"test-ns": {Exists: true}},
@@ -76,7 +75,7 @@ func TestLimit_MaxUpsertBatch256MB(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.ContentLength = MaxRequestBodySize + 1
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Code != http.StatusRequestEntityTooLarge {
 			t.Errorf("expected 413, got %d", w.Code)
@@ -290,7 +289,7 @@ func TestLimit_MaxMultiQuery16(t *testing.T) {
 	})
 
 	t.Run("exactly 16 subqueries is allowed", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 		router.SetState(&ServerState{
 			Namespaces:  map[string]*NamespaceState{"test-ns": {Exists: true}},
@@ -306,7 +305,7 @@ func TestLimit_MaxMultiQuery16(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("expected 200 for 16 subqueries, got %d: %s", w.Code, w.Body.String())
@@ -314,7 +313,7 @@ func TestLimit_MaxMultiQuery16(t *testing.T) {
 	})
 
 	t.Run("17 subqueries returns error", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 		router.SetState(&ServerState{
 			Namespaces:  map[string]*NamespaceState{"test-ns": {Exists: true}},
@@ -330,7 +329,7 @@ func TestLimit_MaxMultiQuery16(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected 400 for >16 subqueries, got %d", w.Code)
@@ -353,7 +352,7 @@ func TestLimit_MaxTopK10000(t *testing.T) {
 	})
 
 	t.Run("limit at 10,000 is accepted", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 		router.SetState(&ServerState{
 			Namespaces:  map[string]*NamespaceState{"test-ns": {Exists: true}},
@@ -364,7 +363,7 @@ func TestLimit_MaxTopK10000(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("expected 200 for limit=%d, got %d: %s", specMaxTopK10000, w.Code, w.Body.String())
@@ -372,7 +371,7 @@ func TestLimit_MaxTopK10000(t *testing.T) {
 	})
 
 	t.Run("limit over 10,000 returns 400", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 		router.SetState(&ServerState{
 			Namespaces:  map[string]*NamespaceState{"test-ns": {Exists: true}},
@@ -383,7 +382,7 @@ func TestLimit_MaxTopK10000(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected 400 for limit>10,000, got %d", w.Code)
@@ -397,7 +396,7 @@ func TestLimit_MaxTopK10000(t *testing.T) {
 	})
 
 	t.Run("top_k over 10,000 returns 400", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 		router.SetState(&ServerState{
 			Namespaces:  map[string]*NamespaceState{"test-ns": {Exists: true}},
@@ -408,7 +407,7 @@ func TestLimit_MaxTopK10000(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected 400 for top_k>10,000, got %d", w.Code)

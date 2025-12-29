@@ -9,14 +9,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // TestDeleteNamespace_Returns200OnSuccess tests that DELETE endpoint returns 200 on success.
 func TestDeleteNamespace_Returns200OnSuccess(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -32,7 +31,7 @@ func TestDeleteNamespace_Returns200OnSuccess(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -41,7 +40,7 @@ func TestDeleteNamespace_Returns200OnSuccess(t *testing.T) {
 	// Now delete the namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/test-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -62,7 +61,7 @@ func TestDeleteNamespace_Returns200OnSuccess(t *testing.T) {
 
 // TestDeleteNamespace_WritesTombstone tests that tombstone.json is written with deletion timestamp.
 func TestDeleteNamespace_WritesTombstone(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -78,7 +77,7 @@ func TestDeleteNamespace_WritesTombstone(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/tombstone-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -87,7 +86,7 @@ func TestDeleteNamespace_WritesTombstone(t *testing.T) {
 	// Delete the namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/tombstone-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("delete failed: %d", w.Result().StatusCode)
@@ -119,7 +118,7 @@ func TestDeleteNamespace_WritesTombstone(t *testing.T) {
 
 // TestDeleteNamespace_UpdatesStateWithTombstoned tests that state.json is updated with tombstoned=true.
 func TestDeleteNamespace_UpdatesStateWithTombstoned(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -135,7 +134,7 @@ func TestDeleteNamespace_UpdatesStateWithTombstoned(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/state-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -144,7 +143,7 @@ func TestDeleteNamespace_UpdatesStateWithTombstoned(t *testing.T) {
 	// Delete the namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/state-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("delete failed: %d", w.Result().StatusCode)
@@ -179,7 +178,7 @@ func TestDeleteNamespace_UpdatesStateWithTombstoned(t *testing.T) {
 
 // TestDeleteNamespace_SubsequentReadsReturn404 tests that reads return 404 after deletion.
 func TestDeleteNamespace_SubsequentReadsReturn404(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -195,7 +194,7 @@ func TestDeleteNamespace_SubsequentReadsReturn404(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/read-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -204,7 +203,7 @@ func TestDeleteNamespace_SubsequentReadsReturn404(t *testing.T) {
 	// Delete the namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/read-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("delete failed: %d", w.Result().StatusCode)
@@ -213,7 +212,7 @@ func TestDeleteNamespace_SubsequentReadsReturn404(t *testing.T) {
 	// Try to get metadata - should return 404
 	req = httptest.NewRequest("GET", "/v1/namespaces/read-ns/metadata", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -235,7 +234,7 @@ func TestDeleteNamespace_SubsequentReadsReturn404(t *testing.T) {
 
 // TestDeleteNamespace_SubsequentWritesReturn404 tests that writes return 404 after deletion.
 func TestDeleteNamespace_SubsequentWritesReturn404(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -251,7 +250,7 @@ func TestDeleteNamespace_SubsequentWritesReturn404(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/write-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -260,7 +259,7 @@ func TestDeleteNamespace_SubsequentWritesReturn404(t *testing.T) {
 	// Delete the namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/write-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("delete failed: %d", w.Result().StatusCode)
@@ -277,7 +276,7 @@ func TestDeleteNamespace_SubsequentWritesReturn404(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v2/namespaces/write-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -288,7 +287,7 @@ func TestDeleteNamespace_SubsequentWritesReturn404(t *testing.T) {
 
 // TestDeleteNamespace_SubsequentQueriesReturn404 tests that queries return 404 after deletion.
 func TestDeleteNamespace_SubsequentQueriesReturn404(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -304,7 +303,7 @@ func TestDeleteNamespace_SubsequentQueriesReturn404(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/query-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -313,7 +312,7 @@ func TestDeleteNamespace_SubsequentQueriesReturn404(t *testing.T) {
 	// Delete the namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/query-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("delete failed: %d", w.Result().StatusCode)
@@ -328,7 +327,7 @@ func TestDeleteNamespace_SubsequentQueriesReturn404(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v2/namespaces/query-ns/query", bytes.NewReader(queryBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -339,7 +338,7 @@ func TestDeleteNamespace_SubsequentQueriesReturn404(t *testing.T) {
 
 // TestDeleteNamespace_DeletionIsIrreversible tests that a deleted namespace cannot be un-deleted.
 func TestDeleteNamespace_DeletionIsIrreversible(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -355,7 +354,7 @@ func TestDeleteNamespace_DeletionIsIrreversible(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/irrev-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -364,7 +363,7 @@ func TestDeleteNamespace_DeletionIsIrreversible(t *testing.T) {
 	// Delete the namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/irrev-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("delete failed: %d", w.Result().StatusCode)
@@ -373,7 +372,7 @@ func TestDeleteNamespace_DeletionIsIrreversible(t *testing.T) {
 	// Try to delete again - should return 404 (already deleted)
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/irrev-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -391,7 +390,7 @@ func TestDeleteNamespace_DeletionIsIrreversible(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v2/namespaces/irrev-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp = w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -401,7 +400,7 @@ func TestDeleteNamespace_DeletionIsIrreversible(t *testing.T) {
 
 // TestDeleteNamespace_NonExistentNamespace tests that deleting a non-existent namespace returns 404.
 func TestDeleteNamespace_NonExistentNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -409,7 +408,7 @@ func TestDeleteNamespace_NonExistentNamespace(t *testing.T) {
 	// Try to delete a namespace that doesn't exist
 	req := httptest.NewRequest("DELETE", "/v2/namespaces/nonexistent-ns", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -419,7 +418,7 @@ func TestDeleteNamespace_NonExistentNamespace(t *testing.T) {
 
 // TestDeleteNamespace_InvalidNamespace tests that invalid namespace names return 400.
 func TestDeleteNamespace_InvalidNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -427,7 +426,7 @@ func TestDeleteNamespace_InvalidNamespace(t *testing.T) {
 	// Try to delete a namespace with invalid name (contains invalid characters)
 	req := httptest.NewRequest("DELETE", "/v2/namespaces/invalid!namespace", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -437,7 +436,7 @@ func TestDeleteNamespace_InvalidNamespace(t *testing.T) {
 
 // TestDeleteNamespace_ObjectStoreUnavailable tests 503 when object store is unavailable.
 func TestDeleteNamespace_ObjectStoreUnavailable(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set object store as unavailable
@@ -450,7 +449,7 @@ func TestDeleteNamespace_ObjectStoreUnavailable(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/v2/namespaces/test-ns", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -460,7 +459,7 @@ func TestDeleteNamespace_ObjectStoreUnavailable(t *testing.T) {
 
 // TestDeleteNamespace_FallbackMode tests fallback behavior when no store is configured.
 func TestDeleteNamespace_FallbackMode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up a namespace that exists (fallback mode)
@@ -474,7 +473,7 @@ func TestDeleteNamespace_FallbackMode(t *testing.T) {
 	// Delete the namespace
 	req := httptest.NewRequest("DELETE", "/v2/namespaces/fallback-ns", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -484,7 +483,7 @@ func TestDeleteNamespace_FallbackMode(t *testing.T) {
 	// Verify that subsequent operations return 404
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/fallback-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp = w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -494,7 +493,7 @@ func TestDeleteNamespace_FallbackMode(t *testing.T) {
 
 // TestDeleteNamespace_HintCacheWarmReturns404 tests that hint_cache_warm returns 404 after deletion.
 func TestDeleteNamespace_HintCacheWarmReturns404(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -510,7 +509,7 @@ func TestDeleteNamespace_HintCacheWarmReturns404(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/warm-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -519,7 +518,7 @@ func TestDeleteNamespace_HintCacheWarmReturns404(t *testing.T) {
 	// Delete the namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/warm-ns", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("delete failed: %d", w.Result().StatusCode)
@@ -528,7 +527,7 @@ func TestDeleteNamespace_HintCacheWarmReturns404(t *testing.T) {
 	// Try to warm cache for deleted namespace - should return 404
 	req = httptest.NewRequest("GET", "/v1/namespaces/warm-ns/hint_cache_warm", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {

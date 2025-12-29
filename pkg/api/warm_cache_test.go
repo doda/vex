@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/vexsearch/vex/internal/cache"
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/routing"
 	"github.com/vexsearch/vex/internal/warmer"
@@ -19,7 +18,7 @@ import (
 
 // TestWarmCacheEndpoint_Returns200Immediately tests that the endpoint returns 200 immediately.
 func TestWarmCacheEndpoint_Returns200Immediately(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -35,7 +34,7 @@ func TestWarmCacheEndpoint_Returns200Immediately(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -45,7 +44,7 @@ func TestWarmCacheEndpoint_Returns200Immediately(t *testing.T) {
 	start := time.Now()
 	req = httptest.NewRequest("GET", "/v1/namespaces/test-ns/hint_cache_warm", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 	elapsed := time.Since(start)
 
 	resp := w.Result()
@@ -66,14 +65,14 @@ func TestWarmCacheEndpoint_Returns200Immediately(t *testing.T) {
 
 // TestWarmCacheEndpoint_NamespaceNotFound tests that 404 is returned for non-existent namespace.
 func TestWarmCacheEndpoint_NamespaceNotFound(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/nonexistent-ns/hint_cache_warm", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -93,7 +92,7 @@ func TestWarmCacheEndpoint_NamespaceNotFound(t *testing.T) {
 
 // TestWarmCacheEndpoint_DeletedNamespace tests that 404 is returned for deleted namespace.
 func TestWarmCacheEndpoint_DeletedNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -111,7 +110,7 @@ func TestWarmCacheEndpoint_DeletedNamespace(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/deleted-ns/hint_cache_warm", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -121,7 +120,7 @@ func TestWarmCacheEndpoint_DeletedNamespace(t *testing.T) {
 
 // TestWarmCacheEndpoint_ObjectStoreUnavailable tests 503 when object store is unavailable.
 func TestWarmCacheEndpoint_ObjectStoreUnavailable(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set object store as unavailable
@@ -134,7 +133,7 @@ func TestWarmCacheEndpoint_ObjectStoreUnavailable(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/test-ns/hint_cache_warm", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -144,7 +143,7 @@ func TestWarmCacheEndpoint_ObjectStoreUnavailable(t *testing.T) {
 
 // TestWarmCacheEndpoint_RoutesToHomeNode tests that requests route to home node.
 func TestWarmCacheEndpoint_RoutesToHomeNode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create nodes
@@ -180,7 +179,7 @@ func TestWarmCacheEndpoint_RoutesToHomeNode(t *testing.T) {
 	// If not, it should attempt to proxy (which will fail in test, falling back to local)
 	req := httptest.NewRequest("GET", "/v1/namespaces/routed-ns/hint_cache_warm", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -196,7 +195,7 @@ func TestWarmCacheEndpoint_RoutesToHomeNode(t *testing.T) {
 
 // TestWarmCacheEndpoint_EnqueuesWarmTask tests that a cache warm task is enqueued.
 func TestWarmCacheEndpoint_EnqueuesWarmTask(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	// Don't defer router.Close() - the warmer is set on it and will be closed by it
@@ -229,7 +228,7 @@ func TestWarmCacheEndpoint_EnqueuesWarmTask(t *testing.T) {
 	// Call warm cache endpoint
 	req := httptest.NewRequest("GET", "/v1/namespaces/warm-ns/hint_cache_warm", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -246,7 +245,7 @@ func TestWarmCacheEndpoint_EnqueuesWarmTask(t *testing.T) {
 
 // TestWarmCacheEndpoint_FallbackMode tests fallback behavior when no store is configured.
 func TestWarmCacheEndpoint_FallbackMode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up a namespace that exists (fallback mode)
@@ -259,7 +258,7 @@ func TestWarmCacheEndpoint_FallbackMode(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/fallback-ns/hint_cache_warm", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -274,14 +273,14 @@ func TestWarmCacheEndpoint_FallbackMode(t *testing.T) {
 
 // TestWarmCacheEndpoint_InvalidNamespace tests that invalid namespace names are rejected.
 func TestWarmCacheEndpoint_InvalidNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Empty namespace name should be rejected by the path matcher
 	// Test an invalid name with special characters
 	req := httptest.NewRequest("GET", "/v1/namespaces/invalid$name/hint_cache_warm", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -291,7 +290,7 @@ func TestWarmCacheEndpoint_InvalidNamespace(t *testing.T) {
 
 // TestWarmCacheEndpoint_ProxiedHeader tests that proxied requests don't proxy again.
 func TestWarmCacheEndpoint_ProxiedHeader(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create nodes
@@ -318,7 +317,7 @@ func TestWarmCacheEndpoint_ProxiedHeader(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/namespaces/proxied-ns/hint_cache_warm", nil)
 	req.Header.Set("X-Vex-Proxied", "true")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Should handle locally and return 200
 	resp := w.Result()

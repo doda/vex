@@ -8,13 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // TestDebugWalEndpoint_ReturnsWalEntries tests that the endpoint returns WAL entries from from_seq.
 func TestDebugWalEndpoint_ReturnsWalEntries(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -32,7 +31,7 @@ func TestDebugWalEndpoint_ReturnsWalEntries(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-wal-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(w.Result().Body)
@@ -43,7 +42,7 @@ func TestDebugWalEndpoint_ReturnsWalEntries(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -95,7 +94,7 @@ func TestDebugWalEndpoint_ReturnsWalEntries(t *testing.T) {
 
 // TestDebugWalEndpoint_FromSeq tests that from_seq parameter works correctly.
 func TestDebugWalEndpoint_FromSeq(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -110,7 +109,7 @@ func TestDebugWalEndpoint_FromSeq(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-from-seq", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace")
@@ -120,7 +119,7 @@ func TestDebugWalEndpoint_FromSeq(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-from-seq?from_seq=1", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -140,7 +139,7 @@ func TestDebugWalEndpoint_FromSeq(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-from-seq?from_seq=999", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp = w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -158,7 +157,7 @@ func TestDebugWalEndpoint_FromSeq(t *testing.T) {
 
 // TestDebugWalEndpoint_RequiresAdminAuth tests that the endpoint is gated behind admin auth.
 func TestDebugWalEndpoint_RequiresAdminAuth(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -173,7 +172,7 @@ func TestDebugWalEndpoint_RequiresAdminAuth(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-wal-auth", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Test without any auth header
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-auth", nil)
@@ -188,7 +187,7 @@ func TestDebugWalEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-auth", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 with wrong token, got %d", w.Result().StatusCode)
@@ -199,7 +198,7 @@ func TestDebugWalEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-auth", nil)
 	req.Header.Set("Authorization", "Bearer regular-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 with regular token on admin endpoint, got %d", w.Result().StatusCode)
@@ -209,7 +208,7 @@ func TestDebugWalEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-auth", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(w.Result().Body)
@@ -219,7 +218,7 @@ func TestDebugWalEndpoint_RequiresAdminAuth(t *testing.T) {
 
 // TestDebugWalEndpoint_NoAdminTokenConfigured tests that the endpoint returns 403 when no admin token is configured.
 func TestDebugWalEndpoint_NoAdminTokenConfigured(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "" // No admin token configured
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -234,13 +233,13 @@ func TestDebugWalEndpoint_NoAdminTokenConfigured(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-wal-notoken", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Try to access debug endpoint
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-notoken", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 when no admin token configured, got %d", w.Result().StatusCode)
@@ -249,7 +248,7 @@ func TestDebugWalEndpoint_NoAdminTokenConfigured(t *testing.T) {
 
 // TestDebugWalEndpoint_NamespaceNotFound tests that the endpoint returns 404 for nonexistent namespace.
 func TestDebugWalEndpoint_NamespaceNotFound(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -258,7 +257,7 @@ func TestDebugWalEndpoint_NamespaceNotFound(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/wal/nonexistent-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for nonexistent namespace, got %d", w.Result().StatusCode)
@@ -267,7 +266,7 @@ func TestDebugWalEndpoint_NamespaceNotFound(t *testing.T) {
 
 // TestDebugWalEndpoint_DeletedNamespace tests that the endpoint returns 404 for deleted namespace.
 func TestDebugWalEndpoint_DeletedNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -282,7 +281,7 @@ func TestDebugWalEndpoint_DeletedNamespace(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-wal-delete", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -291,7 +290,7 @@ func TestDebugWalEndpoint_DeletedNamespace(t *testing.T) {
 	// Delete namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/test-wal-delete", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to delete namespace: %d", w.Result().StatusCode)
@@ -301,7 +300,7 @@ func TestDebugWalEndpoint_DeletedNamespace(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-delete", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for deleted namespace, got %d", w.Result().StatusCode)
@@ -310,7 +309,7 @@ func TestDebugWalEndpoint_DeletedNamespace(t *testing.T) {
 
 // TestDebugWalEndpoint_InvalidFromSeq tests validation of from_seq parameter.
 func TestDebugWalEndpoint_InvalidFromSeq(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -325,13 +324,13 @@ func TestDebugWalEndpoint_InvalidFromSeq(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-wal-invalid", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Test with non-numeric from_seq
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-invalid?from_seq=abc", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for non-numeric from_seq, got %d", w.Result().StatusCode)
@@ -341,7 +340,7 @@ func TestDebugWalEndpoint_InvalidFromSeq(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-invalid?from_seq=0", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for from_seq=0, got %d", w.Result().StatusCode)
@@ -350,7 +349,7 @@ func TestDebugWalEndpoint_InvalidFromSeq(t *testing.T) {
 
 // TestDebugWalEndpoint_LimitParameter tests the limit parameter.
 func TestDebugWalEndpoint_LimitParameter(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -365,13 +364,13 @@ func TestDebugWalEndpoint_LimitParameter(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-wal-limit", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Test with valid limit
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-limit?limit=10", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Errorf("expected 200 with valid limit, got %d", w.Result().StatusCode)
@@ -381,7 +380,7 @@ func TestDebugWalEndpoint_LimitParameter(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-limit?limit=10000", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for limit > 1000, got %d", w.Result().StatusCode)
@@ -391,7 +390,7 @@ func TestDebugWalEndpoint_LimitParameter(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-limit?limit=0", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for limit=0, got %d", w.Result().StatusCode)
@@ -400,7 +399,7 @@ func TestDebugWalEndpoint_LimitParameter(t *testing.T) {
 
 // TestDebugWalEndpoint_TestMode tests fallback mode when no object store is configured.
 func TestDebugWalEndpoint_TestMode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	router := NewRouter(cfg)
 	defer router.Close()
@@ -416,7 +415,7 @@ func TestDebugWalEndpoint_TestMode(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/wal/test-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -445,7 +444,7 @@ func TestDebugWalEndpoint_TestMode(t *testing.T) {
 
 // TestDebugWalEndpoint_InvalidNamespace tests validation of namespace name.
 func TestDebugWalEndpoint_InvalidNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -459,7 +458,7 @@ func TestDebugWalEndpoint_InvalidNamespace(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/wal/"+longName, nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid namespace name, got %d", w.Result().StatusCode)
@@ -468,7 +467,7 @@ func TestDebugWalEndpoint_InvalidNamespace(t *testing.T) {
 
 // TestDebugWalEndpoint_WalEntryStructure tests that WAL entries have the expected structure.
 func TestDebugWalEndpoint_WalEntryStructure(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -484,7 +483,7 @@ func TestDebugWalEndpoint_WalEntryStructure(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-wal-structure", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace")
@@ -494,7 +493,7 @@ func TestDebugWalEndpoint_WalEntryStructure(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/wal/test-wal-structure", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	respBody, _ := io.ReadAll(resp.Body)

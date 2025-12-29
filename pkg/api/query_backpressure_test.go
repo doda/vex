@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -17,7 +16,7 @@ import (
 // TestStrongQueryReturns503WhenDisableBackpressureAndHighUnindexed tests that
 // strong queries return 503 when disable_backpressure=true and unindexed > 2GB.
 func TestStrongQueryReturns503WhenDisableBackpressureAndHighUnindexed(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -58,7 +57,7 @@ func TestStrongQueryReturns503WhenDisableBackpressureAndHighUnindexed(t *testing
 			req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			router.ServeAuthed(w, req)
 
 			if w.Result().StatusCode != tt.wantStatus {
 				t.Errorf("expected status %d, got %d", tt.wantStatus, w.Result().StatusCode)
@@ -82,7 +81,7 @@ func TestStrongQueryReturns503WhenDisableBackpressureAndHighUnindexed(t *testing
 // TestEventualQueryWorksWhenDisableBackpressureAndHighUnindexed tests that
 // eventual queries continue to work when disable_backpressure=true and unindexed > 2GB.
 func TestEventualQueryWorksWhenDisableBackpressureAndHighUnindexed(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -101,7 +100,7 @@ func TestEventualQueryWorksWhenDisableBackpressureAndHighUnindexed(t *testing.T)
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should NOT get 503 - eventual queries should work
 		if w.Result().StatusCode == http.StatusServiceUnavailable {
@@ -114,7 +113,7 @@ func TestEventualQueryWorksWhenDisableBackpressureAndHighUnindexed(t *testing.T)
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should NOT get 503 - eventual queries should work
 		if w.Result().StatusCode == http.StatusServiceUnavailable {
@@ -126,7 +125,7 @@ func TestEventualQueryWorksWhenDisableBackpressureAndHighUnindexed(t *testing.T)
 // TestNoBackpressureErrorWhenThresholdNotExceeded tests that queries work normally
 // when the unindexed bytes threshold is not exceeded.
 func TestNoBackpressureErrorWhenThresholdNotExceeded(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -145,7 +144,7 @@ func TestNoBackpressureErrorWhenThresholdNotExceeded(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should NOT get 503 since we're below threshold
 		if w.Result().StatusCode == http.StatusServiceUnavailable {
@@ -157,7 +156,7 @@ func TestNoBackpressureErrorWhenThresholdNotExceeded(t *testing.T) {
 // TestNoBackpressureErrorWhenBackpressureEnabled tests that queries work normally
 // when disable_backpressure is not set (backpressure is enabled).
 func TestNoBackpressureErrorWhenBackpressureEnabled(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -176,7 +175,7 @@ func TestNoBackpressureErrorWhenBackpressureEnabled(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should NOT get 503 since backpressure is not disabled
 		// (normal behavior - writes would be rejected, but queries should work)
@@ -189,7 +188,7 @@ func TestNoBackpressureErrorWhenBackpressureEnabled(t *testing.T) {
 // TestQueryBackpressureCheckHappensAfterParsing tests that the backpressure check
 // correctly interprets the consistency mode from the request body.
 func TestQueryBackpressureCheckHappensAfterParsing(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -208,7 +207,7 @@ func TestQueryBackpressureCheckHappensAfterParsing(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should return 400 for invalid JSON, not 503
 		if w.Result().StatusCode != http.StatusBadRequest {
@@ -242,7 +241,7 @@ func TestStrongQueryBackpressureWithRealNamespaceState(t *testing.T) {
 	}
 
 	// Create router with the store (this will set up state manager)
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
 
@@ -251,7 +250,7 @@ func TestStrongQueryBackpressureWithRealNamespaceState(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusServiceUnavailable {
 			t.Errorf("expected 503, got %d", w.Result().StatusCode)
@@ -272,7 +271,7 @@ func TestStrongQueryBackpressureWithRealNamespaceState(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should NOT get 503 - eventual queries should work
 		if w.Result().StatusCode == http.StatusServiceUnavailable {
@@ -304,7 +303,7 @@ func TestStrongQueryBackpressureRealStateMultiQuery(t *testing.T) {
 		t.Fatalf("failed to update namespace state: %v", err)
 	}
 
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
 
@@ -313,7 +312,7 @@ func TestStrongQueryBackpressureRealStateMultiQuery(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusServiceUnavailable {
 			t.Errorf("expected 503, got %d", w.Result().StatusCode)
@@ -325,7 +324,7 @@ func TestStrongQueryBackpressureRealStateMultiQuery(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should NOT get 503
 		if w.Result().StatusCode == http.StatusServiceUnavailable {
@@ -357,7 +356,7 @@ func TestStrongQueryNoBackpressureWhenBelowThreshold(t *testing.T) {
 		t.Fatalf("failed to update namespace state: %v", err)
 	}
 
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
 
@@ -366,7 +365,7 @@ func TestStrongQueryNoBackpressureWhenBelowThreshold(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should NOT get 503 since we're below threshold
 		if w.Result().StatusCode == http.StatusServiceUnavailable {
@@ -398,7 +397,7 @@ func TestStrongQueryWorksWhenBackpressureNotDisabled(t *testing.T) {
 		t.Fatalf("failed to update namespace state: %v", err)
 	}
 
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
 
@@ -407,7 +406,7 @@ func TestStrongQueryWorksWhenBackpressureNotDisabled(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should NOT get 503 since backpressure is not disabled
 		// (normal behavior - writes would be rejected, but queries should work)

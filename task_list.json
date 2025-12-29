@@ -2615,7 +2615,7 @@
       "Start server with empty AuthToken and confirm requests without Authorization header are rejected",
       "Start server with AuthToken set and confirm only matching Bearer token is accepted"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "pkg/api/router.go"
