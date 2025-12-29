@@ -2334,7 +2334,7 @@
       "Generate concurrent writes and verify only one WAL entry per second is committed",
       "Confirm batching still respects size limits without exceeding rate"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/write/batcher.go"
     ]

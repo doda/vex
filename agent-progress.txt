@@ -957,3 +957,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: patch counts needed to respect same-request upserts and delete_by_filter ordering.
 - Resolution: added HasPendingUpsert and applied snapshot checks before recording patch mutations.
+[2025-12-29T17:46:41Z] Completed write-batcher-rate-limit: PASS
+- Enforced per-namespace commit spacing to honor batch window even for size-triggered flushes.
+- Added size-triggered rate-limit coverage to ensure sequential commits honor window delay.
+- Key files changed: internal/write/batcher.go, internal/write/batcher_test.go.
+- Task list updated: task_list.json set write-batcher-rate-limit to passes=true.
+- Tests run: /usr/local/go/bin/go test ./internal/write -run "BatcherBatchesWritesPerSecond|BatcherSizeThresholdRespectsRateLimit|VerifyAtMostOneWALPerSecondPerNamespace|VerifyBatchWindowOrSizeThresholdTriggers" -count=1 (pass).
+- Tests run: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: size-triggered flushes could bypass rate limit between batches.
+- Resolution: serialized per-namespace commits and delayed flush until next window.
+- Follow-ups: none.

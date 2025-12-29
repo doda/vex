@@ -186,6 +186,63 @@ func TestBatcherSizeThresholdTrigger(t *testing.T) {
 	}
 }
 
+// TestBatcherSizeThresholdRespectsRateLimit verifies size-triggered flushes do not exceed the per-window rate.
+func TestBatcherSizeThresholdRespectsRateLimit(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	batchWindow := 100 * time.Millisecond
+	cfg := BatcherConfig{
+		BatchWindow:  batchWindow,
+		MaxBatchSize: 200, // small threshold to force size flush
+	}
+
+	batcher, err := NewBatcherWithConfig(store, stateMan, nil, cfg)
+	if err != nil {
+		t.Fatalf("failed to create batcher: %v", err)
+	}
+	defer batcher.Close()
+
+	ns := "size-rate-limit-test"
+
+	makeLargeWrite := func(requestID string, baseID uint64) *WriteRequest {
+		rows := make([]map[string]any, 8)
+		for i := 0; i < len(rows); i++ {
+			rows[i] = map[string]any{
+				"id":   baseID + uint64(i),
+				"data": "some data to push over threshold",
+			}
+		}
+		return &WriteRequest{
+			RequestID:  requestID,
+			UpsertRows: rows,
+		}
+	}
+
+	if _, err := batcher.Submit(context.Background(), ns, makeLargeWrite("rate-limit-1", 1)); err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+
+	start := time.Now()
+	if _, err := batcher.Submit(context.Background(), ns, makeLargeWrite("rate-limit-2", 100)); err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	minExpected := batchWindow - 20*time.Millisecond
+	if elapsed < minExpected {
+		t.Errorf("second write completed too quickly (%v), expected at least %v due to rate limit", elapsed, minExpected)
+	}
+
+	state, err := stateMan.Load(context.Background(), ns)
+	if err != nil {
+		t.Fatalf("failed to load namespace state: %v", err)
+	}
+	if state.State.WAL.HeadSeq != 2 {
+		t.Errorf("expected HeadSeq=2 (two batches), got %d", state.State.WAL.HeadSeq)
+	}
+}
+
 // TestBatcherWindowAlignment verifies commit latency aligns with batch window.
 func TestBatcherWindowAlignment(t *testing.T) {
 	store := objectstore.NewMemoryStore()

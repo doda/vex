@@ -77,6 +77,11 @@ type namespaceBatch struct {
 	flushed     bool // set to true once flush starts, prevents double-flush
 }
 
+type namespaceCommitState struct {
+	mu         sync.Mutex
+	lastCommit time.Time
+}
+
 // Batcher batches write requests per namespace, committing at most 1 WAL entry per second.
 type Batcher struct {
 	cfg         BatcherConfig
@@ -87,10 +92,11 @@ type Batcher struct {
 	idempotency *IdempotencyStore
 	compatMode  string // Compatibility mode: "turbopuffer" or "vex"
 
-	mu      sync.Mutex
-	batches map[string]*namespaceBatch // namespace -> pending batch
-	closed  bool
-	closeWg sync.WaitGroup
+	mu           sync.Mutex
+	batches      map[string]*namespaceBatch // namespace -> pending batch
+	commitStates map[string]*namespaceCommitState
+	closed       bool
+	closeWg      sync.WaitGroup
 }
 
 // NewBatcher creates a new write batcher.
@@ -118,14 +124,15 @@ func NewBatcherWithConfigAndCompatMode(store objectstore.Store, stateMan *namesp
 	}
 
 	return &Batcher{
-		cfg:         cfg,
-		store:       store,
-		stateMan:    stateMan,
-		canon:       wal.NewCanonicalizer(),
-		tailStore:   tailStore,
-		idempotency: NewIdempotencyStore(),
-		batches:     make(map[string]*namespaceBatch),
-		compatMode:  compatMode,
+		cfg:          cfg,
+		store:        store,
+		stateMan:     stateMan,
+		canon:        wal.NewCanonicalizer(),
+		tailStore:    tailStore,
+		idempotency:  NewIdempotencyStore(),
+		batches:      make(map[string]*namespaceBatch),
+		commitStates: make(map[string]*namespaceCommitState),
+		compatMode:   compatMode,
 	}, nil
 }
 
@@ -289,10 +296,31 @@ func (b *Batcher) timerFlush(ns string) {
 	b.flushBatch(batch)
 }
 
+func (b *Batcher) commitStateFor(ns string) *namespaceCommitState {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	state := b.commitStates[ns]
+	if state == nil {
+		state = &namespaceCommitState{}
+		b.commitStates[ns] = state
+	}
+	return state
+}
+
 // flushBatch commits all pending writes in a batch to a single WAL entry.
 func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	if len(batch.writes) == 0 {
 		return
+	}
+
+	commitState := b.commitStateFor(batch.namespace)
+	commitState.mu.Lock()
+	defer commitState.mu.Unlock()
+	if !commitState.lastCommit.IsZero() {
+		nextCommit := commitState.lastCommit.Add(b.cfg.BatchWindow)
+		if delay := time.Until(nextCommit); delay > 0 {
+			time.Sleep(delay)
+		}
 	}
 
 	// Use background context for batch-level operations (state loading, WAL commit)
@@ -461,6 +489,8 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 		}
 		return
 	}
+
+	commitState.lastCommit = time.Now()
 
 	// Send success results and complete idempotency reservations
 	for i, pw := range batch.writes {
