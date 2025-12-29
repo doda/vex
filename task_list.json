@@ -2574,7 +2574,7 @@
       "Enable guardrails config and verify caps are applied at runtime",
       "Simulate concurrent cold fills and verify guardrails limit concurrency"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/guardrails",
       "cmd/vex/serve/serve.go"
