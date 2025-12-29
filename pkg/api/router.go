@@ -1573,7 +1573,22 @@ func (r *Router) checkBackpressure(ns string) *APIError {
 
 // checkStrongQueryBackpressure returns an error for strong queries when
 // disable_backpressure is true and unindexed data exceeds threshold.
+// Checks both real namespace state (from state manager) and test state.
 func (r *Router) checkStrongQueryBackpressure(ns string) *APIError {
+	// First check real namespace state from state manager
+	if r.stateManager != nil {
+		loaded, err := r.stateManager.Load(context.Background(), ns)
+		if err == nil {
+			state := loaded.State
+			if state.WAL.BytesUnindexedEst > MaxUnindexedBytes && state.NamespaceFlags.DisableBackpressure {
+				return ErrStrongQueryBackpressure()
+			}
+			return nil
+		}
+		// If state not found or other error, fall through to test state check
+	}
+
+	// Fall back to test state for backward compatibility
 	nsState := r.getNamespaceState(ns)
 	if nsState == nil {
 		return nil

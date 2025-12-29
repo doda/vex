@@ -2157,7 +2157,7 @@
       "Set namespace state to disable_backpressure with unindexed_bytes > 2GB and run a strong query to verify 503",
       "Verify eventual queries still return results in the same state"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "pkg/api/router.go",
       "internal/query/handler.go"

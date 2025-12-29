@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // TestStrongQueryReturns503WhenDisableBackpressureAndHighUnindexed tests that
@@ -210,6 +213,206 @@ func TestQueryBackpressureCheckHappensAfterParsing(t *testing.T) {
 		// Should return 400 for invalid JSON, not 503
 		if w.Result().StatusCode != http.StatusBadRequest {
 			t.Errorf("expected 400 for invalid JSON, got %d", w.Result().StatusCode)
+		}
+	})
+}
+
+// TestStrongQueryBackpressureWithRealNamespaceState tests that the backpressure check
+// works with real namespace state from the state manager (not just test state).
+func TestStrongQueryBackpressureWithRealNamespaceState(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	// Create namespace with disable_backpressure=true and high unindexed bytes
+	ns := "real-state-ns"
+	loaded, err := stateMan.Create(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	// Update state to have high unindexed bytes and disable_backpressure=true
+	_, err = stateMan.Update(ctx, ns, loaded.ETag, func(state *namespace.State) error {
+		state.WAL.BytesUnindexedEst = MaxUnindexedBytes + 1
+		state.NamespaceFlags.DisableBackpressure = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update namespace state: %v", err)
+	}
+
+	// Create router with the store (this will set up state manager)
+	cfg := config.Default()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	t.Run("strong query returns 503 with real namespace state", func(t *testing.T) {
+		body := `{"rank_by": ["id", "asc"]}`
+		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Result().StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("expected 503, got %d", w.Result().StatusCode)
+		}
+
+		// Verify error message content
+		respBody, _ := io.ReadAll(w.Result().Body)
+		var result map[string]string
+		json.Unmarshal(respBody, &result)
+
+		if !strings.Contains(result["error"], "strong query") {
+			t.Errorf("expected error to mention 'strong query', got %s", result["error"])
+		}
+	})
+
+	t.Run("eventual query succeeds with real namespace state", func(t *testing.T) {
+		body := `{"rank_by": ["id", "asc"], "consistency": "eventual"}`
+		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Should NOT get 503 - eventual queries should work
+		if w.Result().StatusCode == http.StatusServiceUnavailable {
+			t.Errorf("eventual query should not return 503, got %d", w.Result().StatusCode)
+		}
+	})
+}
+
+// TestStrongQueryBackpressureRealStateMultiQuery tests multi-query backpressure with real state.
+func TestStrongQueryBackpressureRealStateMultiQuery(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	// Create namespace with disable_backpressure=true and high unindexed bytes
+	ns := "multi-query-bp-ns"
+	loaded, err := stateMan.Create(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	// Update state
+	_, err = stateMan.Update(ctx, ns, loaded.ETag, func(state *namespace.State) error {
+		state.WAL.BytesUnindexedEst = MaxUnindexedBytes + 1
+		state.NamespaceFlags.DisableBackpressure = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update namespace state: %v", err)
+	}
+
+	cfg := config.Default()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	t.Run("strong multi-query returns 503 with real namespace state", func(t *testing.T) {
+		body := `{"queries": [{"rank_by": ["id", "asc"]}]}`
+		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Result().StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("expected 503, got %d", w.Result().StatusCode)
+		}
+	})
+
+	t.Run("eventual multi-query succeeds with real namespace state", func(t *testing.T) {
+		body := `{"queries": [{"rank_by": ["id", "asc"]}], "consistency": "eventual"}`
+		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Should NOT get 503
+		if w.Result().StatusCode == http.StatusServiceUnavailable {
+			t.Errorf("eventual multi-query should not return 503, got %d", w.Result().StatusCode)
+		}
+	})
+}
+
+// TestStrongQueryNoBackpressureWhenBelowThreshold tests that queries work when below threshold.
+func TestStrongQueryNoBackpressureWhenBelowThreshold(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	// Create namespace with disable_backpressure=true but below threshold
+	ns := "below-threshold-ns"
+	loaded, err := stateMan.Create(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	// Update state - below threshold
+	_, err = stateMan.Update(ctx, ns, loaded.ETag, func(state *namespace.State) error {
+		state.WAL.BytesUnindexedEst = MaxUnindexedBytes - 1
+		state.NamespaceFlags.DisableBackpressure = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update namespace state: %v", err)
+	}
+
+	cfg := config.Default()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	t.Run("strong query succeeds when below threshold", func(t *testing.T) {
+		body := `{"rank_by": ["id", "asc"]}`
+		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Should NOT get 503 since we're below threshold
+		if w.Result().StatusCode == http.StatusServiceUnavailable {
+			t.Errorf("strong query should work when below threshold, got 503")
+		}
+	})
+}
+
+// TestStrongQueryWorksWhenBackpressureNotDisabled tests queries work when backpressure is enabled.
+func TestStrongQueryWorksWhenBackpressureNotDisabled(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	// Create namespace with disable_backpressure=false (default) but high unindexed bytes
+	ns := "bp-enabled-ns"
+	loaded, err := stateMan.Create(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	// Update state - above threshold but backpressure not disabled
+	_, err = stateMan.Update(ctx, ns, loaded.ETag, func(state *namespace.State) error {
+		state.WAL.BytesUnindexedEst = MaxUnindexedBytes + 1
+		state.NamespaceFlags.DisableBackpressure = false
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update namespace state: %v", err)
+	}
+
+	cfg := config.Default()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	t.Run("strong query succeeds when backpressure not disabled", func(t *testing.T) {
+		body := `{"rank_by": ["id", "asc"]}`
+		req := httptest.NewRequest("POST", "/v2/namespaces/"+ns+"/query", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Should NOT get 503 since backpressure is not disabled
+		// (normal behavior - writes would be rejected, but queries should work)
+		if w.Result().StatusCode == http.StatusServiceUnavailable {
+			t.Errorf("strong query should work when backpressure is enabled, got 503")
 		}
 	})
 }
