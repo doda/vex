@@ -1168,3 +1168,14 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 [2025-12-29T21:05:34.968Z] Spec audit (codex): FAIL, 6 area(s), 17 new.
+[2025-12-29T21:12:30Z] Completed query-mode-objectstore-init: PASS
+- Initialized query mode to load object store config and set router store in `cmd/vex/query/query.go`.
+- Added router shutdown cleanup in query mode.
+- Verified query-only server uses filesystem object store and writes state.json under /tmp/vex-objectstore-query.
+- Files changed: cmd/vex/query/query.go, task_list.json.
+- Verification: started `./vex query` with VEX_OBJECT_STORE_TYPE=filesystem, wrote+queried docs, confirmed state.json exists.
+- Tests: /usr/local/go/bin/go test ./... -count=1 (fails: internal/query BM25 dedup, internal/write no-tail-store, tests/integration missing creds).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: integration tests require Garage creds; existing query/write test failures.
+- Resolution: none (pre-existing failures).
+- Follow-ups: fix BM25 dedup tests, update no-tail-store expectations, setup Garage creds for integration tests.

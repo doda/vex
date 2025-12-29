@@ -2601,7 +2601,7 @@
       "Start `vex query` and verify it loads object store config and can read/write namespace state.json",
       "Run a write+query roundtrip via the query-only server and confirm data persists in object storage"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "cmd/vex/query"
