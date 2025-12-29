@@ -86,7 +86,8 @@ func Run(args []string) {
 
 		if cfg.Cache.RAMSizeMB > 0 {
 			ramCache = cache.NewMemoryCache(cache.MemoryCacheConfig{
-				MaxBytes: int64(cfg.Cache.RAMSizeMB) * 1024 * 1024,
+				MaxBytes:      int64(cfg.Cache.RAMSizeMB) * 1024 * 1024,
+				DefaultCapPct: cfg.Cache.RAMNamespaceCapPct,
 			})
 		}
 
