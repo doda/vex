@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/vexsearch/vex/internal/metrics"
@@ -273,39 +274,111 @@ func (m *StateManager) AdvanceWAL(ctx context.Context, namespace string, etag st
 // AdvanceWALWithOptions advances the WAL head sequence by 1 and updates related fields.
 // Supports additional options like disabling backpressure tracking.
 func (m *StateManager) AdvanceWALWithOptions(ctx context.Context, namespace string, etag string, walKey string, bytesWritten int64, opts AdvanceWALOptions) (*LoadedState, error) {
-	loaded, err := m.Update(ctx, namespace, etag, func(state *State) error {
-		state.WAL.HeadSeq++
-		state.WAL.HeadKey = walKey
-		state.WAL.BytesUnindexedEst += bytesWritten
-		if state.WAL.BytesUnindexedEst > 0 {
-			state.WAL.Status = "updating"
+	walSeq, err := parseWALSeq(walKey)
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for i := 0; i < maxCASRetries; i++ {
+		loaded, loadErr := m.Load(ctx, namespace)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+
+		if loaded.State.WAL.HeadKey == walKey {
+			metrics.SetTailBytes(namespace, loaded.State.WAL.BytesUnindexedEst)
+			metrics.SetIndexLag(namespace, loaded.State.WAL.HeadSeq-loaded.State.Index.IndexedWALSeq)
+			return loaded, nil
+		}
+
+		expectedSeq := loaded.State.WAL.HeadSeq + 1
+		if walSeq <= loaded.State.WAL.HeadSeq {
+			return nil, fmt.Errorf("%w: wal seq %d already committed (head_seq=%d)", ErrWALSeqNotMonotonic, walSeq, loaded.State.WAL.HeadSeq)
+		}
+		if walSeq != expectedSeq {
+			return nil, fmt.Errorf("%w: expected seq %d but got %d", ErrWALSeqNotMonotonic, expectedSeq, walSeq)
+		}
+
+		newState := loaded.State.Clone()
+		if newState == nil {
+			return nil, errors.New("failed to clone state")
+		}
+
+		newState.WAL.HeadSeq = expectedSeq
+		newState.WAL.HeadKey = walKey
+		newState.WAL.BytesUnindexedEst += bytesWritten
+		if newState.WAL.BytesUnindexedEst > 0 {
+			newState.WAL.Status = "updating"
 		}
 
 		// Track if disable_backpressure was used while above threshold
-		if opts.DisableBackpressure && state.WAL.BytesUnindexedEst > 2*1024*1024*1024 {
-			state.NamespaceFlags.DisableBackpressure = true
+		if opts.DisableBackpressure && newState.WAL.BytesUnindexedEst > 2*1024*1024*1024 {
+			newState.NamespaceFlags.DisableBackpressure = true
 		}
 
 		// Apply schema delta if provided
 		if opts.SchemaDelta != nil {
-			if state.Schema == nil {
-				state.Schema = &Schema{Attributes: make(map[string]AttributeSchema)}
+			if newState.Schema == nil {
+				newState.Schema = &Schema{Attributes: make(map[string]AttributeSchema)}
 			}
-			if state.Schema.Attributes == nil {
-				state.Schema.Attributes = make(map[string]AttributeSchema)
+			if newState.Schema.Attributes == nil {
+				newState.Schema.Attributes = make(map[string]AttributeSchema)
 			}
 			for name, attr := range opts.SchemaDelta.Attributes {
-				state.Schema.Attributes[name] = attr
+				newState.Schema.Attributes[name] = attr
 			}
 		}
 
-		return nil
-	})
-	if err == nil && loaded != nil {
-		metrics.SetTailBytes(namespace, loaded.State.WAL.BytesUnindexedEst)
-		metrics.SetIndexLag(namespace, loaded.State.WAL.HeadSeq-loaded.State.Index.IndexedWALSeq)
+		if err := m.validateStateUpdate(loaded.State, newState); err != nil {
+			return nil, err
+		}
+
+		newState.UpdatedAt = time.Now().UTC()
+
+		data, err := json.Marshal(newState)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal state: %w", err)
+		}
+
+		key := StateKey(namespace)
+		info, err := m.store.PutIfMatch(ctx, key, bytes.NewReader(data), int64(len(data)), loaded.ETag, &objectstore.PutOptions{
+			ContentType: "application/json",
+		})
+		if err != nil {
+			if objectstore.IsPreconditionError(err) {
+				lastErr = err
+				continue
+			}
+			return nil, fmt.Errorf("failed to update state: %w", err)
+		}
+
+		updated := &LoadedState{
+			State: newState,
+			ETag:  info.ETag,
+		}
+		metrics.SetTailBytes(namespace, updated.State.WAL.BytesUnindexedEst)
+		metrics.SetIndexLag(namespace, updated.State.WAL.HeadSeq-updated.State.Index.IndexedWALSeq)
+		return updated, nil
 	}
-	return loaded, err
+
+	return nil, fmt.Errorf("%w: %v", ErrCASRetryExhausted, lastErr)
+}
+
+func parseWALSeq(walKey string) (uint64, error) {
+	trimmed := walKey
+	if idx := strings.LastIndex(walKey, "wal/"); idx != -1 {
+		trimmed = walKey[idx:]
+	}
+	var seq uint64
+	_, err := fmt.Sscanf(trimmed, "wal/%d.wal.zst", &seq)
+	if err != nil {
+		return 0, fmt.Errorf("invalid wal key %q: %w", walKey, err)
+	}
+	if seq == 0 {
+		return 0, fmt.Errorf("invalid wal key %q: seq must be >= 1", walKey)
+	}
+	return seq, nil
 }
 
 // AdvanceIndex advances the index state after a successful index publish.

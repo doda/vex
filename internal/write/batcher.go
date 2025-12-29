@@ -460,18 +460,33 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	_, err = b.store.PutIfAbsent(batchCtx, walKey, bytes.NewReader(result.Data), int64(len(result.Data)), &objectstore.PutOptions{
 		ContentType: "application/octet-stream",
 	})
-	if err != nil && !objectstore.IsConflictError(err) {
-		// Fail all pending writes and release reservations
-		batchErr := fmt.Errorf("failed to write WAL entry: %w", err)
-		for i, pw := range batch.writes {
-			if results[i] != nil {
-				if pw.reserved {
-					b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+	if err != nil {
+		if objectstore.IsConflictError(err) {
+			if confirmErr := confirmExistingWAL(batchCtx, b.store, walKey, result.Data); confirmErr != nil {
+				batchErr := fmt.Errorf("%w: %v", wal.ErrWALSeqConflict, confirmErr)
+				for i, pw := range batch.writes {
+					if results[i] != nil {
+						if pw.reserved {
+							b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+						}
+						pw.result <- batchResult{err: batchErr}
+					}
 				}
-				pw.result <- batchResult{err: batchErr}
+				return
 			}
+		} else {
+			// Fail all pending writes and release reservations
+			batchErr := fmt.Errorf("failed to write WAL entry: %w", err)
+			for i, pw := range batch.writes {
+				if results[i] != nil {
+					if pw.reserved {
+						b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+					}
+					pw.result <- batchResult{err: batchErr}
+				}
+			}
+			return
 		}
-		return
 	}
 
 	// Update namespace state (use batchCtx for durability)
