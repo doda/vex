@@ -60,11 +60,60 @@ var gzipWriterPool = sync.Pool{
 
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	gz *gzip.Writer
+	gz           *gzip.Writer
+	gzipEnabled  bool
+	compressing  bool
+	wroteHeader  bool
+}
+
+func newGzipResponseWriter(w http.ResponseWriter, gzipEnabled bool) *gzipResponseWriter {
+	return &gzipResponseWriter{
+		ResponseWriter: w,
+		gzipEnabled:    gzipEnabled,
+	}
+}
+
+func (w *gzipResponseWriter) WriteHeader(code int) {
+	w.ensureHeaders()
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	return w.gz.Write(b)
+	if !w.wroteHeader {
+		w.ensureHeaders()
+	}
+	if w.compressing {
+		return w.gz.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *gzipResponseWriter) ensureHeaders() {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	if !w.gzipEnabled {
+		return
+	}
+	if w.Header().Get("Content-Encoding") != "" {
+		return
+	}
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Del("Content-Length")
+	w.gz = gzipWriterPool.Get().(*gzip.Writer)
+	w.gz.Reset(w.ResponseWriter)
+	w.compressing = true
+}
+
+func (w *gzipResponseWriter) Close() {
+	if !w.compressing || w.gz == nil {
+		return
+	}
+	w.gz.Close()
+	gzipWriterPool.Put(w.gz)
+	w.gz = nil
+	w.compressing = false
 }
 
 // loggingResponseWriter captures status code for logging.
@@ -234,17 +283,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	req.Body = http.MaxBytesReader(lw, req.Body, MaxRequestBodySize)
 	req.Body = r.decompressBody(req)
 
-	if strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
-		gz := gzipWriterPool.Get().(*gzip.Writer)
-		gz.Reset(lw)
-		defer func() {
-			gz.Close()
-			gzipWriterPool.Put(gz)
-		}()
-
-		lw.Header().Set("Content-Encoding", "gzip")
-		lw.Header().Del("Content-Length")
-		r.mux.ServeHTTP(&gzipResponseWriter{ResponseWriter: lw, gz: gz}, req)
+	acceptsGzip := strings.Contains(req.Header.Get("Accept-Encoding"), "gzip")
+	if acceptsGzip {
+		gzw := newGzipResponseWriter(lw, true)
+		r.mux.ServeHTTP(gzw, req)
+		gzw.Close()
 		r.logRequest(req, lw.statusCode, start, req.PathValue("namespace"), logging.CacheCold)
 		return
 	}
