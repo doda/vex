@@ -1022,3 +1022,14 @@ KEY DEPENDENCIES:
 - Tests: /usr/local/go/bin/go test ./internal/query -run "TestBM25EventualTailCap|TestCompositeEventualTailCap" -count=1 (pass).
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: none.
+[2025-12-29T21:35:00Z] Completed vector-f16-support: PASS
+- Added dtype-aware IVF serialization (f16 header byte, f16 centroids/cluster data) and decoding in IVF reader/index reader.
+- Indexer now uses namespace vector dtype for IVF build and segment byte sizing.
+- Added f16 coverage in IVF cluster sizing and reader/search tests.
+- Files changed: internal/vector/ivf.go, internal/vector/ivf_reader.go, internal/vector/float16.go, internal/index/reader.go, internal/indexer/l0_builder.go, internal/vector/ivf_test.go, internal/vector/ivf_reader_test.go, internal/index/reader_test.go, internal/vector/ivf_integration_test.go.
+- Tests: /usr/local/go/bin/go test ./internal/vector -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/index -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/indexer -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenge: IVF reader constructor signature mismatch after dtype change.
+- Resolution: added nClusters to NewIVFReaderWithDType and updated call sites.

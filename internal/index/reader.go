@@ -4,6 +4,7 @@ package index
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,9 +32,9 @@ type Reader struct {
 
 // cachedIVFReader holds a cached IVF reader for a segment.
 type cachedIVFReader struct {
-	reader        *vector.IVFReader
-	manifestSeq   uint64
-	segmentID     string
+	reader         *vector.IVFReader
+	manifestSeq    uint64
+	segmentID      string
 	clusterDataKey string
 }
 
@@ -254,16 +255,16 @@ func (r *Reader) createClusterDataFetcher(ctx context.Context, clusterDataKey st
 // MultiRangeClusterDataFetcher creates a fetcher that can batch multiple range requests.
 // This is an optimization for fetching multiple clusters in a single round-trip.
 type MultiRangeClusterDataFetcher struct {
-	store         objectstore.Store
-	diskCache     *cache.DiskCache
+	store          objectstore.Store
+	diskCache      *cache.DiskCache
 	clusterDataKey string
 }
 
 // NewMultiRangeClusterDataFetcher creates a new multi-range fetcher.
 func NewMultiRangeClusterDataFetcher(store objectstore.Store, diskCache *cache.DiskCache, clusterDataKey string) *MultiRangeClusterDataFetcher {
 	return &MultiRangeClusterDataFetcher{
-		store:         store,
-		diskCache:     diskCache,
+		store:          store,
+		diskCache:      diskCache,
 		clusterDataKey: clusterDataKey,
 	}
 }
@@ -386,7 +387,7 @@ func (r *Reader) SearchWithMultiRange(ctx context.Context, ivfReader *vector.IVF
 	// Search each cluster and compute exact distances
 	var results []vector.IVFSearchResult
 	for clusterID, data := range clusterData {
-		clusterResults, err := searchClusterData(data, query, clusterID, ivfReader.Dims, ivfReader.Metric)
+		clusterResults, err := searchClusterData(data, query, clusterID, ivfReader.Dims, ivfReader.DType, ivfReader.Metric)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search cluster %d: %w", clusterID, err)
 		}
@@ -442,13 +443,13 @@ func findNearestCentroids(ivfReader *vector.IVFReader, query []float32, nProbe i
 }
 
 // searchClusterData searches a cluster's data and computes exact distances.
-func searchClusterData(data []byte, query []float32, clusterID int, dims int, metric vector.DistanceMetric) ([]vector.IVFSearchResult, error) {
+func searchClusterData(data []byte, query []float32, clusterID int, dims int, dtype vector.DType, metric vector.DistanceMetric) ([]vector.IVFSearchResult, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
 
 	reader := bytes.NewReader(data)
-	entrySize := 8 + dims*4 // docID (8 bytes) + vector (dims * 4 bytes)
+	entrySize := 8 + dims*vectorBytesPerElement(dtype)
 	numEntries := len(data) / entrySize
 
 	results := make([]vector.IVFSearchResult, 0, numEntries)
@@ -466,19 +467,12 @@ func searchClusterData(data []byte, query []float32, clusterID int, dims int, me
 			uint64(docIDBuf[4])<<32 | uint64(docIDBuf[5])<<40 | uint64(docIDBuf[6])<<48 | uint64(docIDBuf[7])<<56
 
 		// Read vector
-		vecBuf := make([]byte, dims*4)
-		if _, err := io.ReadFull(reader, vecBuf); err != nil {
+		vec := make([]float32, dims)
+		if err := readVectorElements(reader, vec, dtype); err != nil {
 			if err == io.EOF {
 				break
 			}
 			return nil, err
-		}
-
-		vec := make([]float32, dims)
-		for j := 0; j < dims; j++ {
-			bits := uint32(vecBuf[j*4]) | uint32(vecBuf[j*4+1])<<8 |
-				uint32(vecBuf[j*4+2])<<16 | uint32(vecBuf[j*4+3])<<24
-			vec[j] = float32frombits(bits)
 		}
 
 		// Compute exact distance
@@ -552,6 +546,37 @@ func sqrt32(x float32) float32 {
 
 func float32frombits(b uint32) float32 {
 	return *(*float32)(unsafe.Pointer(&b))
+}
+
+func vectorBytesPerElement(dtype vector.DType) int {
+	if dtype == vector.DTypeF16 {
+		return 2
+	}
+	return 4
+}
+
+func readVectorElements(r io.Reader, out []float32, dtype vector.DType) error {
+	switch dtype {
+	case vector.DTypeF16:
+		buf := make([]byte, len(out)*2)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return err
+		}
+		for i := range out {
+			bits := binary.LittleEndian.Uint16(buf[i*2:])
+			out[i] = vector.Float16ToFloat32(bits)
+		}
+	default:
+		buf := make([]byte, len(out)*4)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return err
+		}
+		for i := range out {
+			bits := binary.LittleEndian.Uint32(buf[i*4:])
+			out[i] = float32frombits(bits)
+		}
+	}
+	return nil
 }
 
 // sortResultsByDistance sorts results by distance (ascending).
@@ -731,7 +756,7 @@ func (r *Reader) SearchWithFilter(ctx context.Context, ivfReader *vector.IVFRead
 	// Search each cluster with filter applied
 	var results []vector.IVFSearchResult
 	for clusterID, data := range clusterData {
-		clusterResults, err := searchClusterDataWithFilter(data, query, clusterID, ivfReader.Dims, ivfReader.Metric, filterBitmap)
+		clusterResults, err := searchClusterDataWithFilter(data, query, clusterID, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search cluster %d: %w", clusterID, err)
 		}
@@ -748,13 +773,13 @@ func (r *Reader) SearchWithFilter(ctx context.Context, ivfReader *vector.IVFRead
 }
 
 // searchClusterDataWithFilter searches a cluster's data with a filter bitmap.
-func searchClusterDataWithFilter(data []byte, query []float32, clusterID int, dims int, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap) ([]vector.IVFSearchResult, error) {
+func searchClusterDataWithFilter(data []byte, query []float32, clusterID int, dims int, dtype vector.DType, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap) ([]vector.IVFSearchResult, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
 
 	reader := bytes.NewReader(data)
-	entrySize := 8 + dims*4 // docID (8 bytes) + vector (dims * 4 bytes)
+	entrySize := 8 + dims*vectorBytesPerElement(dtype)
 	numEntries := len(data) / entrySize
 
 	results := make([]vector.IVFSearchResult, 0, numEntries)
@@ -772,8 +797,8 @@ func searchClusterDataWithFilter(data []byte, query []float32, clusterID int, di
 			uint64(docIDBuf[4])<<32 | uint64(docIDBuf[5])<<40 | uint64(docIDBuf[6])<<48 | uint64(docIDBuf[7])<<56
 
 		// Read vector
-		vecBuf := make([]byte, dims*4)
-		if _, err := io.ReadFull(reader, vecBuf); err != nil {
+		vec := make([]float32, dims)
+		if err := readVectorElements(reader, vec, dtype); err != nil {
 			if err == io.EOF {
 				break
 			}
@@ -783,13 +808,6 @@ func searchClusterDataWithFilter(data []byte, query []float32, clusterID int, di
 		// Apply filter if present
 		if filterBitmap != nil && !filterBitmap.Contains(uint32(docID)) {
 			continue
-		}
-
-		vec := make([]float32, dims)
-		for j := 0; j < dims; j++ {
-			bits := uint32(vecBuf[j*4]) | uint32(vecBuf[j*4+1])<<8 |
-				uint32(vecBuf[j*4+2])<<16 | uint32(vecBuf[j*4+3])<<24
-			vec[j] = float32frombits(bits)
 		}
 
 		// Compute exact distance

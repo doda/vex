@@ -163,7 +163,7 @@ func TestIVFIntegration_TaskVerification(t *testing.T) {
 		clusterData := idx.GetClusterDataBytes()
 
 		// === STEP 4a: Load centroids (small, from RAM cache) ===
-		loadedDims, loadedNClusters, loadedMetric, loadedCentroids, err := ReadCentroidsFile(bytes.NewReader(centroidsData))
+		loadedDims, loadedNClusters, loadedMetric, loadedDType, loadedCentroids, err := ReadCentroidsFile(bytes.NewReader(centroidsData))
 		if err != nil {
 			t.Fatalf("Failed to load centroids: %v", err)
 		}
@@ -205,7 +205,7 @@ func TestIVFIntegration_TaskVerification(t *testing.T) {
 			return clusterData[offset : offset+length], nil
 		}
 
-		reader := NewIVFReader(loadedDims, loadedNClusters, loadedMetric, loadedCentroids, loadedOffsets, fetcher)
+		reader := NewIVFReaderWithDType(loadedDims, loadedNClusters, loadedDType, loadedMetric, loadedCentroids, loadedOffsets, fetcher)
 
 		// === STEP 4d: Search (find nearest clusters, fetch cluster data) ===
 		query := make([]float32, dims)

@@ -43,6 +43,9 @@ type IVFIndex struct {
 	// Dims is the number of dimensions in each vector.
 	Dims int
 
+	// DType is the storage type for vector elements.
+	DType DType
+
 	// Metric is the distance metric used for similarity calculations.
 	Metric DistanceMetric
 
@@ -88,22 +91,29 @@ type IVFSearchResult struct {
 
 // IVFBuilder builds an IVF index from a set of vectors.
 type IVFBuilder struct {
-	dims       int
-	metric     DistanceMetric
-	nClusters  int
-	maxIter    int
-	tolerance  float64
-	vectors    []float32
-	docIDs     []uint64
+	dims      int
+	dtype     DType
+	metric    DistanceMetric
+	nClusters int
+	maxIter   int
+	tolerance float64
+	vectors   []float32
+	docIDs    []uint64
 }
 
 // NewIVFBuilder creates a new IVF index builder.
 func NewIVFBuilder(dims int, metric DistanceMetric, nClusters int) *IVFBuilder {
+	return NewIVFBuilderWithDType(dims, DTypeF32, metric, nClusters)
+}
+
+// NewIVFBuilderWithDType creates a new IVF index builder with a specific dtype.
+func NewIVFBuilderWithDType(dims int, dtype DType, metric DistanceMetric, nClusters int) *IVFBuilder {
 	if nClusters <= 0 {
 		nClusters = DefaultNClusters
 	}
 	return &IVFBuilder{
 		dims:      dims,
+		dtype:     normalizeDType(dtype),
 		metric:    metric,
 		nClusters: nClusters,
 		maxIter:   20,
@@ -179,6 +189,7 @@ func (b *IVFBuilder) Build() (*IVFIndex, error) {
 
 	return &IVFIndex{
 		Dims:           b.dims,
+		DType:          normalizeDType(b.dtype),
 		Metric:         b.metric,
 		NClusters:      nClusters,
 		Centroids:      centroids,
@@ -228,6 +239,7 @@ func (b *IVFBuilder) BuildWithSinglePass() (*IVFIndex, error) {
 
 	return &IVFIndex{
 		Dims:           b.dims,
+		DType:          normalizeDType(b.dtype),
 		Metric:         b.metric,
 		NClusters:      nClusters,
 		Centroids:      centroids,
@@ -238,6 +250,8 @@ func (b *IVFBuilder) BuildWithSinglePass() (*IVFIndex, error) {
 
 // buildClusterData packs vectors into cluster format.
 func (b *IVFBuilder) buildClusterData(nClusters int, assignments []int) ([]ClusterOffset, []byte) {
+	dtype := normalizeDType(b.dtype)
+
 	// Group vectors by cluster
 	clusterVecs := make([][][]float32, nClusters)
 	clusterDocIDs := make([][]uint64, nClusters)
@@ -265,8 +279,15 @@ func (b *IVFBuilder) buildClusterData(nClusters int, assignments []int) ([]Clust
 		// Write each (docID, vector) pair
 		for j := 0; j < docCount; j++ {
 			binary.Write(&buf, binary.LittleEndian, clusterDocIDs[i][j])
-			for _, f := range clusterVecs[i][j] {
-				binary.Write(&buf, binary.LittleEndian, f)
+			switch dtype {
+			case DTypeF16:
+				for _, f := range clusterVecs[i][j] {
+					binary.Write(&buf, binary.LittleEndian, Float32ToFloat16(f))
+				}
+			default:
+				for _, f := range clusterVecs[i][j] {
+					binary.Write(&buf, binary.LittleEndian, f)
+				}
 			}
 		}
 
@@ -356,8 +377,8 @@ func (idx *IVFIndex) searchCluster(query []float32, clusterID int) []IVFSearchRe
 	results := make([]IVFSearchResult, 0, offset.DocCount)
 	data := idx.ClusterData[offset.Offset : offset.Offset+offset.Length]
 
-	// Each entry is: docID (8 bytes) + vector (dims * 4 bytes)
-	entrySize := 8 + idx.Dims*4
+	dtype := normalizeDType(idx.DType)
+	entrySize := 8 + idx.Dims*dtype.BytesPerElement()
 	reader := bytes.NewReader(data)
 
 	for i := 0; i < int(offset.DocCount); i++ {
@@ -365,8 +386,17 @@ func (idx *IVFIndex) searchCluster(query []float32, clusterID int) []IVFSearchRe
 		binary.Read(reader, binary.LittleEndian, &docID)
 
 		vec := make([]float32, idx.Dims)
-		for j := 0; j < idx.Dims; j++ {
-			binary.Read(reader, binary.LittleEndian, &vec[j])
+		switch dtype {
+		case DTypeF16:
+			for j := 0; j < idx.Dims; j++ {
+				var h uint16
+				binary.Read(reader, binary.LittleEndian, &h)
+				vec[j] = Float16ToFloat32(h)
+			}
+		default:
+			for j := 0; j < idx.Dims; j++ {
+				binary.Read(reader, binary.LittleEndian, &vec[j])
+			}
 		}
 
 		// Skip if we've consumed the expected entry
@@ -436,7 +466,7 @@ func dotProduct(a, b []float32) float32 {
 // === File format serialization ===
 
 // WriteCentroidsFile writes centroids to the specified format.
-// Format: [magic: u32][version: u32][dims: u32][n_clusters: u32][metric: u8 (padded to 4)][centroids: f32...]
+// Format: [magic: u32][version: u32][dims: u32][n_clusters: u32][metric: u8, dtype: u8 (padded to 4)][centroids: f16|f32...]
 func (idx *IVFIndex) WriteCentroidsFile(w io.Writer) error {
 	// Magic
 	if err := binary.Write(w, binary.LittleEndian, IVFMagic); err != nil {
@@ -464,13 +494,27 @@ func (idx *IVFIndex) WriteCentroidsFile(w io.Writer) error {
 	case MetricDotProduct:
 		metricByte = 2
 	}
-	if err := binary.Write(w, binary.LittleEndian, [4]byte{metricByte, 0, 0, 0}); err != nil {
+	dtype := normalizeDType(idx.DType)
+	dtypeByte := byte(0)
+	if dtype == DTypeF16 {
+		dtypeByte = 1
+	}
+	if err := binary.Write(w, binary.LittleEndian, [4]byte{metricByte, dtypeByte, 0, 0}); err != nil {
 		return err
 	}
 	// Centroids
-	for _, f := range idx.Centroids {
-		if err := binary.Write(w, binary.LittleEndian, f); err != nil {
-			return err
+	switch dtype {
+	case DTypeF16:
+		for _, f := range idx.Centroids {
+			if err := binary.Write(w, binary.LittleEndian, Float32ToFloat16(f)); err != nil {
+				return err
+			}
+		}
+	default:
+		for _, f := range idx.Centroids {
+			if err := binary.Write(w, binary.LittleEndian, f); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -518,41 +562,41 @@ func (idx *IVFIndex) WriteClusterDataFile(w io.Writer) error {
 }
 
 // ReadCentroidsFile reads centroids from the specified format.
-func ReadCentroidsFile(r io.Reader) (dims, nClusters int, metric DistanceMetric, centroids []float32, err error) {
+func ReadCentroidsFile(r io.Reader) (dims, nClusters int, metric DistanceMetric, dtype DType, centroids []float32, err error) {
 	// Magic
 	var magic uint32
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
-		return 0, 0, "", nil, err
+		return 0, 0, "", "", nil, err
 	}
 	if magic != IVFMagic {
-		return 0, 0, "", nil, fmt.Errorf("%w: invalid magic number 0x%X", ErrInvalidIVFFormat, magic)
+		return 0, 0, "", "", nil, fmt.Errorf("%w: invalid magic number 0x%X", ErrInvalidIVFFormat, magic)
 	}
 
 	// Version
 	var version uint32
 	if err := binary.Read(r, binary.LittleEndian, &version); err != nil {
-		return 0, 0, "", nil, err
+		return 0, 0, "", "", nil, err
 	}
 	if version != IVFVersion {
-		return 0, 0, "", nil, fmt.Errorf("%w: unsupported version %d", ErrInvalidIVFFormat, version)
+		return 0, 0, "", "", nil, fmt.Errorf("%w: unsupported version %d", ErrInvalidIVFFormat, version)
 	}
 
 	// Dims
 	var dimsU32 uint32
 	if err := binary.Read(r, binary.LittleEndian, &dimsU32); err != nil {
-		return 0, 0, "", nil, err
+		return 0, 0, "", "", nil, err
 	}
 
 	// NClusters
 	var nClustersU32 uint32
 	if err := binary.Read(r, binary.LittleEndian, &nClustersU32); err != nil {
-		return 0, 0, "", nil, err
+		return 0, 0, "", "", nil, err
 	}
 
 	// Metric
 	var metricBytes [4]byte
 	if err := binary.Read(r, binary.LittleEndian, &metricBytes); err != nil {
-		return 0, 0, "", nil, err
+		return 0, 0, "", "", nil, err
 	}
 	switch metricBytes[0] {
 	case 0:
@@ -562,19 +606,38 @@ func ReadCentroidsFile(r io.Reader) (dims, nClusters int, metric DistanceMetric,
 	case 2:
 		metric = MetricDotProduct
 	default:
-		return 0, 0, "", nil, fmt.Errorf("%w: unknown metric %d", ErrInvalidIVFFormat, metricBytes[0])
+		return 0, 0, "", "", nil, fmt.Errorf("%w: unknown metric %d", ErrInvalidIVFFormat, metricBytes[0])
+	}
+	switch metricBytes[1] {
+	case 0:
+		dtype = DTypeF32
+	case 1:
+		dtype = DTypeF16
+	default:
+		return 0, 0, "", "", nil, fmt.Errorf("%w: unknown dtype %d", ErrInvalidIVFFormat, metricBytes[1])
 	}
 
 	// Centroids
 	centroidCount := int(dimsU32) * int(nClustersU32)
 	centroids = make([]float32, centroidCount)
-	for i := 0; i < centroidCount; i++ {
-		if err := binary.Read(r, binary.LittleEndian, &centroids[i]); err != nil {
-			return 0, 0, "", nil, err
+	switch dtype {
+	case DTypeF16:
+		for i := 0; i < centroidCount; i++ {
+			var h uint16
+			if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
+				return 0, 0, "", "", nil, err
+			}
+			centroids[i] = Float16ToFloat32(h)
+		}
+	default:
+		for i := 0; i < centroidCount; i++ {
+			if err := binary.Read(r, binary.LittleEndian, &centroids[i]); err != nil {
+				return 0, 0, "", "", nil, err
+			}
 		}
 	}
 
-	return int(dimsU32), int(nClustersU32), metric, centroids, nil
+	return int(dimsU32), int(nClustersU32), metric, dtype, centroids, nil
 }
 
 // ReadClusterOffsetsFile reads cluster offsets from the specified format.
@@ -625,10 +688,11 @@ func ReadClusterOffsetsFile(r io.Reader) ([]ClusterOffset, error) {
 }
 
 // LoadIVFIndex loads an IVF index from its component parts.
-func LoadIVFIndex(centroids []float32, dims, nClusters int, metric DistanceMetric,
+func LoadIVFIndex(centroids []float32, dims, nClusters int, dtype DType, metric DistanceMetric,
 	offsets []ClusterOffset, clusterData []byte) *IVFIndex {
 	return &IVFIndex{
 		Dims:           dims,
+		DType:          normalizeDType(dtype),
 		Metric:         metric,
 		NClusters:      nClusters,
 		Centroids:      centroids,
@@ -681,6 +745,7 @@ func (idx *IVFIndex) GetClusterVectors(clusterID int) (docIDs []uint64, vectors 
 
 	docIDs = make([]uint64, 0, offset.DocCount)
 	vectors = make([][]float32, 0, offset.DocCount)
+	dtype := normalizeDType(idx.DType)
 
 	for i := 0; i < int(offset.DocCount); i++ {
 		var docID uint64
@@ -689,9 +754,20 @@ func (idx *IVFIndex) GetClusterVectors(clusterID int) (docIDs []uint64, vectors 
 		}
 
 		vec := make([]float32, idx.Dims)
-		for j := 0; j < idx.Dims; j++ {
-			if err := binary.Read(reader, binary.LittleEndian, &vec[j]); err != nil {
-				return nil, nil, err
+		switch dtype {
+		case DTypeF16:
+			for j := 0; j < idx.Dims; j++ {
+				var h uint16
+				if err := binary.Read(reader, binary.LittleEndian, &h); err != nil {
+					return nil, nil, err
+				}
+				vec[j] = Float16ToFloat32(h)
+			}
+		default:
+			for j := 0; j < idx.Dims; j++ {
+				if err := binary.Read(reader, binary.LittleEndian, &vec[j]); err != nil {
+					return nil, nil, err
+				}
 			}
 		}
 
@@ -716,7 +792,7 @@ func LoadCentroidsFromBytes(data []byte) (*IVFIndex, error) {
 	}
 
 	r := bytes.NewReader(data)
-	dims, nClusters, metric, centroids, err := ReadCentroidsFile(r)
+	dims, nClusters, metric, dtype, centroids, err := ReadCentroidsFile(r)
 	if err != nil {
 		return nil, err
 	}
@@ -725,6 +801,7 @@ func LoadCentroidsFromBytes(data []byte) (*IVFIndex, error) {
 		Dims:      dims,
 		NClusters: nClusters,
 		Metric:    metric,
+		DType:     normalizeDType(dtype),
 		Centroids: centroids,
 	}, nil
 }
@@ -745,6 +822,7 @@ func (idx *IVFIndex) ExtractDocuments(offsetsData, clusterData []byte) ([]IVFDoc
 	}
 
 	docs := make([]IVFDocument, 0, totalDocs)
+	dtype := normalizeDType(idx.DType)
 
 	// Extract documents from each cluster
 	for clusterID, offset := range offsets {
@@ -765,9 +843,20 @@ func (idx *IVFIndex) ExtractDocuments(offsetsData, clusterData []byte) ([]IVFDoc
 			}
 
 			vec := make([]float32, idx.Dims)
-			for j := 0; j < idx.Dims; j++ {
-				if err := binary.Read(reader, binary.LittleEndian, &vec[j]); err != nil {
-					return nil, fmt.Errorf("failed to read vector in cluster %d: %w", clusterID, err)
+			switch dtype {
+			case DTypeF16:
+				for j := 0; j < idx.Dims; j++ {
+					var h uint16
+					if err := binary.Read(reader, binary.LittleEndian, &h); err != nil {
+						return nil, fmt.Errorf("failed to read vector in cluster %d: %w", clusterID, err)
+					}
+					vec[j] = Float16ToFloat32(h)
+				}
+			default:
+				for j := 0; j < idx.Dims; j++ {
+					if err := binary.Read(reader, binary.LittleEndian, &vec[j]); err != nil {
+						return nil, fmt.Errorf("failed to read vector in cluster %d: %w", clusterID, err)
+					}
 				}
 			}
 
@@ -779,4 +868,11 @@ func (idx *IVFIndex) ExtractDocuments(offsetsData, clusterData []byte) ([]IVFDoc
 	}
 
 	return docs, nil
+}
+
+func normalizeDType(dtype DType) DType {
+	if !dtype.IsValid() {
+		return DTypeF32
+	}
+	return dtype
 }

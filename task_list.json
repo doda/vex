@@ -2412,7 +2412,7 @@
       "Index f16 vectors and verify IVF segment sizes and reads are correct",
       "Run vector query against f16 index and verify distances are correct"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/vector/ivf.go",
       "internal/index/reader.go"

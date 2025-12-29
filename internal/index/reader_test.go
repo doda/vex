@@ -96,7 +96,7 @@ func TestGetIVFReader(t *testing.T) {
 
 	// Create cluster offsets file
 	offsets := []vector.ClusterOffset{
-		{Offset: 0, Length: uint64((8 + dims*4) * 2), DocCount: 2},    // Cluster 0: 2 docs
+		{Offset: 0, Length: uint64((8 + dims*4) * 2), DocCount: 2},                        // Cluster 0: 2 docs
 		{Offset: uint64((8 + dims*4) * 2), Length: uint64((8 + dims*4) * 3), DocCount: 3}, // Cluster 1: 3 docs
 	}
 	offsetsData := createTestOffsetsFile(t, offsets)
@@ -286,6 +286,97 @@ func TestSearchWithMultiRange(t *testing.T) {
 	}
 }
 
+func TestSearchWithMultiRangeF16(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	ctx := context.Background()
+
+	dims := 4
+	nClusters := 2
+
+	centroid0 := []float32{1, 0, 0, 0}
+	centroid1 := []float32{0, 1, 0, 0}
+
+	centroidsData := createTestCentroidsFileWithDType(t, dims, [][]float32{centroid0, centroid1}, vector.MetricCosineDistance, vector.DTypeF16)
+
+	cluster0Docs := []struct {
+		docID uint64
+		vec   []float32
+	}{
+		{1, []float32{0.9, 0.1, 0, 0}},
+		{2, []float32{0.95, 0.05, 0, 0}},
+	}
+	cluster1Docs := []struct {
+		docID uint64
+		vec   []float32
+	}{
+		{3, []float32{0.1, 0.9, 0, 0}},
+		{4, []float32{0.05, 0.95, 0, 0}},
+		{5, []float32{0.15, 0.85, 0, 0}},
+	}
+
+	cluster0Data := createClusterDocsDataWithDType(t, dims, cluster0Docs, vector.DTypeF16)
+	cluster1Data := createClusterDocsDataWithDType(t, dims, cluster1Docs, vector.DTypeF16)
+	allClusterData := append(cluster0Data, cluster1Data...)
+
+	offsets := []vector.ClusterOffset{
+		{Offset: 0, Length: uint64(len(cluster0Data)), DocCount: uint32(len(cluster0Docs))},
+		{Offset: uint64(len(cluster0Data)), Length: uint64(len(cluster1Data)), DocCount: uint32(len(cluster1Docs))},
+	}
+	offsetsData := createTestOffsetsFile(t, offsets)
+
+	manifest := &Manifest{
+		FormatVersion: 1,
+		Namespace:     "test-ns",
+		GeneratedAt:   time.Now().UTC(),
+		IndexedWALSeq: 10,
+		Segments: []Segment{
+			{
+				ID:          "seg_001",
+				Level:       0,
+				StartWALSeq: 1,
+				EndWALSeq:   10,
+				IVFKeys: &IVFKeys{
+					CentroidsKey:      "vex/namespaces/test-ns/index/segments/seg_001/vectors.centroids.bin",
+					ClusterOffsetsKey: "vex/namespaces/test-ns/index/segments/seg_001/vectors.cluster_offsets.bin",
+					ClusterDataKey:    "vex/namespaces/test-ns/index/segments/seg_001/vectors.clusters.pack",
+					NClusters:         nClusters,
+					VectorCount:       5,
+				},
+			},
+		},
+	}
+
+	manifestData, _ := json.Marshal(manifest)
+	manifestKey := ManifestKey("test-ns", 1)
+
+	store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.CentroidsKey, bytes.NewReader(centroidsData), int64(len(centroidsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterOffsetsKey, bytes.NewReader(offsetsData), int64(len(offsetsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterDataKey, bytes.NewReader(allClusterData), int64(len(allClusterData)), nil)
+
+	reader := NewReader(store, nil, nil)
+	ivfReader, clusterDataKey, err := reader.GetIVFReader(ctx, "test-ns", manifestKey, 1)
+	if err != nil {
+		t.Fatalf("GetIVFReader() error = %v", err)
+	}
+
+	queryVec := []float32{1, 0, 0, 0}
+	nProbe := 1
+	topK := 3
+
+	results, err := reader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, queryVec, topK, nProbe)
+	if err != nil {
+		t.Fatalf("SearchWithMultiRange() error = %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("expected 2 results with nProbe=1, got %d", len(results))
+	}
+	if len(results) > 0 && results[0].DocID != 2 {
+		t.Errorf("expected first result to be doc 2, got %d", results[0].DocID)
+	}
+}
+
 // TestExactDistanceComputation tests that exact distances are computed in final top_k.
 func TestExactDistanceComputation(t *testing.T) {
 	store := objectstore.NewMemoryStore()
@@ -301,9 +392,9 @@ func TestExactDistanceComputation(t *testing.T) {
 		vec          []float32
 		expectedDist float32
 	}{
-		{1, []float32{1, 0, 0, 0}, 0.0},             // Identical, distance = 0
-		{2, []float32{0.707, 0.707, 0, 0}, 0.293},   // 45 degrees, distance ≈ 0.293
-		{3, []float32{0, 1, 0, 0}, 1.0},             // Orthogonal, distance = 1
+		{1, []float32{1, 0, 0, 0}, 0.0},           // Identical, distance = 0
+		{2, []float32{0.707, 0.707, 0, 0}, 0.293}, // 45 degrees, distance ≈ 0.293
+		{3, []float32{0, 1, 0, 0}, 1.0},           // Orthogonal, distance = 1
 	}
 
 	// Create centroids (single cluster containing all docs)
@@ -549,9 +640,14 @@ func createTestCentroidsFile(t *testing.T, dims, nClusters int, metric vector.Di
 }
 
 func createTestCentroidsFileWithCentroids(t *testing.T, dims int, centroids [][]float32, metric vector.DistanceMetric) []byte {
+	return createTestCentroidsFileWithDType(t, dims, centroids, metric, vector.DTypeF32)
+}
+
+func createTestCentroidsFileWithDType(t *testing.T, dims int, centroids [][]float32, metric vector.DistanceMetric, dtype vector.DType) []byte {
 	// Build an IVFIndex and use its serialization methods
 	idx := &vector.IVFIndex{
 		Dims:      dims,
+		DType:     dtype,
 		Metric:    metric,
 		NClusters: len(centroids),
 		Centroids: make([]float32, 0, dims*len(centroids)),
@@ -609,12 +705,26 @@ func createClusterDocsData(t *testing.T, dims int, docs []struct {
 	docID uint64
 	vec   []float32
 }) []byte {
+	return createClusterDocsDataWithDType(t, dims, docs, vector.DTypeF32)
+}
+
+func createClusterDocsDataWithDType(t *testing.T, dims int, docs []struct {
+	docID uint64
+	vec   []float32
+}, dtype vector.DType) []byte {
 	buf := &bytes.Buffer{}
 
 	for _, doc := range docs {
 		binary.Write(buf, binary.LittleEndian, doc.docID)
-		for _, v := range doc.vec {
-			binary.Write(buf, binary.LittleEndian, v)
+		switch dtype {
+		case vector.DTypeF16:
+			for _, v := range doc.vec {
+				binary.Write(buf, binary.LittleEndian, vector.Float32ToFloat16(v))
+			}
+		default:
+			for _, v := range doc.vec {
+				binary.Write(buf, binary.LittleEndian, v)
+			}
 		}
 	}
 

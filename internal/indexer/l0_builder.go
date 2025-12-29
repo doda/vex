@@ -42,10 +42,10 @@ func DefaultL0Config() *L0SegmentBuilderConfig {
 
 // L0SegmentProcessor builds L0 segments with IVF indexes from WAL entries.
 type L0SegmentProcessor struct {
-	store     objectstore.Store
-	stateMan  *namespace.StateManager
-	config    *L0SegmentBuilderConfig
-	indexer   *Indexer
+	store    objectstore.Store
+	stateMan *namespace.StateManager
+	config   *L0SegmentBuilderConfig
+	indexer  *Indexer
 }
 
 // NewL0SegmentProcessor creates a new L0 segment processor.
@@ -88,8 +88,16 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 		return &WALProcessResult{BytesIndexed: totalBytes}, nil
 	}
 
+	dtype := vector.DTypeF32
+	if state.Vector != nil {
+		candidate := vector.DType(state.Vector.DType)
+		if candidate.IsValid() {
+			dtype = candidate
+		}
+	}
+
 	// Build L0 segment with IVF index
-	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, endSeq, docs, dims)
+	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, endSeq, docs, dims, dtype)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build L0 segment: %w", err)
 	}
@@ -236,7 +244,7 @@ func float16ToFloat32(h uint16) float32 {
 }
 
 // buildL0Segment builds an L0 segment with IVF index from the documents.
-func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int) (*index.Segment, error) {
+func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType) (*index.Segment, error) {
 	if len(docs) == 0 {
 		return nil, nil
 	}
@@ -258,7 +266,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	}
 
 	// Build IVF index
-	builder := vector.NewIVFBuilder(dims, p.config.Metric, nClusters)
+	builder := vector.NewIVFBuilderWithDType(dims, dtype, p.config.Metric, nClusters)
 	for _, doc := range docs {
 		if err := builder.AddVector(doc.id, doc.vec); err != nil {
 			return nil, fmt.Errorf("failed to add vector %d: %w", doc.id, err)
@@ -303,7 +311,11 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	writer.Seal()
 
 	// Calculate segment stats
-	vectorBytes := int64(len(docs) * dims * 4)
+	bytesPerElement := dtype.BytesPerElement()
+	if bytesPerElement == 0 {
+		bytesPerElement = 4
+	}
+	vectorBytes := int64(len(docs) * dims * bytesPerElement)
 	totalBytes := int64(centroidsBuf.Len()) + int64(offsetsBuf.Len()) + int64(len(ivfIndex.GetClusterDataBytes()))
 
 	segment := &index.Segment{

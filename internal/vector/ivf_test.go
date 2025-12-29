@@ -220,7 +220,7 @@ func TestIVFIndex_WriteCentroidsFile(t *testing.T) {
 	}
 
 	// Read it back
-	readDims, readNClusters, readMetric, readCentroids, err := ReadCentroidsFile(&buf)
+	readDims, readNClusters, readMetric, readDType, readCentroids, err := ReadCentroidsFile(&buf)
 	if err != nil {
 		t.Fatalf("ReadCentroidsFile failed: %v", err)
 	}
@@ -233,6 +233,9 @@ func TestIVFIndex_WriteCentroidsFile(t *testing.T) {
 	}
 	if readMetric != MetricCosineDistance {
 		t.Errorf("metric mismatch: expected %s, got %s", MetricCosineDistance, readMetric)
+	}
+	if readDType != DTypeF32 {
+		t.Errorf("dtype mismatch: expected %s, got %s", DTypeF32, readDType)
 	}
 	if len(readCentroids) != len(idx.Centroids) {
 		t.Errorf("centroids length mismatch: expected %d, got %d", len(idx.Centroids), len(readCentroids))
@@ -327,10 +330,10 @@ func TestIVFIndex_LoadFromComponents(t *testing.T) {
 	clusterData := original.GetClusterDataBytes()
 
 	// Read back and reconstruct
-	readDims, readNClusters, readMetric, readCentroids, _ := ReadCentroidsFile(&centroidsBuf)
+	readDims, readNClusters, readMetric, readDType, readCentroids, _ := ReadCentroidsFile(&centroidsBuf)
 	readOffsets, _ := ReadClusterOffsetsFile(&offsetsBuf)
 
-	loaded := LoadIVFIndex(readCentroids, readDims, readNClusters, readMetric, readOffsets, clusterData)
+	loaded := LoadIVFIndex(readCentroids, readDims, readNClusters, readDType, readMetric, readOffsets, clusterData)
 
 	// Search should work on loaded index
 	results, err := loaded.Search([]float32{1, 0, 0, 0}, 1, 2)
@@ -429,6 +432,26 @@ func TestIVFIndex_ClusterDataFormat(t *testing.T) {
 	}
 }
 
+func TestIVFIndex_ClusterDataFormatF16(t *testing.T) {
+	dims := 4
+	builder := NewIVFBuilderWithDType(dims, DTypeF16, MetricCosineDistance, 2)
+
+	builder.AddVector(1, []float32{1, 0, 0, 0})
+	builder.AddVector(2, []float32{0, 1, 0, 0})
+
+	idx, _ := builder.Build()
+	clusterData := idx.GetClusterDataBytes()
+
+	entrySize := 8 + dims*2
+	expectedSize := 2 * entrySize
+	if len(clusterData) != expectedSize {
+		t.Errorf("cluster data size: expected %d bytes, got %d", expectedSize, len(clusterData))
+	}
+	if idx.DType != DTypeF16 {
+		t.Errorf("dtype mismatch: expected %s, got %s", DTypeF16, idx.DType)
+	}
+}
+
 func TestIVFIndex_ColdQueryFlow(t *testing.T) {
 	// Test the cold query flow as defined in the spec:
 	// 1. Load centroids (small file)
@@ -467,7 +490,7 @@ func TestIVFIndex_ColdQueryFlow(t *testing.T) {
 	clusterData := idx.GetClusterDataBytes()
 
 	// === Step 1: Load centroids ===
-	loadedDims, loadedNClusters, loadedMetric, loadedCentroids, err := ReadCentroidsFile(&centroidsBuf)
+	loadedDims, loadedNClusters, loadedMetric, loadedDType, loadedCentroids, err := ReadCentroidsFile(&centroidsBuf)
 	if err != nil {
 		t.Fatalf("Failed to load centroids: %v", err)
 	}
@@ -479,7 +502,7 @@ func TestIVFIndex_ColdQueryFlow(t *testing.T) {
 	}
 
 	// === Step 3: Reconstruct index for search ===
-	coldIdx := LoadIVFIndex(loadedCentroids, loadedDims, loadedNClusters, loadedMetric, loadedOffsets, clusterData)
+	coldIdx := LoadIVFIndex(loadedCentroids, loadedDims, loadedNClusters, loadedDType, loadedMetric, loadedOffsets, clusterData)
 
 	// === Step 4: Search ===
 	query := make([]float32, dims)
@@ -624,7 +647,7 @@ func TestIVFIndex_InvalidClusterID(t *testing.T) {
 func TestIVFIndex_InvalidCentroidsFile(t *testing.T) {
 	// Test invalid magic number
 	data := []byte{0xFF, 0xFF, 0xFF, 0xFF}
-	_, _, _, _, err := ReadCentroidsFile(bytes.NewReader(data))
+	_, _, _, _, _, err := ReadCentroidsFile(bytes.NewReader(data))
 	if err == nil {
 		t.Error("expected error for invalid magic number")
 	}
@@ -637,7 +660,7 @@ func TestIVFIndex_InvalidCentroidsFile(t *testing.T) {
 	data[2] = byte(magic >> 16)
 	data[3] = byte(magic >> 24)
 	data[4] = 0xFF // invalid version
-	_, _, _, _, err = ReadCentroidsFile(bytes.NewReader(data))
+	_, _, _, _, _, err = ReadCentroidsFile(bytes.NewReader(data))
 	if err == nil {
 		t.Error("expected error for invalid version")
 	}

@@ -18,6 +18,9 @@ type IVFReader struct {
 	// Dims is the number of dimensions in each vector.
 	Dims int
 
+	// DType is the storage type for vector elements.
+	DType DType
+
 	// NClusters is the number of clusters in the index.
 	NClusters int
 
@@ -46,8 +49,22 @@ func NewIVFReader(
 	offsets []ClusterOffset,
 	fetcher ClusterDataFetcher,
 ) *IVFReader {
+	return NewIVFReaderWithDType(dims, nClusters, DTypeF32, metric, centroids, offsets, fetcher)
+}
+
+// NewIVFReaderWithDType creates a reader from pre-loaded centroids and offsets with a dtype.
+func NewIVFReaderWithDType(
+	dims int,
+	nClusters int,
+	dtype DType,
+	metric DistanceMetric,
+	centroids []float32,
+	offsets []ClusterOffset,
+	fetcher ClusterDataFetcher,
+) *IVFReader {
 	return &IVFReader{
 		Dims:               dims,
+		DType:              normalizeDType(dtype),
 		NClusters:          nClusters,
 		Metric:             metric,
 		Centroids:          centroids,
@@ -63,7 +80,7 @@ func LoadIVFReaderFromData(
 	fetcher ClusterDataFetcher,
 ) (*IVFReader, error) {
 	// Parse centroids file
-	dims, nClusters, metric, centroids, err := ReadCentroidsFile(bytes.NewReader(centroidsData))
+	dims, nClusters, metric, dtype, centroids, err := ReadCentroidsFile(bytes.NewReader(centroidsData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read centroids: %w", err)
 	}
@@ -74,7 +91,7 @@ func LoadIVFReaderFromData(
 		return nil, fmt.Errorf("failed to read cluster offsets: %w", err)
 	}
 
-	return NewIVFReader(dims, nClusters, metric, centroids, offsets, fetcher), nil
+	return NewIVFReaderWithDType(dims, nClusters, dtype, metric, centroids, offsets, fetcher), nil
 }
 
 // Search performs approximate nearest neighbor search using the IVF index.
@@ -171,7 +188,7 @@ func (r *IVFReader) searchCluster(ctx context.Context, query []float32, clusterI
 	reader := bytes.NewReader(data)
 
 	for i := 0; i < int(offset.DocCount); i++ {
-		docID, vec, err := readClusterEntry(reader, r.Dims)
+		docID, vec, err := readClusterEntry(reader, r.Dims, r.DType)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -269,7 +286,7 @@ func sortResultsByDistance(results []IVFSearchResult) {
 }
 
 // readClusterEntry reads a single (docID, vector) entry from cluster data.
-func readClusterEntry(r io.Reader, dims int) (uint64, []float32, error) {
+func readClusterEntry(r io.Reader, dims int, dtype DType) (uint64, []float32, error) {
 	var docID uint64
 	buf := make([]byte, 8)
 	if _, err := io.ReadFull(r, buf); err != nil {
@@ -279,14 +296,27 @@ func readClusterEntry(r io.Reader, dims int) (uint64, []float32, error) {
 		uint64(buf[4])<<32 | uint64(buf[5])<<40 | uint64(buf[6])<<48 | uint64(buf[7])<<56
 
 	vec := make([]float32, dims)
-	vecBuf := make([]byte, dims*4)
-	if _, err := io.ReadFull(r, vecBuf); err != nil {
-		return 0, nil, err
-	}
-	for i := 0; i < dims; i++ {
-		bits := uint32(vecBuf[i*4]) | uint32(vecBuf[i*4+1])<<8 |
-			uint32(vecBuf[i*4+2])<<16 | uint32(vecBuf[i*4+3])<<24
-		vec[i] = float32frombits(bits)
+	dtype = normalizeDType(dtype)
+	switch dtype {
+	case DTypeF16:
+		vecBuf := make([]byte, dims*2)
+		if _, err := io.ReadFull(r, vecBuf); err != nil {
+			return 0, nil, err
+		}
+		for i := 0; i < dims; i++ {
+			bits := uint16(vecBuf[i*2]) | uint16(vecBuf[i*2+1])<<8
+			vec[i] = Float16ToFloat32(bits)
+		}
+	default:
+		vecBuf := make([]byte, dims*4)
+		if _, err := io.ReadFull(r, vecBuf); err != nil {
+			return 0, nil, err
+		}
+		for i := 0; i < dims; i++ {
+			bits := uint32(vecBuf[i*4]) | uint32(vecBuf[i*4+1])<<8 |
+				uint32(vecBuf[i*4+2])<<16 | uint32(vecBuf[i*4+3])<<24
+			vec[i] = float32frombits(bits)
+		}
 	}
 
 	return docID, vec, nil

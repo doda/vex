@@ -145,6 +145,63 @@ func TestIVFReader_SearchMatchesIndex(t *testing.T) {
 	}
 }
 
+func TestIVFReader_SearchMatchesIndexF16(t *testing.T) {
+	dims := 4
+	nClusters := 2
+
+	builder := NewIVFBuilderWithDType(dims, DTypeF16, MetricCosineDistance, nClusters)
+	builder.AddVector(1, []float32{1, 0, 0, 0})
+	builder.AddVector(2, []float32{0.9, 0.1, 0, 0})
+	builder.AddVector(3, []float32{0, 1, 0, 0})
+	builder.AddVector(4, []float32{0, 0.9, 0.1, 0})
+
+	idx, _ := builder.Build()
+
+	var centroidsBuf bytes.Buffer
+	idx.WriteCentroidsFile(&centroidsBuf)
+
+	var offsetsBuf bytes.Buffer
+	idx.WriteClusterOffsetsFile(&offsetsBuf)
+
+	clusterData := idx.GetClusterDataBytes()
+
+	fetcher := func(ctx context.Context, offset, length uint64) ([]byte, error) {
+		return clusterData[offset : offset+length], nil
+	}
+
+	reader, err := LoadIVFReaderFromData(centroidsBuf.Bytes(), offsetsBuf.Bytes(), fetcher)
+	if err != nil {
+		t.Fatalf("LoadIVFReaderFromData failed: %v", err)
+	}
+
+	query := []float32{0.9, 0.1, 0, 0}
+	topK := 3
+	nProbe := 2
+
+	idxResults, err := idx.Search(query, topK, nProbe)
+	if err != nil {
+		t.Fatalf("index search failed: %v", err)
+	}
+
+	readerResults, err := reader.Search(context.Background(), query, topK, nProbe)
+	if err != nil {
+		t.Fatalf("reader search failed: %v", err)
+	}
+
+	if len(idxResults) != len(readerResults) {
+		t.Fatalf("result length mismatch: %d vs %d", len(idxResults), len(readerResults))
+	}
+
+	for i := range idxResults {
+		if idxResults[i].DocID != readerResults[i].DocID {
+			t.Fatalf("doc mismatch at %d: %d vs %d", i, idxResults[i].DocID, readerResults[i].DocID)
+		}
+		if diff := idxResults[i].Distance - readerResults[i].Distance; diff < -1e-5 || diff > 1e-5 {
+			t.Fatalf("distance mismatch at %d: %f vs %f", i, idxResults[i].Distance, readerResults[i].Distance)
+		}
+	}
+}
+
 func TestIVFReader_EmptyCluster(t *testing.T) {
 	// Test handling of empty clusters
 	dims := 4
