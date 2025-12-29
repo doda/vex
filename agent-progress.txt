@@ -1002,3 +1002,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-29T18:13:17Z] Completed tail-cap-compressed-bytes: PASS
+- Implemented compressed WAL size accounting for in-memory tail entries with fallback estimation.
+- Added tail test asserting compressed byte sizing and newest-first cap behavior for AddWALEntry.
+- Files changed: internal/tail/store.go.
+- Files changed: internal/tail/store_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/tail -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

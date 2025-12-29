@@ -24,6 +24,7 @@ import (
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -511,21 +512,15 @@ func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
 
 	docs := materializeEntry(entry)
 
-	// Estimate size (we don't have compressed data here)
-	estimatedSize := int64(0)
-	for _, batch := range entry.SubBatches {
-		for _, m := range batch.Mutations {
-			estimatedSize += int64(len(m.Vector))
-			for _, attr := range m.Attributes {
-				estimatedSize += estimateAttributeSize(attr)
-			}
-		}
+	sizeBytes, ok := compressedEntrySize(entry)
+	if !ok {
+		sizeBytes = estimateEntrySize(entry)
 	}
 
 	entryCache := &walEntryCache{
 		entry:     entry,
 		documents: docs,
-		sizeBytes: estimatedSize,
+		sizeBytes: sizeBytes,
 	}
 
 	nt.ramEntries[entry.Seq] = entryCache
@@ -709,4 +704,32 @@ func (ts *TailStore) getSeqsWithinByteLimit(nt *namespaceTail, byteLimitBytes in
 	}
 
 	return allowedSeqs
+}
+
+func compressedEntrySize(entry *wal.WalEntry) (int64, bool) {
+	encoder, err := wal.NewEncoder()
+	if err != nil {
+		return 0, false
+	}
+	defer encoder.Close()
+
+	entryCopy := proto.Clone(entry).(*wal.WalEntry)
+	result, err := encoder.Encode(entryCopy)
+	if err != nil {
+		return 0, false
+	}
+	return int64(len(result.Data)), true
+}
+
+func estimateEntrySize(entry *wal.WalEntry) int64 {
+	estimatedSize := int64(0)
+	for _, batch := range entry.SubBatches {
+		for _, m := range batch.Mutations {
+			estimatedSize += int64(len(m.Vector))
+			for _, attr := range m.Attributes {
+				estimatedSize += estimateAttributeSize(attr)
+			}
+		}
+	}
+	return estimatedSize
 }

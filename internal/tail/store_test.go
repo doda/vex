@@ -170,6 +170,46 @@ func TestTailStore_AddWALEntry(t *testing.T) {
 	}
 }
 
+func TestTailStore_AddWALEntry_UsesCompressedBytesForTailCap(t *testing.T) {
+	store := newMockStore()
+	ts := New(DefaultConfig(), store, nil, nil)
+	defer ts.Close()
+
+	entry1, data1 := createTestWALEntry("test-ns", 1, []testDoc{
+		{id: 1, attrs: map[string]any{"payload": "small"}},
+	})
+	entry2, data2 := createTestWALEntry("test-ns", 2, []testDoc{
+		{id: 2, attrs: map[string]any{"payload": "larger payload for compression"}},
+	})
+
+	ts.AddWALEntry("test-ns", entry1)
+	ts.AddWALEntry("test-ns", entry2)
+
+	nt := ts.getNamespace("test-ns")
+	if nt == nil {
+		t.Fatal("namespace not found")
+	}
+
+	if nt.ramEntries[1].sizeBytes != int64(len(data1)) {
+		t.Fatalf("expected entry1 size %d, got %d", len(data1), nt.ramEntries[1].sizeBytes)
+	}
+	if nt.ramEntries[2].sizeBytes != int64(len(data2)) {
+		t.Fatalf("expected entry2 size %d, got %d", len(data2), nt.ramEntries[2].sizeBytes)
+	}
+
+	ctx := context.Background()
+	docs, err := ts.ScanWithByteLimit(ctx, "test-ns", nil, int64(len(data2)))
+	if err != nil {
+		t.Fatalf("ScanWithByteLimit failed: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(docs))
+	}
+	if docs[0].ID.U64() != 2 {
+		t.Fatalf("expected newest doc id=2, got %d", docs[0].ID.U64())
+	}
+}
+
 func TestTailStore_RefreshFromObjectStorage(t *testing.T) {
 	store := newMockStore()
 	ts := New(DefaultConfig(), store, nil, nil)

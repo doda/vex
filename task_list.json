@@ -2386,7 +2386,7 @@
       "Add WAL entries with known compressed sizes and verify tail cap calculation uses compressed bytes",
       "Confirm tail selection order remains newest-first"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/tail/store.go"
     ]
