@@ -1262,3 +1262,14 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: needed to preserve existing attributes for patches across indexed segments.
 - Resolution: loaded base docs from manifest and merged patch fields before segment write.
+[2025-12-30T08:15:00Z] Completed indexer-publish-filter-artifacts: PASS
+- Implemented filter bitmap index build during L0 segment construction and published filter objects with segment filter_keys.
+- Added schema conversion for filterable attribute detection and included filter bytes in segment logical sizing.
+- Added indexer test that builds filter artifacts, verifies storage keys, and runs filtered ANN query against published bitmaps.
+- Files changed: internal/indexer/l0_builder.go.
+- Files changed: internal/indexer/filter_artifacts_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run TestIndexerPublishesFilterArtifacts -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: gofmt unavailable in environment.
+- Resolution: kept formatting consistent with existing style.

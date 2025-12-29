@@ -12,8 +12,10 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/vexsearch/vex/internal/document"
+	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/schema"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -116,7 +118,8 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 	}
 
 	// Build L0 segment with IVF index
-	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, lastSeq, docs, dims, dtype)
+	schemaDef := buildSchemaDefinition(state)
+	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, lastSeq, docs, dims, dtype, schemaDef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build L0 segment: %w", err)
 	}
@@ -445,7 +448,7 @@ type vectorDocColumn struct {
 }
 
 // buildL0Segment builds an L0 segment with IVF index from the documents.
-func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType) (*index.Segment, error) {
+func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType, schemaDef *schema.Definition) (*index.Segment, error) {
 	if len(docs) == 0 {
 		return nil, nil
 	}
@@ -555,6 +558,42 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		return nil, fmt.Errorf("failed to write docs: %w", err)
 	}
 
+	var filterKeys []string
+	var filterBytes int64
+	if schemaDef != nil && len(vectorDocs) > 0 {
+		filterBuilder := filter.NewIndexBuilder(ns, schemaDef)
+		for _, doc := range vectorDocs {
+			if doc.deleted {
+				continue
+			}
+			filterBuilder.AddDocument(uint32(doc.numericID), doc.attrs)
+		}
+		filterData, err := filterBuilder.SerializeAll()
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize filter indexes: %w", err)
+		}
+		if len(filterData) > 0 {
+			attrNames := make([]string, 0, len(filterData))
+			for name := range filterData {
+				attrNames = append(attrNames, name)
+			}
+			sort.Strings(attrNames)
+			filterKeys = make([]string, 0, len(attrNames))
+			for _, attrName := range attrNames {
+				data := filterData[attrName]
+				if len(data) == 0 {
+					continue
+				}
+				key, err := writer.WriteFilterData(ctx, attrName, data)
+				if err != nil {
+					return nil, fmt.Errorf("failed to write filter %s: %w", attrName, err)
+				}
+				filterKeys = append(filterKeys, key)
+				filterBytes += int64(len(data))
+			}
+		}
+	}
+
 	writer.Seal()
 
 	// Calculate segment stats
@@ -567,6 +606,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	if ivfIndex != nil {
 		totalBytes += int64(centroidsBuf.Len()) + int64(offsetsBuf.Len()) + int64(len(ivfIndex.GetClusterDataBytes()))
 	}
+	totalBytes += filterBytes
 
 	segment := &index.Segment{
 		ID:          segID,
@@ -574,6 +614,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		StartWALSeq: startSeq,
 		EndWALSeq:   endSeq,
 		DocsKey:     docsKey,
+		FilterKeys:  filterKeys,
 		IVFKeys: func() *index.IVFKeys {
 			if ivfIndex == nil {
 				return nil
@@ -790,6 +831,34 @@ func documentIDKeyFromID(id document.ID) string {
 	default:
 		return ""
 	}
+}
+
+func buildSchemaDefinition(state *namespace.State) *schema.Definition {
+	if state == nil || state.Schema == nil || len(state.Schema.Attributes) == 0 {
+		return nil
+	}
+	def := schema.NewDefinition()
+	for name, attr := range state.Schema.Attributes {
+		attrType := schema.AttrType(attr.Type)
+		if !attrType.IsValid() {
+			continue
+		}
+		converted := schema.Attribute{
+			Type:       attrType,
+			Filterable: attr.Filterable,
+			Regex:      attr.Regex,
+		}
+		if len(attr.FullTextSearch) > 0 {
+			converted.FullTextSearch = schema.NewFullTextConfig()
+		}
+		if err := def.SetAttribute(name, converted); err != nil {
+			continue
+		}
+	}
+	if len(def.Attributes) == 0 {
+		return nil
+	}
+	return def
 }
 
 // intSqrt computes integer square root.

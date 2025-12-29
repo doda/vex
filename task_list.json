@@ -2731,7 +2731,7 @@
       "Enable filterable attributes, run indexing, and verify filter artifacts are present in segment storage",
       "Run filtered queries and confirm they use the published filter artifacts"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/indexer/l0_builder.go",
