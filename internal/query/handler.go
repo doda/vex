@@ -332,9 +332,9 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		case RankByAttr:
 			rows, err = h.executeAttrQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByBM25:
-			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req)
+			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByComposite:
-			rows, err = h.executeCompositeQuery(ctx, ns, loaded, parsed, f, req)
+			rows, err = h.executeCompositeQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		}
 		if err != nil {
 			return nil, err
@@ -947,7 +947,7 @@ func (h *Handler) deduplicateAttrQueryDocs(docs []*tail.Document, indexedWALSeq 
 // Documents with zero score are excluded from results.
 // When LastAsPrefix is true, the last token is matched as a prefix for typeahead support,
 // and prefix matches score 1.0 (as per turbopuffer spec).
-func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
+func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
 	// Get FTS config for the field from schema
 	ftsCfg := h.getFTSConfig(loaded, parsed.Field)
 	if ftsCfg == nil {
@@ -1021,7 +1021,7 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 
 	// Step 2: Get documents from tail (unindexed data), including deletes for deduplication.
 	if h.tailStore != nil {
-		tailDocs, err := h.scanTailForBM25(ctx, ns, f)
+		tailDocs, err := h.scanTailForBM25(ctx, ns, f, tailByteCap)
 		if err != nil {
 			return nil, err
 		}
@@ -1132,10 +1132,20 @@ func (h *Handler) deduplicateBM25Docs(docs []*tail.Document) []*tail.Document {
 }
 
 // scanTailForBM25 includes deleted docs so they can shadow indexed versions.
-func (h *Handler) scanTailForBM25(ctx context.Context, ns string, f *filter.Filter) ([]*tail.Document, error) {
+func (h *Handler) scanTailForBM25(ctx context.Context, ns string, f *filter.Filter, tailByteCap int64) ([]*tail.Document, error) {
 	type scanIncludingDeleted interface {
 		ScanIncludingDeleted(ctx context.Context, namespace string, f *filter.Filter) ([]*tail.Document, error)
 	}
+	type scanIncludingDeletedWithByteLimit interface {
+		ScanIncludingDeletedWithByteLimit(ctx context.Context, namespace string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error)
+	}
+
+	if tailByteCap > 0 {
+		if scanner, ok := h.tailStore.(scanIncludingDeletedWithByteLimit); ok {
+			return scanner.ScanIncludingDeletedWithByteLimit(ctx, ns, f, tailByteCap)
+		}
+	}
+
 	if scanner, ok := h.tailStore.(scanIncludingDeleted); ok {
 		return scanner.ScanIncludingDeleted(ctx, ns, f)
 	}
@@ -1304,7 +1314,7 @@ func docHasPrefixMatch(idx *fts.Index, docID uint32, prefix string) bool {
 // executeCompositeQuery executes a composite rank_by query.
 // Supports Sum, Max, Product operators and filter-based boosting.
 // Documents with zero score are excluded from results.
-func (h *Handler) executeCompositeQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
+func (h *Handler) executeCompositeQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
 	if h.tailStore == nil {
 		return nil, nil
 	}
@@ -1314,7 +1324,13 @@ func (h *Handler) executeCompositeQuery(ctx context.Context, ns string, loaded *
 	}
 
 	// Scan documents from tail (filtered if needed)
-	docs, err := h.tailStore.Scan(ctx, ns, f)
+	var docs []*tail.Document
+	var err error
+	if tailByteCap > 0 {
+		docs, err = h.tailStore.ScanWithByteLimit(ctx, ns, f, tailByteCap)
+	} else {
+		docs, err = h.tailStore.Scan(ctx, ns, f)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2038,9 +2054,9 @@ func (h *Handler) executeSubQuery(ctx context.Context, ns string, loaded *namesp
 		case RankByAttr:
 			rows, err = h.executeAttrQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByBM25:
-			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req)
+			rows, err = h.executeBM25Query(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		case RankByComposite:
-			rows, err = h.executeCompositeQuery(ctx, ns, loaded, parsed, f, req)
+			rows, err = h.executeCompositeQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		}
 		if err != nil {
 			return nil, err

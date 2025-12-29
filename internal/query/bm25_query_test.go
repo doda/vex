@@ -56,11 +56,11 @@ func (m *mockTailStoreForBM25) Close() error {
 
 func TestBM25RankByParsing(t *testing.T) {
 	tests := []struct {
-		name        string
-		rankBy      any
-		wantErr     bool
-		wantField   string
-		wantQuery   string
+		name      string
+		rankBy    any
+		wantErr   bool
+		wantField string
+		wantQuery string
 	}{
 		{
 			name:      "valid BM25 query",
@@ -191,7 +191,7 @@ func TestBM25QueryExecution(t *testing.T) {
 			QueryText: "fox",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -231,7 +231,7 @@ func TestBM25QueryExecution(t *testing.T) {
 			QueryText: "fox",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -267,7 +267,7 @@ func TestBM25QueryExecution(t *testing.T) {
 			QueryText: "unicorn", // Not in any document
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -298,7 +298,7 @@ func TestBM25QueryExecution(t *testing.T) {
 			QueryText: "hello",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -335,7 +335,7 @@ func TestBM25QueryExecution(t *testing.T) {
 			QueryText: "document", // Appears in docs 3 and 4
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 1})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 1}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -365,7 +365,7 @@ func TestBM25QueryExecution(t *testing.T) {
 			QueryText: "", // Empty query
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -388,7 +388,7 @@ func TestBM25QueryExecution(t *testing.T) {
 			QueryText: "fox",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -531,7 +531,7 @@ func TestBM25PrefixQuery(t *testing.T) {
 			LastAsPrefix: true,
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -564,7 +564,7 @@ func TestBM25PrefixQuery(t *testing.T) {
 			LastAsPrefix: true,
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -605,7 +605,7 @@ func TestBM25PrefixQuery(t *testing.T) {
 			LastAsPrefix: true,
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -645,7 +645,7 @@ func TestBM25PrefixQuery(t *testing.T) {
 			QueryText:    "hel",
 			LastAsPrefix: true,
 		}
-		rows1, _ := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed1, nil, &QueryRequest{Limit: 10})
+		rows1, _ := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed1, nil, &QueryRequest{Limit: 10}, 0)
 		if len(rows1) != 1 {
 			t.Errorf("expected 1 result for 'hel', got %d", len(rows1))
 		}
@@ -657,7 +657,7 @@ func TestBM25PrefixQuery(t *testing.T) {
 			QueryText:    "hello wor",
 			LastAsPrefix: true,
 		}
-		rows2, _ := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed2, nil, &QueryRequest{Limit: 10})
+		rows2, _ := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed2, nil, &QueryRequest{Limit: 10}, 0)
 		if len(rows2) != 1 {
 			t.Errorf("expected 1 result for 'hello wor', got %d", len(rows2))
 		}
@@ -685,7 +685,7 @@ func TestBM25PrefixQuery(t *testing.T) {
 			LastAsPrefix: false,
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

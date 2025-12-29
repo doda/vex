@@ -2347,7 +2347,7 @@
       "Run eventual BM25 query with tail larger than 128MiB and verify cap is enforced",
       "Run eventual composite rank_by query and verify the same cap behavior"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/query/handler.go"
     ]

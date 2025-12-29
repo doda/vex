@@ -397,11 +397,13 @@ func TestStrongQueryNoRefreshWhenFullyIndexed(t *testing.T) {
 
 // mockTailStoreWithByteLimit is a mock that tracks byte limit parameters for eventual consistency testing.
 type mockTailStoreWithByteLimit struct {
-	docs               []*tail.Document
-	scanByteLimit      int64
-	vectorByteLimit    int64
-	scanWithLimitCall  bool
-	vectorWithLimitCall bool
+	docs                         []*tail.Document
+	scanByteLimit                int64
+	vectorByteLimit              int64
+	scanIncludingDeletedLimit    int64
+	scanWithLimitCall            bool
+	vectorWithLimitCall          bool
+	scanIncludingDeletedWithCall bool
 }
 
 func (m *mockTailStoreWithByteLimit) Refresh(ctx context.Context, ns string, afterSeq, upToSeq uint64) error {
@@ -415,6 +417,12 @@ func (m *mockTailStoreWithByteLimit) Scan(ctx context.Context, ns string, f *fil
 func (m *mockTailStoreWithByteLimit) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {
 	m.scanWithLimitCall = true
 	m.scanByteLimit = byteLimitBytes
+	return m.docs, nil
+}
+
+func (m *mockTailStoreWithByteLimit) ScanIncludingDeletedWithByteLimit(ctx context.Context, ns string, f *filter.Filter, byteLimitBytes int64) ([]*tail.Document, error) {
+	m.scanIncludingDeletedWithCall = true
+	m.scanIncludingDeletedLimit = byteLimitBytes
 	return m.docs, nil
 }
 
@@ -574,7 +582,7 @@ func TestEventualSearchesOnly128MiBOfTail(t *testing.T) {
 
 	mockTail := &mockTailStoreWithByteLimit{
 		docs: []*tail.Document{
-			{ID: document.NewU64ID(1), Attributes: map[string]any{"name": "doc1"}, Vector: []float32{1.0, 0.0}},
+			{ID: document.NewU64ID(1), Attributes: map[string]any{"name": "doc1", "content": "hello world"}, Vector: []float32{1.0, 0.0}},
 		},
 	}
 
@@ -621,6 +629,50 @@ func TestEventualSearchesOnly128MiBOfTail(t *testing.T) {
 		}
 		if mockTail.vectorByteLimit != EventualTailCapBytes {
 			t.Errorf("expected byte limit %d, got %d", EventualTailCapBytes, mockTail.vectorByteLimit)
+		}
+	})
+
+	t.Run("eventual BM25 query uses byte-limited scan including deletes", func(t *testing.T) {
+		mockTail.scanIncludingDeletedWithCall = false
+		mockTail.scanIncludingDeletedLimit = 0
+
+		req := &QueryRequest{
+			RankBy:      []any{"content", "BM25", "hello"},
+			Limit:       10,
+			Consistency: "eventual",
+		}
+		_, err := h.Handle(ctx, "test-ns", req)
+		if err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+
+		if !mockTail.scanIncludingDeletedWithCall {
+			t.Error("expected ScanIncludingDeletedWithByteLimit to be called for eventual BM25")
+		}
+		if mockTail.scanIncludingDeletedLimit != EventualTailCapBytes {
+			t.Errorf("expected byte limit %d, got %d", EventualTailCapBytes, mockTail.scanIncludingDeletedLimit)
+		}
+	})
+
+	t.Run("eventual composite query uses byte-limited scan", func(t *testing.T) {
+		mockTail.scanWithLimitCall = false
+		mockTail.scanByteLimit = 0
+
+		req := &QueryRequest{
+			RankBy:      []any{"Sum", []any{[]any{"content", "BM25", "hello"}}},
+			Limit:       10,
+			Consistency: "eventual",
+		}
+		_, err := h.Handle(ctx, "test-ns", req)
+		if err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+
+		if !mockTail.scanWithLimitCall {
+			t.Error("expected ScanWithByteLimit to be called for eventual composite queries")
+		}
+		if mockTail.scanByteLimit != EventualTailCapBytes {
+			t.Errorf("expected byte limit %d, got %d", EventualTailCapBytes, mockTail.scanByteLimit)
 		}
 	})
 

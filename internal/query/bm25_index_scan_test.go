@@ -210,7 +210,7 @@ func TestBM25IndexScan(t *testing.T) {
 			QueryText: "cats",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -243,7 +243,7 @@ func TestBM25IndexScan(t *testing.T) {
 			QueryText: "cats",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -288,7 +288,7 @@ func TestBM25IndexScan(t *testing.T) {
 			QueryText: "cats",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -324,7 +324,7 @@ func TestBM25IndexScan(t *testing.T) {
 			QueryText: "cats",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -350,7 +350,7 @@ func TestBM25IndexScan(t *testing.T) {
 			QueryText: "cats",
 		}
 
-		rows, err := handlerNoTail.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handlerNoTail.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -429,7 +429,7 @@ func TestBM25IndexScanDeduplication(t *testing.T) {
 			QueryText: "cats",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -469,7 +469,7 @@ func TestBM25IndexScanDeduplication(t *testing.T) {
 			QueryText: "cats",
 		}
 
-		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

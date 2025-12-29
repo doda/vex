@@ -120,9 +120,9 @@ type Config struct {
 // DefaultConfig returns the default tail store configuration.
 func DefaultConfig() Config {
 	return Config{
-		MaxRAMBytes:          256 * 1024 * 1024,  // 256 MB
+		MaxRAMBytes:          256 * 1024 * 1024,      // 256 MB
 		MaxNVMeBytes:         2 * 1024 * 1024 * 1024, // 2 GB
-		EventualTailCapBytes: 128 * 1024 * 1024,  // 128 MiB
+		EventualTailCapBytes: 128 * 1024 * 1024,      // 128 MiB
 		NVMeCachePath:        "/tmp/vex-tail",
 	}
 }
@@ -355,6 +355,54 @@ func (ts *TailStore) ScanIncludingDeleted(ctx context.Context, namespace string,
 
 	var results []*Document
 	for _, doc := range nt.documents {
+		if doc.Deleted {
+			results = append(results, doc)
+			continue
+		}
+
+		if f != nil {
+			filterDoc := buildFilterDoc(doc)
+			if !f.Eval(filterDoc) {
+				continue
+			}
+		}
+
+		results = append(results, doc)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].WalSeq != results[j].WalSeq {
+			return results[i].WalSeq > results[j].WalSeq
+		}
+		return results[i].SubBatchID > results[j].SubBatchID
+	})
+
+	return results, nil
+}
+
+// ScanIncludingDeletedWithByteLimit returns documents within the byte limit, including deleted ones.
+// Deleted docs are returned regardless of filter so they can shadow indexed versions.
+func (ts *TailStore) ScanIncludingDeletedWithByteLimit(ctx context.Context, namespace string, f *filter.Filter, byteLimitBytes int64) ([]*Document, error) {
+	if byteLimitBytes <= 0 {
+		return ts.ScanIncludingDeleted(ctx, namespace, f)
+	}
+
+	nt := ts.getNamespace(namespace)
+	if nt == nil {
+		return nil, nil
+	}
+
+	nt.mu.RLock()
+	defer nt.mu.RUnlock()
+
+	allowedSeqs := ts.getSeqsWithinByteLimit(nt, byteLimitBytes)
+
+	var results []*Document
+	for _, doc := range nt.documents {
+		if !allowedSeqs[doc.WalSeq] {
+			continue
+		}
+
 		if doc.Deleted {
 			results = append(results, doc)
 			continue

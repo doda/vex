@@ -56,10 +56,10 @@ func (m *mockTailStoreForRankClause) Close() error {
 
 func TestParseRankClause(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     any
-		wantType  RankClauseType
-		wantErr   bool
+		name     string
+		input    any
+		wantType RankClauseType
+		wantErr  bool
 	}{
 		{
 			name:     "simple BM25",
@@ -188,7 +188,7 @@ func TestSumOperator(t *testing.T) {
 		},
 	}
 
-	rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+	rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestMaxOperator(t *testing.T) {
 		},
 	}
 
-	rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+	rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestProductOperator(t *testing.T) {
 		},
 	}
 
-	rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+	rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestProductOperator(t *testing.T) {
 			},
 		}
 
-		rowsNoBoost, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsedNoBoost, nil, &QueryRequest{Limit: 10})
+		rowsNoBoost, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsedNoBoost, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -509,7 +509,7 @@ func TestFilterInRankBy(t *testing.T) {
 			},
 		}
 
-		rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -556,7 +556,7 @@ func TestFilterInRankBy(t *testing.T) {
 			},
 		}
 
-		rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -628,7 +628,7 @@ func TestNestedCompositeOperators(t *testing.T) {
 			},
 		}
 
-		rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -663,7 +663,7 @@ func TestNestedCompositeOperators(t *testing.T) {
 			},
 		}
 
-		rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+		rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -917,7 +917,7 @@ func TestZeroScoreExclusion(t *testing.T) {
 		},
 	}
 
-	rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10})
+	rows, err := handler.executeCompositeQuery(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

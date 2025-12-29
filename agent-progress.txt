@@ -967,3 +967,14 @@ KEY DEPENDENCIES:
 - Challenges: size-triggered flushes could bypass rate limit between batches.
 - Resolution: serialized per-namespace commits and delayed flush until next window.
 - Follow-ups: none.
+[2025-12-29T18:30:00Z] Completed query-eventual-tail-cap-bm25-composite: PASS
+- Implemented byte-limited tail scan for BM25 (including deletes) and composite rank_by queries under eventual consistency.
+- Added TailStore support for ScanIncludingDeletedWithByteLimit and wired handler to use tail cap in BM25/composite paths.
+- Added eventual BM25/composite tail-cap assertions in consistency tests.
+- Files changed: internal/query/handler.go.
+- Files changed: internal/tail/store.go.
+- Files changed: internal/query/consistency_test.go.
+- Files changed: internal/query/bm25_query_test.go.
+- Files changed: internal/query/bm25_index_scan_test.go, internal/query/rank_clause_test.go.
+- Tests: /usr/local/go/bin/go test ./internal/query -run EventualSearchesOnly128MiBOfTail -count=1 (pass); ./init.sh (pass).
+- Challenges: none.
