@@ -2093,6 +2093,6 @@
       "Verify optional reclustering during compaction",
       "Test compaction runs in background"
     ],
-    "passes": false
+    "passes": true
   }
 ]

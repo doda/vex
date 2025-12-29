@@ -775,3 +775,11 @@ KEY DEPENDENCIES:
 - Issues found: float16 conversion exponent underflow; resolved by using signed exponent math.
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-29T00:13:47Z] Completed segment-compaction: Re-verify segment compaction fixes
+- Reviewed staged changes in `internal/index/compactor.go`, `internal/index/compactor_test.go`, and `internal/vector/ivf.go`.
+- Verified compactor now honors recluster flag, preserves NumericID, and writes docs column for merged segments.
+- Confirmed IVF extraction helpers support compaction reads from IVF-only segments.
+- Simplicity check: removed unused IVF helper APIs that were not exercised by compaction.
+- Issues found: unnecessary unused public helpers added in `internal/vector/ivf.go`; resolved by removing them.
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

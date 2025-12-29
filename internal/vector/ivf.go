@@ -155,7 +155,7 @@ func (b *IVFBuilder) Count() int {
 	return len(b.docIDs)
 }
 
-// Build builds the IVF index from the added vectors.
+// Build builds the IVF index from the added vectors using full k-means clustering.
 func (b *IVFBuilder) Build() (*IVFIndex, error) {
 	n := len(b.docIDs)
 	if n == 0 {
@@ -172,6 +172,55 @@ func (b *IVFBuilder) Build() (*IVFIndex, error) {
 	centroids, assignments, err := kmeans(b.vectors, b.dims, nClusters, b.maxIter, b.tolerance, b.metric)
 	if err != nil {
 		return nil, fmt.Errorf("k-means clustering failed: %w", err)
+	}
+
+	// Build cluster data
+	clusterOffsets, clusterData := b.buildClusterData(nClusters, assignments)
+
+	return &IVFIndex{
+		Dims:           b.dims,
+		Metric:         b.metric,
+		NClusters:      nClusters,
+		Centroids:      centroids,
+		ClusterOffsets: clusterOffsets,
+		ClusterData:    clusterData,
+	}, nil
+}
+
+// BuildWithSinglePass builds the IVF index using single-pass assignment.
+// This is faster than full k-means as it only does initial centroid selection
+// and one assignment pass, without iterative centroid updates.
+// Use this when speed is more important than optimal cluster quality.
+func (b *IVFBuilder) BuildWithSinglePass() (*IVFIndex, error) {
+	n := len(b.docIDs)
+	if n == 0 {
+		return nil, ErrNoVectors
+	}
+
+	// Adjust number of clusters if we have fewer vectors
+	nClusters := b.nClusters
+	if n < nClusters {
+		nClusters = n
+	}
+
+	// Initialize centroids using k-means++ style initialization
+	centroids := initCentroids(b.vectors, b.dims, nClusters, b.metric)
+
+	// Single-pass assignment: assign each vector to nearest centroid (no iteration)
+	assignments := make([]int, n)
+	for i := 0; i < n; i++ {
+		vec := b.vectors[i*b.dims : (i+1)*b.dims]
+		minDist := float32(1e38) // Large value
+		minCluster := 0
+		for j := 0; j < nClusters; j++ {
+			centroid := centroids[j*b.dims : (j+1)*b.dims]
+			dist := computeDistance(vec, centroid, b.metric)
+			if dist < minDist {
+				minDist = dist
+				minCluster = j
+			}
+		}
+		assignments[i] = minCluster
 	}
 
 	// Build cluster data
@@ -651,4 +700,83 @@ func (idx *IVFIndex) GetClusterVectors(clusterID int) (docIDs []uint64, vectors 
 	}
 
 	return docIDs, vectors, nil
+}
+
+// IVFDocument represents a document extracted from an IVF index.
+type IVFDocument struct {
+	ID     uint64
+	Vector []float32
+}
+
+// LoadCentroidsFromBytes parses centroids header from byte slice.
+// Returns an IVFIndex with only centroids data loaded.
+func LoadCentroidsFromBytes(data []byte) (*IVFIndex, error) {
+	if len(data) == 0 {
+		return nil, ErrInvalidIVFFormat
+	}
+
+	r := bytes.NewReader(data)
+	dims, nClusters, metric, centroids, err := ReadCentroidsFile(r)
+	if err != nil {
+		return nil, err
+	}
+
+	return &IVFIndex{
+		Dims:      dims,
+		NClusters: nClusters,
+		Metric:    metric,
+		Centroids: centroids,
+	}, nil
+}
+
+// ExtractDocuments extracts all documents from IVF cluster data.
+// The offsetsData and clusterData parameters are the raw bytes from storage.
+func (idx *IVFIndex) ExtractDocuments(offsetsData, clusterData []byte) ([]IVFDocument, error) {
+	// Parse offsets
+	offsets, err := ReadClusterOffsetsFile(bytes.NewReader(offsetsData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse cluster offsets: %w", err)
+	}
+
+	// Calculate total document count
+	var totalDocs int
+	for _, o := range offsets {
+		totalDocs += int(o.DocCount)
+	}
+
+	docs := make([]IVFDocument, 0, totalDocs)
+
+	// Extract documents from each cluster
+	for clusterID, offset := range offsets {
+		if offset.DocCount == 0 {
+			continue
+		}
+		if offset.Offset+offset.Length > uint64(len(clusterData)) {
+			return nil, fmt.Errorf("cluster %d data out of bounds", clusterID)
+		}
+
+		data := clusterData[offset.Offset : offset.Offset+offset.Length]
+		reader := bytes.NewReader(data)
+
+		for i := 0; i < int(offset.DocCount); i++ {
+			var docID uint64
+			if err := binary.Read(reader, binary.LittleEndian, &docID); err != nil {
+				return nil, fmt.Errorf("failed to read doc ID in cluster %d: %w", clusterID, err)
+			}
+
+			vec := make([]float32, idx.Dims)
+			for j := 0; j < idx.Dims; j++ {
+				if err := binary.Read(reader, binary.LittleEndian, &vec[j]); err != nil {
+					return nil, fmt.Errorf("failed to read vector in cluster %d: %w", clusterID, err)
+				}
+			}
+
+			docs = append(docs, IVFDocument{
+				ID:     docID,
+				Vector: vec,
+			})
+		}
+	}
+
+	return docs, nil
 }
