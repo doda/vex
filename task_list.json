@@ -2746,7 +2746,7 @@
       "Create a namespace with euclidean_squared, run indexing, and verify IVF config stores/uses that metric",
       "Run vector queries and verify distances match euclidean_squared expectations"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/indexer/l0_builder.go"
