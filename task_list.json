@@ -2592,5 +2592,251 @@
     "scope": [
       "internal/logging/middleware.go"
     ]
+  },
+  {
+    "id": "query-mode-objectstore-init",
+    "category": "functional",
+    "description": "Initialize object store and real namespace state in query-only mode so HTTP endpoints operate on durable storage instead of fallback/test behavior.",
+    "steps": [
+      "Start `vex query` and verify it loads object store config and can read/write namespace state.json",
+      "Run a write+query roundtrip via the query-only server and confirm data persists in object storage"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "cmd/vex/query"
+    ]
+  },
+  {
+    "id": "enforce-bearer-auth-required",
+    "category": "security",
+    "description": "Require Bearer auth for all API endpoints even when AuthToken is unset, returning 401/403 per spec instead of allowing anonymous access.",
+    "steps": [
+      "Start server with empty AuthToken and confirm requests without Authorization header are rejected",
+      "Start server with AuthToken set and confirm only matching Bearer token is accepted"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "pkg/api/router.go"
+    ]
+  },
+  {
+    "id": "proxy-gzip-safety",
+    "category": "api",
+    "description": "Prevent double gzip compression and header mismatches when proxying responses, ensuring gzip is applied exactly once based on client Accept-Encoding.",
+    "steps": [
+      "Proxy a gzip-capable request and verify Content-Encoding is set only once with correct body",
+      "Proxy a non-gzip request and confirm the body is uncompressed and headers are consistent"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "pkg/api/router.go",
+      "internal/routing/proxy.go"
+    ]
+  },
+  {
+    "id": "filter-conditional-copy-snapshot-full",
+    "category": "functional",
+    "description": "Evaluate filter-based writes, conditional writes, and copy_from_namespace against a full namespace snapshot (indexed + tail) rather than TailStore-only.",
+    "steps": [
+      "Create indexed data and verify delete_by_filter/patch_by_filter affect indexed docs",
+      "Run conditional writes against indexed docs and verify conditions are evaluated correctly",
+      "Run copy_from_namespace and verify all indexed docs are copied"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/write"
+    ]
+  },
+  {
+    "id": "wal-putifabsent-conflict-retry",
+    "category": "functional",
+    "description": "Handle WAL PutIfAbsent conflicts and state CAS retries without advancing state to the wrong WAL key, enforcing seq alignment under concurrency.",
+    "steps": [
+      "Simulate concurrent writers hitting the same seq and verify state.json only advances to the winning WAL object",
+      "Verify a PutIfAbsent conflict does not update state.json with a mismatched wal key"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/write",
+      "internal/wal"
+    ]
+  },
+  {
+    "id": "test-filter-conditional-copy-indexed",
+    "category": "test",
+    "description": "Add tests that exercise filter/conditional/copy behaviors against indexed segments (not just tail) to validate full-snapshot semantics.",
+    "steps": [
+      "Create indexed segments and test delete_by_filter/patch_by_filter on indexed docs",
+      "Test conditional upsert/patch/delete against indexed docs",
+      "Test copy_from_namespace over indexed source data"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/write"
+    ]
+  },
+  {
+    "id": "query-filter-bitmaps-all-segments",
+    "category": "functional",
+    "description": "Load and merge filter bitmap indexes across all segments so filtered queries include matches from every indexed segment.",
+    "steps": [
+      "Index data into multiple segments and run filtered queries that match only later segments",
+      "Verify results include matches from all segments and tail"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/query/handler.go"
+    ]
+  },
+  {
+    "id": "indexer-include-nonvector-docs",
+    "category": "functional",
+    "description": "Indexer must materialize non-vector upserts into doc segments so non-vector documents remain queryable after WAL tail advances.",
+    "steps": [
+      "Write documents without vectors, run indexing, and confirm they appear in indexed doc storage",
+      "Advance WAL tail past indexed_wal_seq and verify the docs are still returned by queries"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/indexer/l0_builder.go"
+    ]
+  },
+  {
+    "id": "indexer-apply-patch-mutations",
+    "category": "functional",
+    "description": "Apply patch mutations (including filter-based patches) during segment build so indexed segments reflect updates.",
+    "steps": [
+      "Write docs, apply patch_rows/patch_by_filter, run indexing, and verify indexed results reflect patched fields",
+      "Confirm patched docs stay updated after tail advances"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/indexer/l0_builder.go"
+    ]
+  },
+  {
+    "id": "indexer-publish-filter-artifacts",
+    "category": "functional",
+    "description": "Build and publish filter index artifacts (filters.<attr>.rbm) in index segments for filterable attributes.",
+    "steps": [
+      "Enable filterable attributes, run indexing, and verify filter artifacts are present in segment storage",
+      "Run filtered queries and confirm they use the published filter artifacts"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/indexer/l0_builder.go",
+      "internal/index"
+    ]
+  },
+  {
+    "id": "indexer-distance-metric-per-namespace",
+    "category": "functional",
+    "description": "Use namespace state distance_metric when building IVF segments so euclidean_squared namespaces are indexed correctly.",
+    "steps": [
+      "Create a namespace with euclidean_squared, run indexing, and verify IVF config stores/uses that metric",
+      "Run vector queries and verify distances match euclidean_squared expectations"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/indexer/l0_builder.go"
+    ]
+  },
+  {
+    "id": "compaction-publish-manifest",
+    "category": "functional",
+    "description": "Persist compaction output by publishing new manifests and updating state.json, with retention-based cleanup of obsolete segments.",
+    "steps": [
+      "Run compaction and verify a new manifest is written and state.json is updated",
+      "Verify queries read compacted segments and old segments are eligible for GC after retention"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/index/compactor.go",
+      "internal/index"
+    ]
+  },
+  {
+    "id": "test-indexer-nonvector-patch-filter",
+    "category": "test",
+    "description": "Add indexer tests covering non-vector docs, patch mutations, and filter index artifact creation.",
+    "steps": [
+      "Test indexing of non-vector-only docs",
+      "Test indexing after patch mutations",
+      "Test filter artifact creation for filterable attributes"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/indexer",
+      "internal/index"
+    ]
+  },
+  {
+    "id": "tailstore-spill-and-ram-evict",
+    "category": "performance",
+    "description": "Implement TailStore RAM limits with spill-to-NVMe and eviction so tail materialization respects tiered storage.",
+    "steps": [
+      "Configure a low RAM cap, ingest WAL tail, and verify spill files are created on NVMe",
+      "Verify RAM usage stays within cap while strong queries still access full tail via spill"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/tail/store.go"
+    ]
+  },
+  {
+    "id": "tailstore-strong-read-completeness",
+    "category": "functional",
+    "description": "Ensure tail guardrails never drop committed WAL entries for strong reads; spill or fetch from object storage instead of rejecting.",
+    "steps": [
+      "Enable guardrails with low per-namespace cap and verify strong queries still include all committed WAL entries",
+      "Verify tail data beyond caps is served via spill/object store rather than dropped"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/tail/store.go"
+    ]
+  },
+  {
+    "id": "metrics-cache-hits-per-namespace",
+    "category": "infra",
+    "description": "Add per-namespace cache hit/miss metrics labels to meet observability requirements.",
+    "steps": [
+      "Record cache hits/misses for multiple namespaces and verify metrics include namespace labels",
+      "Confirm metrics still aggregate correctly by cache_type"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/metrics/metrics.go"
+    ]
+  },
+  {
+    "id": "logging-request-metrics-final",
+    "category": "infra",
+    "description": "Capture RequestMetrics after handlers run so cache_temperature and query_execution_ms fields are logged correctly.",
+    "steps": [
+      "Run a query that sets cache_temperature and query_execution_ms and verify logs contain updated values",
+      "Confirm server_total_ms remains accurate"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/logging/middleware.go"
+    ]
   }
 ]
