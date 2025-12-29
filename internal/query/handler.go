@@ -688,7 +688,25 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 			}
 		}
 	}
-	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq, indexDocIDs)
+	var segmentStates map[string]segmentDocState
+	if len(indexResults) > 0 && h.indexReader != nil {
+		indexedDocs, err := h.indexReader.LoadSegmentDocs(ctx, loaded.State.Index.ManifestKey)
+		if err == nil && len(indexedDocs) > 0 {
+			segmentStates = make(map[string]segmentDocState, len(indexedDocs))
+			for _, doc := range indexedDocs {
+				if doc.ID == "" {
+					continue
+				}
+				if existing, ok := segmentStates[doc.ID]; !ok || doc.WALSeq > existing.walSeq {
+					segmentStates[doc.ID] = segmentDocState{
+						walSeq:  doc.WALSeq,
+						deleted: doc.Deleted,
+					}
+				}
+			}
+		}
+	}
+	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq, indexDocIDs, segmentStates)
 	return rows, nil
 }
 
@@ -764,7 +782,12 @@ func (h *Handler) searchIndexWithFilter(ctx context.Context, ns string, loaded *
 // 2. Index results have WAL seq <= indexedWALSeq (when the index was built)
 // 3. For duplicate doc IDs in index results, we keep the first occurrence (they should be unique in a well-formed index)
 // 4. Tombstones in tail exclude documents from results
-func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64, indexDocIDs map[uint64]document.ID) []Row {
+type segmentDocState struct {
+	walSeq  uint64
+	deleted bool
+}
+
+func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64, indexDocIDs map[uint64]document.ID, segmentStates map[string]segmentDocState) []Row {
 	// Use deduplicator to track tail documents for proper deduplication.
 	// Tail always has the authoritative version (higher WAL seq than index).
 	dedup := NewDeduplicator()
@@ -823,6 +846,12 @@ func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResult
 			// The doc is either updated (keep tail version) or deleted (skip entirely)
 			// Deleted docs are already excluded from docDistances above
 			continue
+		}
+
+		if segmentStates != nil {
+			if state, ok := segmentStates[idStr]; ok && state.deleted {
+				continue
+			}
 		}
 
 		// Add to results - doc not in tail so index version is current

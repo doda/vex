@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -560,7 +560,7 @@ func (w *SegmentWriter) writeObject(ctx context.Context, key string, data []byte
 	var opts *objectstore.PutOptions
 	if w.checksum {
 		hash := sha256.Sum256(data)
-		checksum := hex.EncodeToString(hash[:])
+		checksum := base64.StdEncoding.EncodeToString(hash[:])
 		opts = &objectstore.PutOptions{Checksum: checksum}
 	}
 

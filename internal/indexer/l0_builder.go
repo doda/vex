@@ -90,8 +90,8 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 
 	// Extract documents with vectors from WAL entries
 	docs, dims := extractVectorDocuments(entries)
-	if len(docs) == 0 || dims == 0 {
-		// No vectors in this WAL range, just track the bytes processed
+	if len(docs) == 0 {
+		// No vectors or tombstones in this WAL range, just track the bytes processed
 		return &WALProcessResult{
 			BytesIndexed:       totalBytes,
 			ProcessedWALSeq:    lastSeq,
@@ -138,6 +138,7 @@ type vectorDocument struct {
 	walSeq    uint64
 	vec       []float32
 	attrs     map[string]any
+	deleted   bool
 }
 
 // extractVectorDocuments extracts documents with vectors from WAL entries.
@@ -164,7 +165,12 @@ func extractVectorDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 
 				switch mutation.Type {
 				case wal.MutationType_MUTATION_TYPE_DELETE:
-					delete(docMap, docKey)
+					docMap[docKey] = &vectorDocument{
+						id:      docID,
+						idKey:   docKey,
+						walSeq:  entry.Seq,
+						deleted: true,
+					}
 
 				case wal.MutationType_MUTATION_TYPE_UPSERT:
 					if len(mutation.Vector) > 0 && mutation.VectorDims > 0 {
@@ -178,11 +184,12 @@ func extractVectorDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 								attrs[name] = attributeValueToAny(value)
 							}
 							docMap[docKey] = &vectorDocument{
-								id:     docID,
-								idKey:  docKey,
-								walSeq: entry.Seq,
-								vec:    vec,
-								attrs:  attrs,
+								id:      docID,
+								idKey:   docKey,
+								walSeq:  entry.Seq,
+								vec:     vec,
+								attrs:   attrs,
+								deleted: false,
 							}
 						}
 					}
@@ -372,11 +379,30 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		return nil, nil
 	}
 
+	var vectorDocs []vectorDocument
+	tombstoneCount := int64(0)
+	liveCount := int64(0)
+	for _, doc := range docs {
+		if doc.deleted {
+			tombstoneCount++
+			continue
+		}
+		if len(doc.vec) == 0 {
+			continue
+		}
+		liveCount++
+		vectorDocs = append(vectorDocs, doc)
+	}
+
+	if len(vectorDocs) > 0 && dims == 0 {
+		return nil, fmt.Errorf("missing vector dimensions for segment build")
+	}
+
 	// Determine number of clusters
 	nClusters := p.config.NClusters
-	if nClusters <= 0 {
+	if nClusters <= 0 && len(vectorDocs) > 0 {
 		// Auto-calculate: sqrt(n), capped at 256
-		nClusters = intSqrt(len(docs))
+		nClusters = intSqrt(len(vectorDocs))
 		if nClusters < 1 {
 			nClusters = 1
 		}
@@ -384,21 +410,8 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 			nClusters = 256
 		}
 	}
-	if nClusters > len(docs) {
-		nClusters = len(docs)
-	}
-
-	// Build IVF index
-	builder := vector.NewIVFBuilderWithDType(dims, dtype, p.config.Metric, nClusters)
-	for _, doc := range docs {
-		if err := builder.AddVector(doc.numericID, doc.vec); err != nil {
-			return nil, fmt.Errorf("failed to add vector %s: %w", doc.id.String(), err)
-		}
-	}
-
-	ivfIndex, err := builder.Build()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build IVF index: %w", err)
+	if len(vectorDocs) > 0 && nClusters > len(vectorDocs) {
+		nClusters = len(vectorDocs)
 	}
 
 	// Generate segment ID and write IVF files
@@ -407,28 +420,48 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 
 	// Write centroids (small file, cacheable in RAM)
 	var centroidsBuf bytes.Buffer
-	if err := ivfIndex.WriteCentroidsFile(&centroidsBuf); err != nil {
-		return nil, fmt.Errorf("failed to serialize centroids: %w", err)
-	}
-	centroidsKey, err := writer.WriteIVFCentroids(ctx, centroidsBuf.Bytes())
-	if err != nil {
-		return nil, fmt.Errorf("failed to write centroids: %w", err)
-	}
-
-	// Write cluster offsets (small file, cacheable)
 	var offsetsBuf bytes.Buffer
-	if err := ivfIndex.WriteClusterOffsetsFile(&offsetsBuf); err != nil {
-		return nil, fmt.Errorf("failed to serialize cluster offsets: %w", err)
-	}
-	offsetsKey, err := writer.WriteIVFClusterOffsets(ctx, offsetsBuf.Bytes())
-	if err != nil {
-		return nil, fmt.Errorf("failed to write cluster offsets: %w", err)
-	}
+	var ivfIndex *vector.IVFIndex
+	var centroidsKey string
+	var offsetsKey string
+	var clusterDataKey string
+	if len(vectorDocs) > 0 {
+		// Build IVF index
+		builder := vector.NewIVFBuilderWithDType(dims, dtype, p.config.Metric, nClusters)
+		for _, doc := range vectorDocs {
+			if err := builder.AddVector(doc.numericID, doc.vec); err != nil {
+				return nil, fmt.Errorf("failed to add vector %s: %w", doc.id.String(), err)
+			}
+		}
 
-	// Write cluster data (large file, range-read)
-	clusterDataKey, err := writer.WriteIVFClusterData(ctx, ivfIndex.GetClusterDataBytes())
-	if err != nil {
-		return nil, fmt.Errorf("failed to write cluster data: %w", err)
+		var err error
+		ivfIndex, err = builder.Build()
+		if err != nil {
+			return nil, fmt.Errorf("failed to build IVF index: %w", err)
+		}
+
+		if err := ivfIndex.WriteCentroidsFile(&centroidsBuf); err != nil {
+			return nil, fmt.Errorf("failed to serialize centroids: %w", err)
+		}
+		centroidsKey, err = writer.WriteIVFCentroids(ctx, centroidsBuf.Bytes())
+		if err != nil {
+			return nil, fmt.Errorf("failed to write centroids: %w", err)
+		}
+
+		// Write cluster offsets (small file, cacheable)
+		if err := ivfIndex.WriteClusterOffsetsFile(&offsetsBuf); err != nil {
+			return nil, fmt.Errorf("failed to serialize cluster offsets: %w", err)
+		}
+		offsetsKey, err = writer.WriteIVFClusterOffsets(ctx, offsetsBuf.Bytes())
+		if err != nil {
+			return nil, fmt.Errorf("failed to write cluster offsets: %w", err)
+		}
+
+		// Write cluster data (large file, range-read)
+		clusterDataKey, err = writer.WriteIVFClusterData(ctx, ivfIndex.GetClusterDataBytes())
+		if err != nil {
+			return nil, fmt.Errorf("failed to write cluster data: %w", err)
+		}
 	}
 
 	docColumns := make([]vectorDocColumn, 0, len(docs))
@@ -437,7 +470,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 			ID:         doc.id.String(),
 			NumericID:  doc.numericID,
 			WALSeq:     doc.walSeq,
-			Deleted:    false,
+			Deleted:    doc.deleted,
 			Attributes: doc.attrs,
 			Vector:     doc.vec,
 		})
@@ -458,8 +491,11 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	if bytesPerElement == 0 {
 		bytesPerElement = 4
 	}
-	vectorBytes := int64(len(docs) * dims * bytesPerElement)
-	totalBytes := int64(centroidsBuf.Len()) + int64(offsetsBuf.Len()) + int64(len(ivfIndex.GetClusterDataBytes())) + int64(len(docsData))
+	vectorBytes := int64(len(vectorDocs) * dims * bytesPerElement)
+	totalBytes := int64(len(docsData))
+	if ivfIndex != nil {
+		totalBytes += int64(centroidsBuf.Len()) + int64(offsetsBuf.Len()) + int64(len(ivfIndex.GetClusterDataBytes()))
+	}
 
 	segment := &index.Segment{
 		ID:          segID,
@@ -467,16 +503,22 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		StartWALSeq: startSeq,
 		EndWALSeq:   endSeq,
 		DocsKey:     docsKey,
-		IVFKeys: &index.IVFKeys{
-			CentroidsKey:      centroidsKey,
-			ClusterOffsetsKey: offsetsKey,
-			ClusterDataKey:    clusterDataKey,
-			NClusters:         ivfIndex.NClusters,
-			VectorCount:       len(docs),
-		},
+		IVFKeys: func() *index.IVFKeys {
+			if ivfIndex == nil {
+				return nil
+			}
+			return &index.IVFKeys{
+				CentroidsKey:      centroidsKey,
+				ClusterOffsetsKey: offsetsKey,
+				ClusterDataKey:    clusterDataKey,
+				NClusters:         ivfIndex.NClusters,
+				VectorCount:       len(vectorDocs),
+			}
+		}(),
 		Stats: index.SegmentStats{
-			RowCount:     int64(len(docs)),
-			LogicalBytes: vectorBytes + totalBytes,
+			RowCount:       liveCount,
+			LogicalBytes:   vectorBytes + totalBytes,
+			TombstoneCount: tombstoneCount,
 		},
 	}
 

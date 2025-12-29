@@ -309,6 +309,122 @@ func TestVectorIncrementalUpdates_Step2_IndexerFoldsTailToIVF(t *testing.T) {
 	})
 }
 
+func TestL0SegmentRecordsTombstones(t *testing.T) {
+	store := newMockStore()
+	stateMan := namespace.NewStateManager(store)
+
+	ctx := context.Background()
+	_, err := stateMan.Create(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to create namespace: %v", err)
+	}
+
+	docs := []vectorTestDoc{
+		{id: 1, vector: []float32{1.0, 0.0, 0.0, 0.0}},
+	}
+	_, data1 := createVectorWALEntry("test-ns", 1, docs)
+	store.mu.Lock()
+	store.objects["vex/namespaces/test-ns/wal/00000000000000000001.wal.zst"] = mockObject{data: data1, etag: "etag1"}
+	store.mu.Unlock()
+
+	loaded, err := stateMan.Load(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to load namespace: %v", err)
+	}
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, "vex/namespaces/test-ns/wal/00000000000000000001.wal.zst", int64(len(data1)), nil)
+	if err != nil {
+		t.Fatalf("Failed to advance WAL: %v", err)
+	}
+
+	idxer := New(store, stateMan, DefaultConfig(), nil)
+	processor := NewL0SegmentProcessor(store, stateMan, nil, idxer)
+
+	result, err := processor.ProcessWAL(ctx, "test-ns", 0, 1, loaded.State, loaded.ETag)
+	if err != nil {
+		t.Fatalf("ProcessWAL failed: %v", err)
+	}
+	if result == nil || !result.ManifestWritten {
+		t.Fatalf("expected manifest for initial segment")
+	}
+
+	deleteEntry := wal.NewWalEntry("test-ns", 2)
+	deleteBatch := wal.NewWriteSubBatch("req")
+	deleteBatch.AddDelete(&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 1}})
+	deleteEntry.SubBatches = append(deleteEntry.SubBatches, deleteBatch)
+
+	encoder, _ := wal.NewEncoder()
+	deleteResult, err := encoder.Encode(deleteEntry)
+	encoder.Close()
+	if err != nil {
+		t.Fatalf("failed to encode delete entry: %v", err)
+	}
+
+	store.mu.Lock()
+	store.objects["vex/namespaces/test-ns/wal/00000000000000000002.wal.zst"] = mockObject{data: deleteResult.Data, etag: "etag2"}
+	store.mu.Unlock()
+
+	loaded, err = stateMan.Load(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("Failed to reload namespace: %v", err)
+	}
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, "vex/namespaces/test-ns/wal/00000000000000000002.wal.zst", int64(len(deleteResult.Data)), nil)
+	if err != nil {
+		t.Fatalf("Failed to advance WAL for delete: %v", err)
+	}
+
+	result, err = processor.ProcessWAL(ctx, "test-ns", 1, 2, loaded.State, loaded.ETag)
+	if err != nil {
+		t.Fatalf("ProcessWAL failed: %v", err)
+	}
+	if result == nil || !result.ManifestWritten {
+		t.Fatalf("expected manifest for delete segment")
+	}
+
+	reader := index.NewReader(store, nil, nil)
+	manifest, err := reader.LoadManifest(ctx, result.ManifestKey)
+	if err != nil {
+		t.Fatalf("failed to load manifest: %v", err)
+	}
+	if manifest == nil || len(manifest.Segments) != 2 {
+		t.Fatalf("expected 2 segments in manifest")
+	}
+
+	var deleteSeg *index.Segment
+	for i := range manifest.Segments {
+		if manifest.Segments[i].EndWALSeq == 2 {
+			deleteSeg = &manifest.Segments[i]
+			break
+		}
+	}
+	if deleteSeg == nil {
+		t.Fatalf("expected delete segment in manifest")
+	}
+	if deleteSeg.Stats.TombstoneCount != 1 {
+		t.Errorf("expected tombstone_count=1, got %d", deleteSeg.Stats.TombstoneCount)
+	}
+	if deleteSeg.Stats.RowCount != 0 {
+		t.Errorf("expected row_count=0, got %d", deleteSeg.Stats.RowCount)
+	}
+	if deleteSeg.DocsKey == "" {
+		t.Error("expected docs_key to be set for tombstone segment")
+	}
+
+	segmentDocs, err := reader.LoadSegmentDocs(ctx, result.ManifestKey)
+	if err != nil {
+		t.Fatalf("failed to load segment docs: %v", err)
+	}
+	found := false
+	for _, doc := range segmentDocs {
+		if doc.ID == "1" && doc.Deleted && doc.WALSeq == 2 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected tombstone document in segment docs")
+	}
+}
+
 func TestIndexerSkipsMissingWALSegmentEnd(t *testing.T) {
 	store := newMockStore()
 	stateMan := namespace.NewStateManager(store)
@@ -572,8 +688,11 @@ func TestExtractVectorDocuments(t *testing.T) {
 
 		docs, _ := extractVectorDocuments([]*wal.WalEntry{entry1, entry2})
 
-		if len(docs) != 0 {
-			t.Errorf("expected 0 docs after delete, got %d", len(docs))
+		if len(docs) != 1 {
+			t.Fatalf("expected 1 doc after delete, got %d", len(docs))
+		}
+		if !docs[0].deleted {
+			t.Error("expected doc to be marked deleted")
 		}
 	})
 }

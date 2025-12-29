@@ -1068,3 +1068,19 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: indexer tests assumed u64 IDs; updated assertion to use document ID parsing.
 - Follow-ups: none.
+[2025-12-30T00:30:00Z] Completed indexer-tombstones: PASS
+- Implemented tombstone recording in L0 vector segments, including delete-only WAL ranges, and surfaced tombstones in segment stats.
+- Vector ANN merge now filters index results using latest segment tombstone state to prevent deleted docs from resurfacing.
+- Fixed SegmentWriter checksum encoding to base64 to match objectstore checksum expectations.
+- Files changed: internal/indexer/l0_builder.go.
+- Files changed: internal/query/handler.go.
+- Files changed: internal/index/segment.go.
+- Files changed: internal/indexer/vector_incremental_test.go.
+- Files changed: internal/query/vector_ann_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run TestL0SegmentRecordsTombstones -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/query -run TestVectorANNRespectsSegmentTombstones -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: memory object store checksum mismatch when writing segment objects.
+- Resolution: aligned SegmentWriter checksum encoding with base64 expectations.
+- Follow-ups: none.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/indexer"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/schema"
 	"github.com/vexsearch/vex/internal/tail"
@@ -129,6 +130,18 @@ func computeDistance(a, b []float32, metric tail.DistanceMetric) float64 {
 	}
 }
 
+func encodeTestVector(vec []float32) []byte {
+	buf := make([]byte, len(vec)*4)
+	for i, v := range vec {
+		bits := math.Float32bits(v)
+		buf[i*4] = byte(bits)
+		buf[i*4+1] = byte(bits >> 8)
+		buf[i*4+2] = byte(bits >> 16)
+		buf[i*4+3] = byte(bits >> 24)
+	}
+	return buf
+}
+
 func (m *vectorTestTailStore) GetDocument(ctx context.Context, ns string, id document.ID) (*tail.Document, error) {
 	return nil, nil
 }
@@ -211,6 +224,97 @@ func TestExhaustiveVectorSearch(t *testing.T) {
 	// Third result should be doc2 (90 degrees, distance ~1)
 	if resp.Rows[2].ID != uint64(2) {
 		t.Errorf("expected third result to be doc2, got %v", resp.Rows[2].ID)
+	}
+}
+
+func TestVectorANNRespectsSegmentTombstones(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+
+	ctx := context.Background()
+	_, err := stateMan.Create(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	entry := wal.NewWalEntry("test-ns", 1)
+	batch := wal.NewWriteSubBatch("req1")
+	vec := []float32{1.0, 0.0, 0.0, 0.0}
+	batch.AddUpsert(
+		&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 1}},
+		nil,
+		encodeTestVector(vec),
+		uint32(len(vec)),
+	)
+	entry.SubBatches = append(entry.SubBatches, batch)
+
+	encoder, _ := wal.NewEncoder()
+	encoded, err := encoder.Encode(entry)
+	encoder.Close()
+	if err != nil {
+		t.Fatalf("failed to encode WAL entry: %v", err)
+	}
+
+	key1 := "vex/namespaces/test-ns/wal/00000000000000000001.wal.zst"
+	if _, err := store.Put(ctx, key1, bytes.NewReader(encoded.Data), int64(len(encoded.Data)), nil); err != nil {
+		t.Fatalf("failed to write WAL entry: %v", err)
+	}
+
+	loaded, err := stateMan.Load(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("failed to load namespace: %v", err)
+	}
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, key1, int64(len(encoded.Data)), nil)
+	if err != nil {
+		t.Fatalf("failed to advance WAL: %v", err)
+	}
+
+	idxer := indexer.New(store, stateMan, indexer.DefaultConfig(), nil)
+	processor := indexer.NewL0SegmentProcessor(store, stateMan, nil, idxer)
+	if _, err := processor.ProcessWAL(ctx, "test-ns", 0, 1, loaded.State, loaded.ETag); err != nil {
+		t.Fatalf("failed to build initial segment: %v", err)
+	}
+
+	deleteEntry := wal.NewWalEntry("test-ns", 2)
+	deleteBatch := wal.NewWriteSubBatch("req2")
+	deleteBatch.AddDelete(&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 1}})
+	deleteEntry.SubBatches = append(deleteEntry.SubBatches, deleteBatch)
+
+	encoder, _ = wal.NewEncoder()
+	deleteEncoded, err := encoder.Encode(deleteEntry)
+	encoder.Close()
+	if err != nil {
+		t.Fatalf("failed to encode delete WAL: %v", err)
+	}
+
+	key2 := "vex/namespaces/test-ns/wal/00000000000000000002.wal.zst"
+	if _, err := store.Put(ctx, key2, bytes.NewReader(deleteEncoded.Data), int64(len(deleteEncoded.Data)), nil); err != nil {
+		t.Fatalf("failed to write delete WAL entry: %v", err)
+	}
+
+	loaded, err = stateMan.Load(ctx, "test-ns")
+	if err != nil {
+		t.Fatalf("failed to reload namespace: %v", err)
+	}
+	loaded, err = stateMan.AdvanceWAL(ctx, "test-ns", loaded.ETag, key2, int64(len(deleteEncoded.Data)), nil)
+	if err != nil {
+		t.Fatalf("failed to advance WAL for delete: %v", err)
+	}
+	if _, err := processor.ProcessWAL(ctx, "test-ns", 1, 2, loaded.State, loaded.ETag); err != nil {
+		t.Fatalf("failed to build delete segment: %v", err)
+	}
+
+	h := NewHandler(store, stateMan, nil)
+	req := &QueryRequest{
+		RankBy: []any{"vector", "ANN", []any{1.0, 0.0, 0.0, 0.0}},
+		Limit:  10,
+	}
+	resp, err := h.Handle(ctx, "test-ns", req)
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(resp.Rows) != 0 {
+		t.Fatalf("expected 0 rows after delete, got %d", len(resp.Rows))
 	}
 }
 

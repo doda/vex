@@ -2467,7 +2467,7 @@
       "Delete a doc that exists in older segments and verify it is excluded after indexing",
       "Inspect segment metadata to confirm tombstone persistence"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/indexer/l0_builder.go"
     ]
