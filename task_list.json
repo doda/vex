@@ -2494,7 +2494,7 @@
       "Patch and delete docs then rebuild FTS segment and verify search results reflect changes",
       "Verify tombstones are applied during segment build"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/fts/segment.go"
     ]

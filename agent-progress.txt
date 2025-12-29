@@ -1092,3 +1092,14 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-30T02:10:00Z] Completed fts-segment-honor-updates: PASS
+- Applied FTS segment updates for upserts, patches, and deletes with tombstone tracking.
+- Added field-level tracking to remove stale terms on updates and deletes.
+- Updated FTS segment tests to assert patch and delete effects.
+- Files changed: internal/fts/segment.go.
+- Files changed: internal/fts/segment_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/fts -run SegmentBuilder -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: avoided stale field tracking during upsert removal.
+- Resolution: removed cached field map and rely on ensureDocFields per update.
