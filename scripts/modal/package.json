@@ -1,0 +1,8 @@
+{
+  "name": "vex-modal-scripts",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "modal": "^0.5.6"
+  }
+}

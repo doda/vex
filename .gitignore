@@ -21,3 +21,6 @@ coverage.html
 
 # MinIO local dev
 /tmp/
+
+# Node
+node_modules/

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,77 +18,114 @@ import (
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
-// minioTestFixture contains the shared test setup for MinIO integration tests.
-type minioTestFixture struct {
+// s3TestFixture contains the shared test setup for S3-compatible integration tests.
+type s3TestFixture struct {
 	router   *api.Router
 	store    objectstore.Store
 	server   *httptest.Server
 	endpoint string
 }
 
-// skipIfNoMinio skips the test if MinIO is not available.
-func skipIfNoMinio(t *testing.T) {
-	t.Helper()
+const garageCredsPath = "/tmp/vex-garage/creds.env"
 
-	endpoint := os.Getenv("VEX_TEST_MINIO_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "http://localhost:9000"
+func getenvAny(keys ...string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
 	}
+	return ""
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint+"/minio/health/live", nil)
-	if err != nil {
-		t.Skipf("Skipping MinIO test: cannot create request: %v", err)
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Skipf("Skipping MinIO test: MinIO not available at %s: %v", endpoint, err)
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Skipf("Skipping MinIO test: MinIO health check failed with status %d", resp.StatusCode)
+func parseBoolEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
 	}
 }
 
-// newMinioFixture creates a new test fixture with MinIO as the object store.
-func newMinioFixture(t *testing.T, namespace string) *minioTestFixture {
+func loadGarageEnvFromFile(t *testing.T) {
 	t.Helper()
-	skipIfNoMinio(t)
 
-	endpoint := os.Getenv("VEX_TEST_MINIO_ENDPOINT")
+	if os.Getenv("VEX_TEST_S3_ACCESS_KEY") != "" || os.Getenv("VEX_TEST_MINIO_ACCESS_KEY") != "" {
+		return
+	}
+
+	data, err := os.ReadFile(garageCredsPath)
+	if err != nil {
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+		idx := strings.Index(line, "=")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		value := strings.TrimSpace(line[idx+1:])
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') ||
+				(value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		_ = os.Setenv(key, value)
+	}
+}
+
+// newS3Fixture creates a new test fixture with an S3-compatible object store.
+func newS3Fixture(t *testing.T, namespace string) *s3TestFixture {
+	t.Helper()
+	loadGarageEnvFromFile(t)
+
+	endpoint := getenvAny("VEX_TEST_S3_ENDPOINT", "VEX_TEST_MINIO_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://localhost:9000"
+		endpoint = "http://localhost:3900"
 	}
-	accessKey := os.Getenv("VEX_TEST_MINIO_ACCESS_KEY")
-	if accessKey == "" {
-		accessKey = "minioadmin"
+	accessKey := getenvAny("VEX_TEST_S3_ACCESS_KEY", "VEX_TEST_MINIO_ACCESS_KEY")
+	secretKey := getenvAny("VEX_TEST_S3_SECRET_KEY", "VEX_TEST_MINIO_SECRET_KEY")
+	if accessKey == "" || secretKey == "" {
+		t.Fatalf("missing object store credentials; run ./scripts/setup-garage.sh and source %s", garageCredsPath)
 	}
-	secretKey := os.Getenv("VEX_TEST_MINIO_SECRET_KEY")
-	if secretKey == "" {
-		secretKey = "minioadmin"
-	}
-	bucket := os.Getenv("VEX_TEST_MINIO_BUCKET")
+	bucket := getenvAny("VEX_TEST_S3_BUCKET", "VEX_TEST_MINIO_BUCKET")
 	if bucket == "" {
 		bucket = "vex"
 	}
+	region := getenvAny("VEX_TEST_S3_REGION", "VEX_TEST_MINIO_REGION")
+	if region == "" {
+		region = "garage"
+	}
+	useSSL := parseBoolEnv(getenvAny("VEX_TEST_S3_USE_SSL", "VEX_TEST_MINIO_USE_SSL"))
 
-	store, err := objectstore.New(objectstore.Config{
-		Type:      "minio",
+	s3Store, err := objectstore.NewS3Store(objectstore.S3Config{
 		Endpoint:  endpoint,
 		Bucket:    bucket,
 		AccessKey: accessKey,
 		SecretKey: secretKey,
-		Region:    "us-east-1",
-		UseSSL:    false,
+		Region:    region,
+		UseSSL:    useSSL,
 	})
 	if err != nil {
-		t.Fatalf("failed to create MinIO store: %v", err)
+		t.Fatalf("failed to create S3 store: %v", err)
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s3Store.EnsureBucket(ctx); err != nil {
+		t.Fatalf("failed to ensure bucket %q: %v", bucket, err)
+	}
+
+	store := objectstore.NewInstrumentedStore(s3Store)
 
 	cfg := &config.Config{}
 	router := api.NewRouter(cfg)
@@ -98,7 +136,7 @@ func newMinioFixture(t *testing.T, namespace string) *minioTestFixture {
 	// Create the test server
 	server := httptest.NewServer(router)
 
-	return &minioTestFixture{
+	return &s3TestFixture{
 		router:   router,
 		store:    store,
 		server:   server,
@@ -106,7 +144,7 @@ func newMinioFixture(t *testing.T, namespace string) *minioTestFixture {
 	}
 }
 
-func (f *minioTestFixture) close(t *testing.T) {
+func (f *s3TestFixture) close(t *testing.T) {
 	t.Helper()
 	if f.router != nil {
 		if err := f.router.Close(); err != nil {
@@ -118,7 +156,7 @@ func (f *minioTestFixture) close(t *testing.T) {
 	}
 }
 
-func (f *minioTestFixture) write(t *testing.T, ns string, data map[string]any) map[string]any {
+func (f *s3TestFixture) write(t *testing.T, ns string, data map[string]any) map[string]any {
 	t.Helper()
 
 	body, err := json.Marshal(data)
@@ -148,7 +186,7 @@ func (f *minioTestFixture) write(t *testing.T, ns string, data map[string]any) m
 	return result
 }
 
-func (f *minioTestFixture) query(t *testing.T, ns string, data map[string]any) map[string]any {
+func (f *s3TestFixture) query(t *testing.T, ns string, data map[string]any) map[string]any {
 	t.Helper()
 
 	body, err := json.Marshal(data)
@@ -178,7 +216,7 @@ func (f *minioTestFixture) query(t *testing.T, ns string, data map[string]any) m
 	return result
 }
 
-func (f *minioTestFixture) getMetadata(t *testing.T, ns string) map[string]any {
+func (f *s3TestFixture) getMetadata(t *testing.T, ns string) map[string]any {
 	t.Helper()
 
 	resp, err := http.Get(f.endpoint + "/v1/namespaces/" + ns + "/metadata")
@@ -203,10 +241,10 @@ func (f *minioTestFixture) getMetadata(t *testing.T, ns string) map[string]any {
 	return result
 }
 
-// TestMinioBasicCRUD tests basic CRUD operations with MinIO.
-func TestMinioBasicCRUD(t *testing.T) {
-	ns := fmt.Sprintf("minio-test-%d", time.Now().UnixNano())
-	fixture := newMinioFixture(t, ns)
+// TestObjectStoreBasicCRUD tests basic CRUD operations with an S3-compatible store.
+func TestObjectStoreBasicCRUD(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-test-%d", time.Now().UnixNano())
+	fixture := newS3Fixture(t, ns)
 	defer fixture.close(t)
 
 	// 1. Write documents
@@ -338,12 +376,12 @@ func TestMinioBasicCRUD(t *testing.T) {
 	})
 }
 
-// TestMinioPersistence tests that data persists across router restarts.
-func TestMinioPersistence(t *testing.T) {
-	ns := fmt.Sprintf("minio-persist-%d", time.Now().UnixNano())
+// TestObjectStorePersistence tests that data persists across router restarts.
+func TestObjectStorePersistence(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-persist-%d", time.Now().UnixNano())
 
 	// Create fixture and write data
-	fixture1 := newMinioFixture(t, ns)
+	fixture1 := newS3Fixture(t, ns)
 
 	// Write data
 	fixture1.write(t, ns, map[string]any{
@@ -367,8 +405,8 @@ func TestMinioPersistence(t *testing.T) {
 	// Close the first fixture
 	fixture1.close(t)
 
-	// Create a new fixture with the same MinIO backend
-	fixture2 := newMinioFixture(t, ns)
+	// Create a new fixture with the same backend
+	fixture2 := newS3Fixture(t, ns)
 	defer fixture2.close(t)
 
 	// Query should return the same data
