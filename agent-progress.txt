@@ -1250,3 +1250,15 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: gofmt unavailable in environment.
 - Resolution: kept edits formatted manually and limited changes to needed scope.
+[2025-12-30T06:10:00Z] Completed indexer-apply-patch-mutations: PASS
+- Implemented patch mutation application during L0 segment builds using base docs from existing manifests to preserve attributes/vectors.
+- Added indexer test covering patch_rows and patch_by_filter across multiple WAL segments with indexed snapshot verification.
+- Updated extractDocuments signature and patched vector incremental tests to pass nil base docs.
+- Files changed: internal/indexer/l0_builder.go.
+- Files changed: internal/indexer/patch_mutations_test.go.
+- Files changed: internal/indexer/vector_incremental_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run TestIndexerAppliesPatchMutations -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: needed to preserve existing attributes for patches across indexed segments.
+- Resolution: loaded base docs from manifest and merged patch fields before segment write.
