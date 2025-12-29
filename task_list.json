@@ -2117,7 +2117,7 @@
       "Index data, run a filtered vector query, and verify results include indexed docs",
       "Verify tail overlay still merges and dedups correctly"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/query/handler.go"
     ]

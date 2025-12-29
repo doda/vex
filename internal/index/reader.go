@@ -10,7 +10,9 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/vexsearch/vex/internal/cache"
+	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -561,6 +563,257 @@ func sortResultsByDistance(results []vector.IVFSearchResult) {
 			}
 		}
 	}
+}
+
+// LoadFilterIndexes loads filter bitmap indexes for a segment.
+// Returns a map of attribute name -> FilterIndex.
+func (r *Reader) LoadFilterIndexes(ctx context.Context, filterKeys []string) (map[string]*filter.FilterIndex, error) {
+	if len(filterKeys) == 0 {
+		return nil, nil
+	}
+
+	result := make(map[string]*filter.FilterIndex)
+	for _, key := range filterKeys {
+		data, err := r.loadObject(ctx, key)
+		if err != nil {
+			// Skip missing filter indexes
+			continue
+		}
+		idx, err := filter.Deserialize(data)
+		if err != nil {
+			continue
+		}
+		result[idx.Header().Attribute] = idx
+	}
+
+	return result, nil
+}
+
+// EvaluateFilterOnIndex evaluates a filter against filter bitmap indexes.
+// Returns a bitmap of matching row IDs (docIDs).
+func (r *Reader) EvaluateFilterOnIndex(f *filter.Filter, filterIndexes map[string]*filter.FilterIndex, totalDocs uint32) *roaring.Bitmap {
+	if f == nil || len(filterIndexes) == 0 {
+		return nil
+	}
+	return evaluateFilterBitmap(f, filterIndexes, totalDocs)
+}
+
+// evaluateFilterBitmap recursively evaluates filter conditions against bitmap indexes.
+func evaluateFilterBitmap(f *filter.Filter, indexes map[string]*filter.FilterIndex, totalDocs uint32) *roaring.Bitmap {
+	if f == nil {
+		return nil
+	}
+
+	switch f.Op {
+	case filter.OpAnd:
+		return evaluateAndBitmap(f.Children, indexes, totalDocs)
+	case filter.OpOr:
+		return evaluateOrBitmap(f.Children, indexes, totalDocs)
+	case filter.OpNot:
+		if len(f.Children) > 0 {
+			child := evaluateFilterBitmap(f.Children[0], indexes, totalDocs)
+			if child == nil {
+				return nil
+			}
+			// Create "all" bitmap and subtract
+			all := roaring.NewBitmap()
+			all.AddRange(0, uint64(totalDocs))
+			all.AndNot(child)
+			return all
+		}
+		return nil
+	default:
+		return evaluateLeafBitmap(f, indexes, totalDocs)
+	}
+}
+
+func evaluateAndBitmap(children []*filter.Filter, indexes map[string]*filter.FilterIndex, totalDocs uint32) *roaring.Bitmap {
+	if len(children) == 0 {
+		return nil
+	}
+
+	var result *roaring.Bitmap
+	for _, child := range children {
+		childBitmap := evaluateFilterBitmap(child, indexes, totalDocs)
+		if childBitmap == nil {
+			// If any child cannot be evaluated with indexes, return nil
+			return nil
+		}
+		if result == nil {
+			result = childBitmap
+		} else {
+			result.And(childBitmap)
+		}
+		// Early exit if result is empty
+		if result.IsEmpty() {
+			return result
+		}
+	}
+	return result
+}
+
+func evaluateOrBitmap(children []*filter.Filter, indexes map[string]*filter.FilterIndex, totalDocs uint32) *roaring.Bitmap {
+	if len(children) == 0 {
+		return nil
+	}
+
+	result := roaring.NewBitmap()
+	for _, child := range children {
+		childBitmap := evaluateFilterBitmap(child, indexes, totalDocs)
+		if childBitmap == nil {
+			// If any child cannot be evaluated with indexes, return nil
+			return nil
+		}
+		result.Or(childBitmap)
+	}
+	return result
+}
+
+func evaluateLeafBitmap(f *filter.Filter, indexes map[string]*filter.FilterIndex, totalDocs uint32) *roaring.Bitmap {
+	idx, ok := indexes[f.Attr]
+	if !ok {
+		// No index for this attribute
+		return nil
+	}
+
+	switch f.Op {
+	case filter.OpEq:
+		return idx.Eq(f.Value)
+	case filter.OpNotEq:
+		all := roaring.NewBitmap()
+		all.AddRange(0, uint64(totalDocs))
+		return idx.NotEq(f.Value, all)
+	case filter.OpLt:
+		return idx.Lt(f.Value)
+	case filter.OpLte:
+		return idx.Lte(f.Value)
+	case filter.OpGt:
+		return idx.Gt(f.Value)
+	case filter.OpGte:
+		return idx.Gte(f.Value)
+	case filter.OpIn:
+		if values, ok := f.Value.([]any); ok {
+			return idx.In(values)
+		}
+		return nil
+	case filter.OpContains:
+		return idx.Contains(f.Value)
+	case filter.OpContainsAny:
+		if values, ok := f.Value.([]any); ok {
+			return idx.ContainsAny(values)
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// SearchWithFilter performs ANN search with a filter bitmap constraint.
+// Only vectors whose docIDs are in the filter bitmap are considered.
+func (r *Reader) SearchWithFilter(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, query []float32, topK, nProbe int, filterBitmap *roaring.Bitmap) ([]vector.IVFSearchResult, error) {
+	if ivfReader == nil {
+		return nil, nil
+	}
+
+	// Find nearest centroids
+	nearestClusters := findNearestCentroids(ivfReader, query, nProbe)
+
+	// Get byte ranges for all selected clusters
+	ranges := ivfReader.GetClusterRanges(nearestClusters)
+
+	// Fetch all cluster data using multi-range optimization
+	fetcher := NewMultiRangeClusterDataFetcher(r.store, r.diskCache, clusterDataKey)
+	clusterData, err := fetcher.FetchRanges(ctx, ranges)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch cluster data: %w", err)
+	}
+
+	// Search each cluster with filter applied
+	var results []vector.IVFSearchResult
+	for clusterID, data := range clusterData {
+		clusterResults, err := searchClusterDataWithFilter(data, query, clusterID, ivfReader.Dims, ivfReader.Metric, filterBitmap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to search cluster %d: %w", clusterID, err)
+		}
+		results = append(results, clusterResults...)
+	}
+
+	// Sort by distance and return top K
+	sortResultsByDistance(results)
+	if len(results) > topK {
+		results = results[:topK]
+	}
+
+	return results, nil
+}
+
+// searchClusterDataWithFilter searches a cluster's data with a filter bitmap.
+func searchClusterDataWithFilter(data []byte, query []float32, clusterID int, dims int, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap) ([]vector.IVFSearchResult, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	reader := bytes.NewReader(data)
+	entrySize := 8 + dims*4 // docID (8 bytes) + vector (dims * 4 bytes)
+	numEntries := len(data) / entrySize
+
+	results := make([]vector.IVFSearchResult, 0, numEntries)
+
+	for i := 0; i < numEntries; i++ {
+		// Read docID
+		docIDBuf := make([]byte, 8)
+		if _, err := io.ReadFull(reader, docIDBuf); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		docID := uint64(docIDBuf[0]) | uint64(docIDBuf[1])<<8 | uint64(docIDBuf[2])<<16 | uint64(docIDBuf[3])<<24 |
+			uint64(docIDBuf[4])<<32 | uint64(docIDBuf[5])<<40 | uint64(docIDBuf[6])<<48 | uint64(docIDBuf[7])<<56
+
+		// Read vector
+		vecBuf := make([]byte, dims*4)
+		if _, err := io.ReadFull(reader, vecBuf); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		// Apply filter if present
+		if filterBitmap != nil && !filterBitmap.Contains(uint32(docID)) {
+			continue
+		}
+
+		vec := make([]float32, dims)
+		for j := 0; j < dims; j++ {
+			bits := uint32(vecBuf[j*4]) | uint32(vecBuf[j*4+1])<<8 |
+				uint32(vecBuf[j*4+2])<<16 | uint32(vecBuf[j*4+3])<<24
+			vec[j] = float32frombits(bits)
+		}
+
+		// Compute exact distance
+		dist := computeDistance(query, vec, metric)
+		results = append(results, vector.IVFSearchResult{
+			DocID:     docID,
+			Distance:  dist,
+			ClusterID: clusterID,
+		})
+	}
+
+	return results, nil
+}
+
+// GetManifestSegments returns all segments from the manifest with their filter keys.
+func (r *Reader) GetManifestSegments(ctx context.Context, manifestKey string) ([]Segment, error) {
+	manifest, err := r.LoadManifest(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+	return manifest.Segments, nil
 }
 
 // Clear removes cached readers for a namespace.

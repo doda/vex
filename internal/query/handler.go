@@ -565,20 +565,11 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 	var indexResults []vector.IVFSearchResult
 	indexedWALSeq := loaded.State.Index.IndexedWALSeq
 
-	// Determine if we should use the index
-	// IMPORTANT: When filters are present, we CANNOT use the IVF index because:
-	// 1. The IVF index only stores docID + vector, not document attributes
-	// 2. We cannot verify if indexed docs match the filter
-	// 3. Using the index with filters would return unfiltered results (incorrect)
-	// 4. Documents in the index but not in tail cannot be post-filtered
-	//
-	// The only safe approach is to use exhaustive search when filters are present.
-	// This ensures all documents are checked against the filter.
-	//
-	// Recall-aware filtering helps optimize the exhaustive search by:
-	// - Estimating selectivity to predict result set size
-	// - Providing metrics for monitoring and optimization
-	useIndex := loaded.State.Index.ManifestKey != "" && h.indexReader != nil && f == nil
+	// Determine if we can use the index
+	// We can use the index:
+	// 1. When no filter is present (unfiltered ANN search)
+	// 2. When a filter is present AND we have filter bitmap indexes that cover the filter
+	useIndex := loaded.State.Index.ManifestKey != "" && h.indexReader != nil
 
 	if useIndex {
 		ivfReader, clusterDataKey, err := h.indexReader.GetIVFReader(ctx, ns, loaded.State.Index.ManifestKey, loaded.State.Index.ManifestSeq)
@@ -586,14 +577,18 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 			// Log error but fall back to exhaustive search
 			_ = err
 		} else if ivfReader != nil {
-			// Use standard ANN parameters (no filter present)
 			nProbe := DefaultNProbe
 			candidates := req.Limit
 
-			indexResults, err = h.indexReader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe)
-			if err != nil {
-				// Fall back to exhaustive search on error
-				indexResults = nil
+			if f == nil {
+				// No filter - use standard ANN search
+				indexResults, err = h.indexReader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe)
+				if err != nil {
+					indexResults = nil
+				}
+			} else {
+				// Filter present - try to use filter bitmap indexes
+				indexResults = h.searchIndexWithFilter(ctx, ns, loaded, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe, f)
 			}
 		}
 	}
@@ -629,14 +624,75 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 
 	// Merge index results with tail results
 	// Tail results are authoritative for deduplication (newer data)
-	// Note: This path is only reached when no filter is present (f == nil)
 	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq)
 	return rows, nil
 }
 
+// searchIndexWithFilter attempts to search the IVF index with a filter.
+// It loads filter bitmap indexes, evaluates the filter to get a bitmap of matching docIDs,
+// and then searches the IVF index with that filter constraint.
+// Returns nil if filter indexes are not available for the required fields.
+func (h *Handler) searchIndexWithFilter(ctx context.Context, ns string, loaded *namespace.LoadedState, ivfReader *vector.IVFReader, clusterDataKey string, queryVector []float32, candidates, nProbe int, f *filter.Filter) []vector.IVFSearchResult {
+	if h.indexReader == nil || f == nil {
+		return nil
+	}
+
+	// Get segments from manifest to find filter keys
+	segments, err := h.indexReader.GetManifestSegments(ctx, loaded.State.Index.ManifestKey)
+	if err != nil || len(segments) == 0 {
+		return nil
+	}
+
+	// Load filter indexes from all segments
+	// For now, we use the first segment with filter keys
+	// TODO: Support multiple segments with filter indexes
+	var filterKeys []string
+	var totalDocs uint32
+	for _, seg := range segments {
+		if len(seg.FilterKeys) > 0 {
+			filterKeys = seg.FilterKeys
+			if seg.Stats.RowCount > 0 {
+				totalDocs = uint32(seg.Stats.RowCount)
+			} else if seg.IVFKeys != nil && seg.IVFKeys.VectorCount > 0 {
+				totalDocs = uint32(seg.IVFKeys.VectorCount)
+			}
+			break
+		}
+	}
+
+	if len(filterKeys) == 0 {
+		return nil
+	}
+
+	// Load the filter bitmap indexes
+	filterIndexes, err := h.indexReader.LoadFilterIndexes(ctx, filterKeys)
+	if err != nil || len(filterIndexes) == 0 {
+		return nil
+	}
+
+	// Evaluate the filter against the bitmap indexes
+	filterBitmap := h.indexReader.EvaluateFilterOnIndex(f, filterIndexes, totalDocs)
+	if filterBitmap == nil {
+		// Filter cannot be fully evaluated using indexes
+		return nil
+	}
+
+	// If the filter bitmap is empty, no documents match
+	if filterBitmap.IsEmpty() {
+		return []vector.IVFSearchResult{}
+	}
+
+	// Search the IVF index with the filter constraint
+	results, err := h.indexReader.SearchWithFilter(ctx, ivfReader, clusterDataKey, queryVector, candidates, nProbe, filterBitmap)
+	if err != nil {
+		return nil
+	}
+
+	return results
+}
+
 // mergeVectorResults merges IVF index results with tail results.
 // Tail results take precedence for deduplication since they contain newer data.
-// Note: This function is only called when no filter is present (filters skip the index path).
 // Deduplication ensures last-write-wins semantics across segments and tail.
 //
 // The deduplication strategy:
