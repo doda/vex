@@ -15,7 +15,10 @@ import (
 
 // mockTailStoreForBM25 implements tail.Store for BM25 query testing.
 type mockTailStoreForBM25 struct {
-	docs []*tail.Document
+	docs                         []*tail.Document
+	scanIncludingDeletedWithCall bool
+	scanIncludingDeletedLimit    int64
+	scanIncludingDeletedCall     bool
 }
 
 func (m *mockTailStoreForBM25) Refresh(ctx context.Context, ns string, afterSeq, upToSeq uint64) error {
@@ -27,6 +30,17 @@ func (m *mockTailStoreForBM25) Scan(ctx context.Context, ns string, f *filter.Fi
 }
 
 func (m *mockTailStoreForBM25) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, limit int64) ([]*tail.Document, error) {
+	return m.docs, nil
+}
+
+func (m *mockTailStoreForBM25) ScanIncludingDeleted(ctx context.Context, ns string, f *filter.Filter) ([]*tail.Document, error) {
+	m.scanIncludingDeletedCall = true
+	return m.docs, nil
+}
+
+func (m *mockTailStoreForBM25) ScanIncludingDeletedWithByteLimit(ctx context.Context, ns string, f *filter.Filter, limit int64) ([]*tail.Document, error) {
+	m.scanIncludingDeletedWithCall = true
+	m.scanIncludingDeletedLimit = limit
 	return m.docs, nil
 }
 
@@ -398,6 +412,45 @@ func TestBM25QueryExecution(t *testing.T) {
 			t.Errorf("expected 2 results, got %d", len(rows))
 		}
 	})
+}
+
+func TestBM25EventualTailCap(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	ctx := context.Background()
+
+	if err := writeTestState(ctx, store, "test-ns", 5, 2); err != nil {
+		t.Fatalf("failed to write test state: %v", err)
+	}
+
+	mockTail := &mockTailStoreForBM25{
+		docs: []*tail.Document{
+			{
+				ID:         document.NewU64ID(1),
+				Attributes: map[string]any{"content": "hello world"},
+				WalSeq:     1,
+			},
+		},
+	}
+
+	handler := NewHandler(store, stateMan, mockTail)
+
+	req := &QueryRequest{
+		RankBy:      []any{"content", "BM25", "hello"},
+		Limit:       10,
+		Consistency: "eventual",
+	}
+	_, err := handler.Handle(ctx, "test-ns", req)
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	if !mockTail.scanIncludingDeletedWithCall {
+		t.Fatal("expected ScanIncludingDeletedWithByteLimit to be called for eventual BM25")
+	}
+	if mockTail.scanIncludingDeletedLimit != EventualTailCapBytes {
+		t.Errorf("expected byte limit %d, got %d", EventualTailCapBytes, mockTail.scanIncludingDeletedLimit)
+	}
 }
 
 func TestBM25ScoreComputation(t *testing.T) {

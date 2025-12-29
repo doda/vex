@@ -1012,3 +1012,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-29T20:40:00Z] Completed test-eventual-tail-cap-bm25-composite: PASS
+- Added BM25 eventual tail-cap coverage asserting ScanIncludingDeletedWithByteLimit uses 128MiB cap.
+- Added composite rank_by eventual tail-cap coverage asserting ScanWithByteLimit uses 128MiB cap.
+- Updated mock tail stores in BM25 and rank clause tests to record byte-limit usage.
+- Files changed: internal/query/bm25_query_test.go.
+- Files changed: internal/query/rank_clause_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/query -run "TestBM25EventualTailCap|TestCompositeEventualTailCap" -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: none.

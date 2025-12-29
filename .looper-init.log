@@ -27,9 +27,9 @@ Connected to object store: filesystem at http://localhost:9000
 Starting vex server on :8080
 
 8. Testing HTTP endpoints...
-{"time":"2025-12-29T18:13:27.945587772Z","level":"INFO","msg":"request completed","request_id":"de21831b-acac-4f02-99ac-102a178e0882","endpoint":"GET /health","cache_temperature":"cold","server_total_ms":0.112,"status":200,"method":"GET","path":"/health"}
+{"time":"2025-12-29T18:17:30.131395937Z","level":"INFO","msg":"request completed","request_id":"21d4d78d-96a7-4948-a681-1ea344a6ff6e","endpoint":"GET /health","cache_temperature":"cold","server_total_ms":0.117,"status":200,"method":"GET","path":"/health"}
    - GET /health: OK
-{"time":"2025-12-29T18:13:27.972279799Z","level":"INFO","msg":"request completed","request_id":"f0c9c359-3b9c-427f-9e6d-79c4a035492f","endpoint":"GET /v1/namespaces","cache_temperature":"cold","server_total_ms":0.208,"status":200,"method":"GET","path":"/v1/namespaces"}
+{"time":"2025-12-29T18:17:30.150258102Z","level":"INFO","msg":"request completed","request_id":"df3b18c2-e090-4c5f-9480-4edbcd19141c","endpoint":"GET /v1/namespaces","cache_temperature":"cold","server_total_ms":0.277,"status":200,"method":"GET","path":"/v1/namespaces"}
    - GET /v1/namespaces: OK
 
 9. Stopping vex server...
@@ -39,9 +39,9 @@ Server stopped
 
 10. Running go tests...
 ?   	github.com/vexsearch/vex/cmd/vex/indexer	[no test files]
-?   	github.com/vexsearch/vex/cmd/vex/query	[no test files]
 ?   	github.com/vexsearch/vex/cmd/vex/serve	[no test files]
 ?   	github.com/vexsearch/vex/cmd/vex/version	[no test files]
+?   	github.com/vexsearch/vex/cmd/vex/query	[no test files]
 === RUN   TestSubcommands
 === RUN   TestSubcommands/help_shows_usage
 === RUN   TestSubcommands/version_prints_version_info
@@ -49,7 +49,7 @@ Server stopped
 === RUN   TestSubcommands/unknown_command_exits_1
 --- PASS: TestSubcommands (0.15s)
     --- PASS: TestSubcommands/help_shows_usage (0.03s)
-    --- PASS: TestSubcommands/version_prints_version_info (0.03s)
+    --- PASS: TestSubcommands/version_prints_version_info (0.04s)
     --- PASS: TestSubcommands/no_args_shows_usage_and_exits_1 (0.04s)
     --- PASS: TestSubcommands/unknown_command_exits_1 (0.04s)
 === RUN   TestServeMode
@@ -59,7 +59,7 @@ Server stopped
 === RUN   TestConfigLoading
 --- PASS: TestConfigLoading (2.02s)
 PASS
-ok  	github.com/vexsearch/vex/cmd/vex	6.246s
+ok  	github.com/vexsearch/vex/cmd/vex	6.248s
 === RUN   TestNewDiskCache
 --- PASS: TestNewDiskCache (0.00s)
 === RUN   TestDiskCache_PutGet

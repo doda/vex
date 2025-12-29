@@ -2399,7 +2399,7 @@
       "Add BM25 tail-cap test",
       "Add composite rank_by tail-cap test"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/query"
     ]

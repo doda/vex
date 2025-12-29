@@ -15,7 +15,9 @@ import (
 
 // mockTailStoreForRankClause implements tail.Store for rank clause testing.
 type mockTailStoreForRankClause struct {
-	docs []*tail.Document
+	docs           []*tail.Document
+	scanWithLimit  bool
+	scanLimitBytes int64
 }
 
 func (m *mockTailStoreForRankClause) Refresh(ctx context.Context, ns string, afterSeq, upToSeq uint64) error {
@@ -27,6 +29,8 @@ func (m *mockTailStoreForRankClause) Scan(ctx context.Context, ns string, f *fil
 }
 
 func (m *mockTailStoreForRankClause) ScanWithByteLimit(ctx context.Context, ns string, f *filter.Filter, limit int64) ([]*tail.Document, error) {
+	m.scanWithLimit = true
+	m.scanLimitBytes = limit
 	return m.docs, nil
 }
 
@@ -231,6 +235,45 @@ func TestSumOperator(t *testing.T) {
 			t.Error("doc 3 not found in results")
 		}
 	})
+}
+
+func TestCompositeEventualTailCap(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	ctx := context.Background()
+
+	if err := writeTestState(ctx, store, "test-ns", 3, 1); err != nil {
+		t.Fatalf("failed to write test state: %v", err)
+	}
+
+	mockTail := &mockTailStoreForRankClause{
+		docs: []*tail.Document{
+			{
+				ID:         document.NewU64ID(1),
+				Attributes: map[string]any{"content": "hello world"},
+				WalSeq:     1,
+			},
+		},
+	}
+
+	handler := NewHandler(store, stateMan, mockTail)
+
+	req := &QueryRequest{
+		RankBy:      []any{"Sum", []any{[]any{"content", "BM25", "hello"}}},
+		Limit:       10,
+		Consistency: "eventual",
+	}
+	_, err := handler.Handle(ctx, "test-ns", req)
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	if !mockTail.scanWithLimit {
+		t.Fatal("expected ScanWithByteLimit to be called for eventual composite")
+	}
+	if mockTail.scanLimitBytes != EventualTailCapBytes {
+		t.Errorf("expected byte limit %d, got %d", EventualTailCapBytes, mockTail.scanLimitBytes)
+	}
 }
 
 func TestMaxOperator(t *testing.T) {
