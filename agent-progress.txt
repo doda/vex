@@ -1156,3 +1156,14 @@ KEY DEPENDENCIES:
 - Challenges: ensuring cold fill limit test observes waiting without flakiness.
 - Resolution: added bounded polling loop with timeout for guardrails stats.
 - Follow-ups: none.
+[2025-12-29T21:05:00Z] Completed logging-add-cache-temperature: PASS
+- Added request-scoped metrics to logging context and plumbed cache/query execution timing into request logs.
+- Router now records query execution timing and cache temperature for single and multi-query paths.
+- Middleware now includes cache_temperature/query_execution_ms when request metrics are present.
+- Files changed: internal/logging/logging.go.
+- Files changed: internal/logging/middleware.go.
+- Files changed: pkg/api/router.go.
+- Verification: started server with filesystem store, wrote sample docs, ran query, confirmed log line includes cache_temperature/query_execution_ms and server_total_ms intact.
+- Tests: /usr/local/go/bin/go test ./internal/logging -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.

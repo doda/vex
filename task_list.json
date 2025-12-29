@@ -2588,7 +2588,7 @@
       "Run a query and verify logs include cache_temperature and query_execution_ms fields",
       "Verify server_total_ms remains intact"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/logging/middleware.go"
     ]

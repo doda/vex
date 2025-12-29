@@ -61,6 +61,14 @@ func Middleware(logger *Logger) func(http.Handler) http.Handler {
 				Endpoint:      endpoint,
 				ServerTotalMs: elapsed,
 			}
+			if metrics := RequestMetricsFromContext(ctx); metrics != nil {
+				if metrics.CacheTemp != "" {
+					info.CacheTemp = metrics.CacheTemp
+				}
+				if metrics.QueryExecMs > 0 {
+					info.QueryExecMs = metrics.QueryExecMs
+				}
+			}
 
 			logger.WithRequestInfo(info).Info("request completed",
 				"status", rw.statusCode,
@@ -112,6 +120,14 @@ func MiddlewareFunc(logger *Logger, next http.HandlerFunc) http.HandlerFunc {
 			Namespace:     namespace,
 			Endpoint:      endpoint,
 			ServerTotalMs: elapsed,
+		}
+		if metrics := RequestMetricsFromContext(ctx); metrics != nil {
+			if metrics.CacheTemp != "" {
+				info.CacheTemp = metrics.CacheTemp
+			}
+			if metrics.QueryExecMs > 0 {
+				info.QueryExecMs = metrics.QueryExecMs
+			}
 		}
 
 		logger.WithRequestInfo(info).Info("request completed",
