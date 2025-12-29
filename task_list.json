@@ -2480,7 +2480,7 @@
       "Attempt concurrent manifest writes and verify conflicts are detected",
       "Confirm published manifest references only fully uploaded objects"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/indexer/l0_builder.go",
       "internal/index"

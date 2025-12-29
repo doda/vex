@@ -1084,3 +1084,11 @@ KEY DEPENDENCIES:
 - Challenges: memory object store checksum mismatch when writing segment objects.
 - Resolution: aligned SegmentWriter checksum encoding with base64 expectations.
 - Follow-ups: none.
+[2025-12-30T01:10:00Z] Completed indexer-manifest-conditional-write: PASS
+- Implemented conditional manifest write and reference verification in L0 publish path to prevent overwrites.
+- Added L0 publish tests for manifest conflict detection and missing-object verification.
+- Files changed: internal/indexer/l0_builder.go, internal/indexer/l0_builder_test.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run "TestL0PublishSegment" -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

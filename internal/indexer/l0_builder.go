@@ -555,11 +555,20 @@ func (p *L0SegmentProcessor) publishSegment(ctx context.Context, ns string, segm
 		return nil, fmt.Errorf("failed to serialize manifest: %w", err)
 	}
 
+	if err := index.VerifyManifestReferences(ctx, p.store, manifest); err != nil {
+		return nil, fmt.Errorf("manifest references missing objects: %w", err)
+	}
+
 	// Write manifest to object storage with new sequence number
 	newManifestSeq := state.Index.ManifestSeq + 1
 	newManifestKey := index.ManifestKey(ns, newManifestSeq)
-	_, err = p.store.Put(ctx, newManifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil)
+	_, err = p.store.PutIfAbsent(ctx, newManifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), &objectstore.PutOptions{
+		ContentType: "application/json",
+	})
 	if err != nil {
+		if objectstore.IsConflictError(err) {
+			return nil, fmt.Errorf("manifest already exists: %w", err)
+		}
 		return nil, fmt.Errorf("failed to write manifest: %w", err)
 	}
 
