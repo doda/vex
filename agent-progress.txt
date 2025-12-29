@@ -896,3 +896,12 @@ KEY DEPENDENCIES:
 - Challenges: python not available at first attempt for bulk replacement.
 - Resolution: used python3 for string updates and then gofmt.
 - Follow-ups: none.
+[2025-12-29T16:39:07Z] Completed test-wal-filter-op-metadata: PASS
+- Added stricter WAL metadata assertions for delete_by_filter and patch_by_filter (candidate IDs, filter/patch JSON).
+- Verified filter JSON matches request payloads and patch JSON matches expected updates.
+- Key files changed: internal/write/filter_op_metadata_test.go, task_list.json.
+- Tests run: /usr/local/go/bin/go test ./internal/write -run WALMetadata -count=1 (pass).
+- Tests run: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: go not on PATH for tests.
+- Resolution: ran tests via /usr/local/go/bin/go.
+- Follow-ups: none.

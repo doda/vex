@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"reflect"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/cache"
@@ -98,6 +99,12 @@ func TestDeleteByFilter_WALMetadata(t *testing.T) {
 	if len(filterOp.CandidateIds) != 2 {
 		t.Errorf("expected 2 candidate IDs, got %d", len(filterOp.CandidateIds))
 	}
+	candidateKeys := candidateIDKeys(t, filterOp.CandidateIds)
+	for _, id := range []document.ID{document.NewU64ID(1), document.NewU64ID(3)} {
+		if _, ok := candidateKeys[idKey(id)]; !ok {
+			t.Errorf("expected candidate ID %s", id.String())
+		}
+	}
 
 	// Verify filter_json is set
 	if filterOp.FilterJson == "" {
@@ -108,6 +115,9 @@ func TestDeleteByFilter_WALMetadata(t *testing.T) {
 	var parsedFilter []any
 	if err := json.Unmarshal([]byte(filterOp.FilterJson), &parsedFilter); err != nil {
 		t.Errorf("filter_json is not valid JSON: %v", err)
+	}
+	if !reflect.DeepEqual(parsedFilter, deleteReq.DeleteByFilter.Filter) {
+		t.Errorf("filter_json mismatch: got %v want %v", parsedFilter, deleteReq.DeleteByFilter.Filter)
 	}
 
 	// Verify allow_partial
@@ -205,10 +215,23 @@ func TestPatchByFilter_WALMetadata(t *testing.T) {
 	if len(filterOp.CandidateIds) != 2 {
 		t.Errorf("expected 2 candidate IDs, got %d", len(filterOp.CandidateIds))
 	}
+	candidateKeys := candidateIDKeys(t, filterOp.CandidateIds)
+	for _, id := range []document.ID{document.NewU64ID(1), document.NewU64ID(3)} {
+		if _, ok := candidateKeys[idKey(id)]; !ok {
+			t.Errorf("expected candidate ID %s", id.String())
+		}
+	}
 
 	// Verify filter_json
 	if filterOp.FilterJson == "" {
 		t.Error("expected filter_json to be set")
+	}
+	var parsedFilter []any
+	if err := json.Unmarshal([]byte(filterOp.FilterJson), &parsedFilter); err != nil {
+		t.Errorf("filter_json is not valid JSON: %v", err)
+	}
+	if !reflect.DeepEqual(parsedFilter, patchReq.PatchByFilter.Filter) {
+		t.Errorf("filter_json mismatch: got %v want %v", parsedFilter, patchReq.PatchByFilter.Filter)
 	}
 
 	// Verify patch_json is set for patch operations
@@ -220,6 +243,13 @@ func TestPatchByFilter_WALMetadata(t *testing.T) {
 	var parsedPatch map[string]any
 	if err := json.Unmarshal([]byte(filterOp.PatchJson), &parsedPatch); err != nil {
 		t.Errorf("patch_json is not valid JSON: %v", err)
+	}
+	expectedPatch := map[string]any{
+		"status": "processed",
+		"flag":   true,
+	}
+	if !reflect.DeepEqual(parsedPatch, expectedPatch) {
+		t.Errorf("patch_json mismatch: got %v want %v", parsedPatch, expectedPatch)
 	}
 
 	// Verify patch content
@@ -577,4 +607,21 @@ func readAllBytes(rc io.ReadCloser) ([]byte, error) {
 	}
 	rc.Close()
 	return buf.Bytes(), nil
+}
+
+func candidateIDKeys(t *testing.T, ids []*wal.DocumentID) map[string]struct{} {
+	t.Helper()
+	keys := make(map[string]struct{}, len(ids))
+	for _, protoID := range ids {
+		id, err := wal.DocumentIDToID(protoID)
+		if err != nil {
+			t.Fatalf("failed to convert candidate ID: %v", err)
+		}
+		keys[idKey(id)] = struct{}{}
+	}
+	return keys
+}
+
+func idKey(id document.ID) string {
+	return id.Type().String() + ":" + id.String()
 }

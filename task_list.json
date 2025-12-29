@@ -2253,7 +2253,7 @@
       "Add unit test for delete_by_filter WAL metadata",
       "Add unit test for patch_by_filter WAL metadata"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/write",
       "internal/wal"
