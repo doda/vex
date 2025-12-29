@@ -491,6 +491,35 @@ func TestAdvanceWAL(t *testing.T) {
 			t.Error("schema delta not applied")
 		}
 	})
+
+	t.Run("duplicate wal key returns existing state", func(t *testing.T) {
+		ns := "test-advance-wal-duplicate"
+		loaded, err := mgr.Create(ctx, ns)
+		if err != nil {
+			t.Fatalf("failed to create state: %v", err)
+		}
+		staleETag := loaded.ETag
+		walKey := "wal/00000000000000000001.wal.zst"
+
+		loaded, err = mgr.AdvanceWAL(ctx, ns, staleETag, walKey, 10, nil)
+		if err != nil {
+			t.Fatalf("failed to advance WAL: %v", err)
+		}
+
+		loaded, err = mgr.AdvanceWAL(ctx, ns, staleETag, walKey, 10, nil)
+		if err != nil {
+			t.Fatalf("expected duplicate WAL advance to succeed: %v", err)
+		}
+		if loaded.State.WAL.HeadSeq != 1 {
+			t.Errorf("expected head_seq 1, got %d", loaded.State.WAL.HeadSeq)
+		}
+		if loaded.State.WAL.HeadKey != walKey {
+			t.Errorf("expected head_key %q, got %q", walKey, loaded.State.WAL.HeadKey)
+		}
+		if loaded.State.WAL.BytesUnindexedEst != 10 {
+			t.Errorf("expected bytes_unindexed_est 10, got %d", loaded.State.WAL.BytesUnindexedEst)
+		}
+	})
 }
 
 func TestAdvanceIndex(t *testing.T) {

@@ -2659,7 +2659,7 @@
       "Simulate concurrent writers hitting the same seq and verify state.json only advances to the winning WAL object",
       "Verify a PutIfAbsent conflict does not update state.json with a mismatched wal key"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/write",

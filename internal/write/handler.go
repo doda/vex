@@ -411,10 +411,18 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	_, err = h.store.PutIfAbsent(ctx, walKey, bytes.NewReader(result.Data), int64(len(result.Data)), &objectstore.PutOptions{
 		ContentType: "application/octet-stream",
 	})
-	if err != nil && !objectstore.IsConflictError(err) {
-		err = fmt.Errorf("failed to write WAL entry: %w", err)
-		releaseOnError(err)
-		return nil, err
+	if err != nil {
+		if objectstore.IsConflictError(err) {
+			if confirmErr := confirmExistingWAL(ctx, h.store, walKey, result.Data); confirmErr != nil {
+				err = fmt.Errorf("%w: %v", wal.ErrWALSeqConflict, confirmErr)
+				releaseOnError(err)
+				return nil, err
+			}
+		} else {
+			err = fmt.Errorf("failed to write WAL entry: %w", err)
+			releaseOnError(err)
+			return nil, err
+		}
 	}
 
 	// Detect schema changes that require index rebuilds before updating state

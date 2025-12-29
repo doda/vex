@@ -27,9 +27,9 @@ Connected to object store: filesystem at http://localhost:9000
 Starting vex server on :8080
 
 8. Testing HTTP endpoints...
-{"time":"2025-12-29T22:13:49.186160028Z","level":"INFO","msg":"request completed","request_id":"73b0f3f9-4010-40b9-9833-b884da08187d","endpoint":"GET /health","cache_temperature":"cold","server_total_ms":0.204,"status":200,"method":"GET","path":"/health"}
+{"time":"2025-12-29T22:24:53.052720261Z","level":"INFO","msg":"request completed","request_id":"adde8823-540c-4fe2-8c71-cf71b3367b7b","endpoint":"GET /health","cache_temperature":"cold","server_total_ms":0.213,"status":200,"method":"GET","path":"/health"}
    - GET /health: OK
-{"time":"2025-12-29T22:13:49.209351Z","level":"INFO","msg":"request completed","request_id":"5c37d50b-7307-4658-b9ea-0773069c9e8a","endpoint":"GET /v1/namespaces","cache_temperature":"cold","server_total_ms":0.299,"status":200,"method":"GET","path":"/v1/namespaces"}
+{"time":"2025-12-29T22:24:53.074439346Z","level":"INFO","msg":"request completed","request_id":"f0d78cae-407f-4442-a6ee-c4572a4b6ea7","endpoint":"GET /v1/namespaces","cache_temperature":"cold","server_total_ms":0.24,"status":200,"method":"GET","path":"/v1/namespaces"}
    - GET /v1/namespaces: OK
 
 9. Stopping vex server...
@@ -47,19 +47,19 @@ Server stopped
 === RUN   TestSubcommands/version_prints_version_info
 === RUN   TestSubcommands/no_args_shows_usage_and_exits_1
 === RUN   TestSubcommands/unknown_command_exits_1
---- PASS: TestSubcommands (0.29s)
+--- PASS: TestSubcommands (0.39s)
     --- PASS: TestSubcommands/help_shows_usage (0.07s)
-    --- PASS: TestSubcommands/version_prints_version_info (0.07s)
-    --- PASS: TestSubcommands/no_args_shows_usage_and_exits_1 (0.07s)
-    --- PASS: TestSubcommands/unknown_command_exits_1 (0.06s)
+    --- PASS: TestSubcommands/version_prints_version_info (0.11s)
+    --- PASS: TestSubcommands/no_args_shows_usage_and_exits_1 (0.13s)
+    --- PASS: TestSubcommands/unknown_command_exits_1 (0.09s)
 === RUN   TestServeMode
---- PASS: TestServeMode (2.03s)
+--- PASS: TestServeMode (2.09s)
 === RUN   TestQueryMode
---- PASS: TestQueryMode (2.03s)
+--- PASS: TestQueryMode (2.09s)
 === RUN   TestConfigLoading
 --- PASS: TestConfigLoading (2.03s)
 PASS
-ok  	github.com/vexsearch/vex/cmd/vex	6.450s
+ok  	github.com/vexsearch/vex/cmd/vex	6.684s
 === RUN   TestNewDiskCache
 --- PASS: TestNewDiskCache (0.00s)
 === RUN   TestDiskCache_PutGet
@@ -69,7 +69,7 @@ ok  	github.com/vexsearch/vex/cmd/vex	6.450s
 === RUN   TestDiskCache_Miss
 --- PASS: TestDiskCache_Miss (0.00s)
 === RUN   TestDiskCache_LRUEviction
---- PASS: TestDiskCache_LRUEviction (0.00s)
+--- PASS: TestDiskCache_LRUEviction (0.01s)
 === RUN   TestDiskCache_LRUAccessTimeUpdate
 --- PASS: TestDiskCache_LRUAccessTimeUpdate (0.00s)
 === RUN   TestDiskCache_Pin

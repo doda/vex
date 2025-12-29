@@ -1210,3 +1210,14 @@ KEY DEPENDENCIES:
 - Challenges: tail snapshot needed to avoid stale tail docs overlapping indexed data.
 - Resolution: filtered tail scans to WAL seqs above indexed_wal_seq and deduped by WAL seq/sub-batch.
 - Follow-ups: none.
+[2025-12-29T22:25:22Z] Completed wal-putifabsent-conflict-retry: PASS
+- Added WAL conflict verification for handler/batcher PutIfAbsent and seq alignment checks in AdvanceWAL.
+- AdvanceWAL now validates wal key sequence and treats already-applied WAL keys as idempotent.
+- Added handler test for mismatched WAL conflict and state test for duplicate wal key behavior.
+- Files changed: internal/namespace/manager.go, internal/write/handler.go, internal/write/batcher.go, internal/write/wal_conflict.go.
+- Files changed: internal/namespace/state_test.go, internal/write/handler_test.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/namespace -run TestAdvanceWAL -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/write -run TestHandlerWALConflictDoesNotAdvanceState -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: aligning state updates when wal keys include namespace prefixes.
+- Resolution: parse wal seq from the final wal/ segment before validation.

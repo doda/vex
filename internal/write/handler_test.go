@@ -1,12 +1,15 @@
 package write
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 
+	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
+	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
@@ -44,6 +47,68 @@ func TestHandler_HandleBasicUpsert(t *testing.T) {
 	}
 	if resp.RowsPatched != 0 {
 		t.Errorf("expected 0 rows patched, got %d", resp.RowsPatched)
+	}
+}
+
+func TestHandlerWALConflictDoesNotAdvanceState(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-wal-conflict"
+	walKey := "vex/namespaces/" + ns + "/wal/00000000000000000001.wal.zst"
+
+	encoder, err := wal.NewEncoder()
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	conflictEntry := wal.NewWalEntry(ns, 1)
+	conflictBatch := wal.NewWriteSubBatch("conflict")
+	conflictBatch.AddUpsert(wal.DocumentIDFromID(document.NewU64ID(99)), map[string]*wal.AttributeValue{
+		"name": wal.StringValue("conflict"),
+	}, nil, 0)
+	conflictEntry.SubBatches = append(conflictEntry.SubBatches, conflictBatch)
+
+	conflictResult, err := encoder.Encode(conflictEntry)
+	if err != nil {
+		encoder.Close()
+		t.Fatalf("failed to encode conflict WAL: %v", err)
+	}
+	encoder.Close()
+
+	_, err = store.PutIfAbsent(ctx, walKey, bytes.NewReader(conflictResult.Data), int64(len(conflictResult.Data)), &objectstore.PutOptions{
+		ContentType: "application/octet-stream",
+	})
+	if err != nil {
+		t.Fatalf("failed to precreate WAL: %v", err)
+	}
+
+	req := &WriteRequest{
+		RequestID: "test-conflict",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "winner"},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req)
+	if err == nil {
+		t.Fatal("expected WAL conflict error")
+	}
+	if !errors.Is(err, wal.ErrWALSeqConflict) {
+		t.Fatalf("expected WAL seq conflict error, got %v", err)
+	}
+
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if loaded.State.WAL.HeadSeq != 0 {
+		t.Errorf("expected head_seq 0, got %d", loaded.State.WAL.HeadSeq)
 	}
 }
 
