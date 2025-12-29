@@ -88,8 +88,8 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 		}, nil
 	}
 
-	// Extract documents with vectors from WAL entries
-	docs, dims := extractVectorDocuments(entries)
+	// Extract documents from WAL entries (including non-vector upserts)
+	docs, dims := extractDocuments(entries)
 	if len(docs) == 0 {
 		// No vectors or tombstones in this WAL range, just track the bytes processed
 		return &WALProcessResult{
@@ -130,7 +130,7 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 	}, nil
 }
 
-// vectorDocument represents a document with vector data for indexing.
+// vectorDocument represents a document with optional vector data for indexing.
 type vectorDocument struct {
 	id        document.ID
 	idKey     string
@@ -141,9 +141,9 @@ type vectorDocument struct {
 	deleted   bool
 }
 
-// extractVectorDocuments extracts documents with vectors from WAL entries.
-// Returns the deduped documents and the vector dimensions.
-func extractVectorDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
+// extractDocuments extracts documents from WAL entries.
+// Returns the deduped documents and the vector dimensions (if any).
+func extractDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 	// Track latest version of each document (last-write-wins)
 	docMap := make(map[string]*vectorDocument)
 	var dims int
@@ -173,25 +173,26 @@ func extractVectorDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 					}
 
 				case wal.MutationType_MUTATION_TYPE_UPSERT:
+					attrs := make(map[string]any, len(mutation.Attributes))
+					for name, value := range mutation.Attributes {
+						attrs[name] = attributeValueToAny(value)
+					}
+
+					var vec []float32
 					if len(mutation.Vector) > 0 && mutation.VectorDims > 0 {
-						vec := decodeVector(mutation.Vector, mutation.VectorDims)
-						if vec != nil {
-							if dims == 0 {
-								dims = int(mutation.VectorDims)
-							}
-							attrs := make(map[string]any, len(mutation.Attributes))
-							for name, value := range mutation.Attributes {
-								attrs[name] = attributeValueToAny(value)
-							}
-							docMap[docKey] = &vectorDocument{
-								id:      docID,
-								idKey:   docKey,
-								walSeq:  entry.Seq,
-								vec:     vec,
-								attrs:   attrs,
-								deleted: false,
-							}
+						vec = decodeVector(mutation.Vector, mutation.VectorDims)
+						if vec != nil && dims == 0 {
+							dims = int(mutation.VectorDims)
 						}
+					}
+
+					docMap[docKey] = &vectorDocument{
+						id:      docID,
+						idKey:   docKey,
+						walSeq:  entry.Seq,
+						vec:     vec,
+						attrs:   attrs,
+						deleted: false,
 					}
 				}
 			}
@@ -387,10 +388,10 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 			tombstoneCount++
 			continue
 		}
+		liveCount++
 		if len(doc.vec) == 0 {
 			continue
 		}
-		liveCount++
 		vectorDocs = append(vectorDocs, doc)
 	}
 
