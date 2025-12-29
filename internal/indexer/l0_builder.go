@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 
+	"github.com/cespare/xxhash/v2"
+	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/vector"
@@ -129,51 +132,57 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 
 // vectorDocument represents a document with vector data for indexing.
 type vectorDocument struct {
-	id     uint64
-	walSeq uint64
-	vec    []float32
+	id        document.ID
+	idKey     string
+	numericID uint64
+	walSeq    uint64
+	vec       []float32
+	attrs     map[string]any
 }
 
 // extractVectorDocuments extracts documents with vectors from WAL entries.
 // Returns the deduped documents and the vector dimensions.
 func extractVectorDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 	// Track latest version of each document (last-write-wins)
-	docMap := make(map[uint64]*vectorDocument)
-	deletedIDs := make(map[uint64]bool)
+	docMap := make(map[string]*vectorDocument)
 	var dims int
 
 	for _, entry := range entries {
 		for _, batch := range entry.SubBatches {
 			for _, mutation := range batch.Mutations {
-				var docID uint64
-
-				// Extract document ID
-				if mutation.Id != nil {
-					switch id := mutation.Id.Id.(type) {
-					case *wal.DocumentID_U64:
-						docID = id.U64
-					default:
-						continue // Skip non-u64 IDs for now
-					}
+				if mutation.Id == nil {
+					continue
+				}
+				docID, err := wal.DocumentIDToID(mutation.Id)
+				if err != nil {
+					continue
+				}
+				docKey := documentIDKey(mutation.Id)
+				if docKey == "" {
+					continue
 				}
 
 				switch mutation.Type {
 				case wal.MutationType_MUTATION_TYPE_DELETE:
-					deletedIDs[docID] = true
-					delete(docMap, docID)
+					delete(docMap, docKey)
 
-				case wal.MutationType_MUTATION_TYPE_UPSERT, wal.MutationType_MUTATION_TYPE_PATCH:
-					delete(deletedIDs, docID)
+				case wal.MutationType_MUTATION_TYPE_UPSERT:
 					if len(mutation.Vector) > 0 && mutation.VectorDims > 0 {
 						vec := decodeVector(mutation.Vector, mutation.VectorDims)
 						if vec != nil {
 							if dims == 0 {
 								dims = int(mutation.VectorDims)
 							}
-							docMap[docID] = &vectorDocument{
+							attrs := make(map[string]any, len(mutation.Attributes))
+							for name, value := range mutation.Attributes {
+								attrs[name] = attributeValueToAny(value)
+							}
+							docMap[docKey] = &vectorDocument{
 								id:     docID,
+								idKey:  docKey,
 								walSeq: entry.Seq,
 								vec:    vec,
+								attrs:  attrs,
 							}
 						}
 					}
@@ -186,6 +195,16 @@ func extractVectorDocuments(entries []*wal.WalEntry) ([]vectorDocument, int) {
 	docs := make([]vectorDocument, 0, len(docMap))
 	for _, doc := range docMap {
 		docs = append(docs, *doc)
+	}
+
+	sort.Slice(docs, func(i, j int) bool {
+		if docs[i].walSeq != docs[j].walSeq {
+			return docs[i].walSeq < docs[j].walSeq
+		}
+		return docs[i].idKey < docs[j].idKey
+	})
+	for i := range docs {
+		docs[i].numericID = numericIDForKey(docs[i].idKey)
 	}
 
 	return docs, dims
@@ -255,6 +274,98 @@ func float16ToFloat32(h uint16) float32 {
 	return float32frombits(f)
 }
 
+func documentIDKey(id *wal.DocumentID) string {
+	if id == nil {
+		return ""
+	}
+	switch v := id.GetId().(type) {
+	case *wal.DocumentID_U64:
+		return fmt.Sprintf("u64:%d", v.U64)
+	case *wal.DocumentID_Uuid:
+		return fmt.Sprintf("uuid:%x", v.Uuid)
+	case *wal.DocumentID_Str:
+		return fmt.Sprintf("str:%s", v.Str)
+	default:
+		return ""
+	}
+}
+
+func attributeValueToAny(v *wal.AttributeValue) any {
+	if v == nil {
+		return nil
+	}
+	switch val := v.GetValue().(type) {
+	case *wal.AttributeValue_StringVal:
+		return val.StringVal
+	case *wal.AttributeValue_IntVal:
+		return val.IntVal
+	case *wal.AttributeValue_UintVal:
+		return val.UintVal
+	case *wal.AttributeValue_FloatVal:
+		return val.FloatVal
+	case *wal.AttributeValue_DatetimeVal:
+		return val.DatetimeVal
+	case *wal.AttributeValue_BoolVal:
+		return val.BoolVal
+	case *wal.AttributeValue_NullVal:
+		return nil
+	case *wal.AttributeValue_UuidVal:
+		return val.UuidVal
+	case *wal.AttributeValue_StringArray:
+		if val.StringArray != nil {
+			return val.StringArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_IntArray:
+		if val.IntArray != nil {
+			return val.IntArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_UintArray:
+		if val.UintArray != nil {
+			return val.UintArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_FloatArray:
+		if val.FloatArray != nil {
+			return val.FloatArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_DatetimeArray:
+		if val.DatetimeArray != nil {
+			return val.DatetimeArray.Values
+		}
+		return nil
+	case *wal.AttributeValue_BoolArray:
+		if val.BoolArray != nil {
+			return val.BoolArray.Values
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+func numericIDForKey(key string) uint64 {
+	if key == "" {
+		return 0
+	}
+	id := xxhash.Sum64String(key)
+	if id == 0 {
+		return 1
+	}
+	return id
+}
+
+type vectorDocColumn struct {
+	ID         string
+	NumericID  uint64
+	WALSeq     uint64
+	Deleted    bool
+	Attributes map[string]any
+	Vector     []float32
+}
+
 // buildL0Segment builds an L0 segment with IVF index from the documents.
 func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType) (*index.Segment, error) {
 	if len(docs) == 0 {
@@ -280,8 +391,8 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	// Build IVF index
 	builder := vector.NewIVFBuilderWithDType(dims, dtype, p.config.Metric, nClusters)
 	for _, doc := range docs {
-		if err := builder.AddVector(doc.id, doc.vec); err != nil {
-			return nil, fmt.Errorf("failed to add vector %d: %w", doc.id, err)
+		if err := builder.AddVector(doc.numericID, doc.vec); err != nil {
+			return nil, fmt.Errorf("failed to add vector %s: %w", doc.id.String(), err)
 		}
 	}
 
@@ -320,6 +431,26 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		return nil, fmt.Errorf("failed to write cluster data: %w", err)
 	}
 
+	docColumns := make([]vectorDocColumn, 0, len(docs))
+	for _, doc := range docs {
+		docColumns = append(docColumns, vectorDocColumn{
+			ID:         doc.id.String(),
+			NumericID:  doc.numericID,
+			WALSeq:     doc.walSeq,
+			Deleted:    false,
+			Attributes: doc.attrs,
+			Vector:     doc.vec,
+		})
+	}
+	docsData, err := json.Marshal(docColumns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize docs: %w", err)
+	}
+	docsKey, err := writer.WriteDocsData(ctx, docsData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write docs: %w", err)
+	}
+
 	writer.Seal()
 
 	// Calculate segment stats
@@ -328,13 +459,14 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		bytesPerElement = 4
 	}
 	vectorBytes := int64(len(docs) * dims * bytesPerElement)
-	totalBytes := int64(centroidsBuf.Len()) + int64(offsetsBuf.Len()) + int64(len(ivfIndex.GetClusterDataBytes()))
+	totalBytes := int64(centroidsBuf.Len()) + int64(offsetsBuf.Len()) + int64(len(ivfIndex.GetClusterDataBytes())) + int64(len(docsData))
 
 	segment := &index.Segment{
 		ID:          segID,
 		Level:       index.L0,
 		StartWALSeq: startSeq,
 		EndWALSeq:   endSeq,
+		DocsKey:     docsKey,
 		IVFKeys: &index.IVFKeys{
 			CentroidsKey:      centroidsKey,
 			ClusterOffsetsKey: offsetsKey,

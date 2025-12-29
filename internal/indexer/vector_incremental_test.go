@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
@@ -516,8 +517,8 @@ func TestExtractVectorDocuments(t *testing.T) {
 		if dims != 3 {
 			t.Errorf("expected 3 dims, got %d", dims)
 		}
-		if docs[0].id != 1 {
-			t.Errorf("expected id=1, got %d", docs[0].id)
+		if docs[0].id.Type() != document.IDTypeU64 || docs[0].id.U64() != 1 {
+			t.Errorf("expected id=1, got %s", docs[0].id.String())
 		}
 	})
 

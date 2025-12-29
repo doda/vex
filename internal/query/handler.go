@@ -671,7 +671,24 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 
 	// Merge index results with tail results
 	// Tail results are authoritative for deduplication (newer data)
-	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq)
+	var indexDocIDs map[uint64]document.ID
+	if len(indexResults) > 0 && h.indexReader != nil {
+		indexedDocs, err := h.indexReader.LoadIVFSegmentDocs(ctx, loaded.State.Index.ManifestKey)
+		if err == nil && len(indexedDocs) > 0 {
+			indexDocIDs = make(map[uint64]document.ID, len(indexedDocs))
+			for _, idoc := range indexedDocs {
+				if idoc.NumericID == 0 {
+					continue
+				}
+				docID, ok := indexedDocumentID(idoc)
+				if !ok {
+					continue
+				}
+				indexDocIDs[idoc.NumericID] = docID
+			}
+		}
+	}
+	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq, indexDocIDs)
 	return rows, nil
 }
 
@@ -747,7 +764,7 @@ func (h *Handler) searchIndexWithFilter(ctx context.Context, ns string, loaded *
 // 2. Index results have WAL seq <= indexedWALSeq (when the index was built)
 // 3. For duplicate doc IDs in index results, we keep the first occurrence (they should be unique in a well-formed index)
 // 4. Tombstones in tail exclude documents from results
-func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64) []Row {
+func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64, indexDocIDs map[uint64]document.ID) []Row {
 	// Use deduplicator to track tail documents for proper deduplication.
 	// Tail always has the authoritative version (higher WAL seq than index).
 	dedup := NewDeduplicator()
@@ -790,7 +807,13 @@ func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResult
 		}
 		seenIndexDocs[res.DocID] = true
 
-		idStr := document.NewU64ID(res.DocID).String()
+		docID := document.NewU64ID(res.DocID)
+		if indexDocIDs != nil {
+			if mapped, ok := indexDocIDs[res.DocID]; ok {
+				docID = mapped
+			}
+		}
+		idStr := docID.String()
 
 		// Check if this doc exists in tail - tail is always authoritative
 		// Tail contains all docs with WAL seq > indexedWALSeq, so if a doc
@@ -804,7 +827,7 @@ func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResult
 
 		// Add to results - doc not in tail so index version is current
 		docDistances[idStr] = scoredDoc{
-			docID:      res.DocID,
+			docID:      docIDToAny(docID),
 			dist:       float64(res.Distance),
 			attributes: nil, // No attributes from index
 		}
@@ -853,18 +876,8 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, loaded *names
 					continue
 				}
 
-				// Parse document ID
-				var docID document.ID
-				if idoc.NumericID != 0 {
-					docID = document.NewU64ID(idoc.NumericID)
-				} else if idoc.ID != "" {
-					var err error
-					docID, err = document.ParseID(idoc.ID)
-					if err != nil {
-						// Fall back to string ID if parse fails
-						docID, _ = document.NewStringID(idoc.ID)
-					}
-				} else {
+				docID, ok := indexedDocumentID(idoc)
+				if !ok {
 					continue // Skip documents with no valid ID
 				}
 
@@ -1027,18 +1040,8 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 					continue
 				}
 
-				// Parse document ID
-				var docID document.ID
-				if idoc.NumericID != 0 {
-					docID = document.NewU64ID(idoc.NumericID)
-				} else if idoc.ID != "" {
-					var err error
-					docID, err = document.ParseID(idoc.ID)
-					if err != nil {
-						// Fall back to string ID if parse fails
-						docID, _ = document.NewStringID(idoc.ID)
-					}
-				} else {
+				docID, ok := indexedDocumentID(idoc)
+				if !ok {
 					continue // Skip documents with no valid ID
 				}
 
@@ -1448,6 +1451,24 @@ func (h *Handler) buildFTSConfigsFromSchema(loaded *namespace.LoadedState) map[s
 		}
 	}
 	return configs
+}
+
+func indexedDocumentID(idoc index.IndexedDocument) (document.ID, bool) {
+	if idoc.ID != "" {
+		docID, err := document.ParseID(idoc.ID)
+		if err == nil {
+			return docID, true
+		}
+		docID, err = document.NewStringID(idoc.ID)
+		if err == nil {
+			return docID, true
+		}
+		return document.ID{}, false
+	}
+	if idoc.NumericID != 0 {
+		return document.NewU64ID(idoc.NumericID), true
+	}
+	return document.ID{}, false
 }
 
 // docIDToAny converts a document.ID to an interface{} for JSON serialization.

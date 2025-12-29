@@ -1058,3 +1058,13 @@ KEY DEPENDENCIES:
 - Files changed: task_list.json.
 - Tests: /usr/local/go/bin/go test ./internal/indexer -run "MissingWAL" -count=1 (pass).
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+[2025-12-29T23:40:00Z] Completed indexer-support-uuid-string-ids: PASS
+- Implemented vector L0 indexing for UUID/string IDs by hashing typed IDs, writing docs column with ID/NumericID/Vector, and mapping indexed IDs back during vector queries.
+- Adjusted indexed doc ID parsing to prefer stored ID strings to avoid treating hashed NumericID as u64.
+- Added indexer test covering UUID/string WAL writes, segment docs column, and ANN queries returning those IDs.
+- Files changed: internal/indexer/l0_builder.go, internal/query/handler.go, internal/index/reader.go, internal/indexer/vector_incremental_test.go, internal/indexer/non_u64_ids_test.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run TestIndexerSupportsUUIDAndStringIDs -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/indexer -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: indexer tests assumed u64 IDs; updated assertion to use document ID parsing.
+- Follow-ups: none.

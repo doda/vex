@@ -872,6 +872,35 @@ func (r *Reader) LoadSegmentDocs(ctx context.Context, manifestKey string) ([]Ind
 	return allDocs, nil
 }
 
+// LoadIVFSegmentDocs loads documents for the first IVF segment in a manifest.
+// Returns nil when no IVF segment or docs column exists.
+func (r *Reader) LoadIVFSegmentDocs(ctx context.Context, manifestKey string) ([]IndexedDocument, error) {
+	if manifestKey == "" || r.store == nil {
+		return nil, nil
+	}
+
+	manifest, err := r.LoadManifest(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+
+	var ivfSegment *Segment
+	for i := range manifest.Segments {
+		if manifest.Segments[i].IVFKeys.HasIVF() {
+			ivfSegment = &manifest.Segments[i]
+			break
+		}
+	}
+	if ivfSegment == nil {
+		return nil, nil
+	}
+
+	return r.loadDocsFromSegment(ctx, *ivfSegment)
+}
+
 // loadDocsFromSegment reads documents from a single segment.
 func (r *Reader) loadDocsFromSegment(ctx context.Context, seg Segment) ([]IndexedDocument, error) {
 	if seg.DocsKey == "" {

@@ -2454,7 +2454,7 @@
       "Write UUID/string IDs with vectors and verify they appear in indexed segments",
       "Query those IDs and verify results include them"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/indexer/l0_builder.go"
     ]
@@ -2507,7 +2507,7 @@
       "Add test for UUID ID vector indexing",
       "Add test for string ID vector indexing"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/indexer"
     ]
