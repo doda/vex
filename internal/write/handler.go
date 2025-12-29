@@ -41,6 +41,7 @@ var (
 	ErrPatchByFilterTooMany      = errors.New("patch_by_filter exceeds maximum rows limit")
 	ErrInvalidFilter             = errors.New("invalid filter expression")
 	ErrSourceNamespaceNotFound   = errors.New("source namespace not found")
+	ErrFilterOpRequiresTail      = errors.New("filter operation requires tail store")
 	ErrSchemaTypeChange          = errors.New("changing attribute type is not allowed")
 	ErrInvalidSchema             = errors.New("invalid schema")
 	ErrBackpressure              = errors.New("write rejected: unindexed data exceeds 2GB threshold")
@@ -437,10 +438,7 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 	// Phase 1: Get candidate IDs at the current snapshot
 	// We need a tail store to evaluate the filter
 	if h.tailStore == nil {
-		// No tail store configured - filter operations require document state
-		// For now, we'll scan available documents
-		// In a real deployment, this should be provided
-		return false, nil
+		return false, fmt.Errorf("%w: delete_by_filter requires tail store", ErrFilterOpRequiresTail)
 	}
 
 	// Refresh tail to ensure we have current data
@@ -546,8 +544,7 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 	// Phase 1: Get candidate IDs at the current snapshot
 	// We need a tail store to evaluate the filter
 	if h.tailStore == nil {
-		// No tail store configured - filter operations require document state
-		return false, nil
+		return false, fmt.Errorf("%w: patch_by_filter requires tail store", ErrFilterOpRequiresTail)
 	}
 
 	// Refresh tail to ensure we have current data

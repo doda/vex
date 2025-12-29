@@ -13,6 +13,33 @@ import (
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
+func TestHandler_PatchByFilter_RequiresTailStore(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandlerWithTail(store, stateMan, nil)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	req := &WriteRequest{
+		RequestID: "patch-by-filter-no-tail",
+		PatchByFilter: &PatchByFilterRequest{
+			Filter:  []any{"category", "Eq", "A"},
+			Updates: map[string]any{"status": "updated"},
+		},
+	}
+
+	_, err = handler.Handle(ctx, "test-patch-no-tail", req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrFilterOpRequiresTail) {
+		t.Fatalf("expected ErrFilterOpRequiresTail, got %v", err)
+	}
+}
+
 // --- Test: patch_by_filter updates documents matching filter ---
 
 func TestHandler_PatchByFilter_UpdatesMatchingDocuments(t *testing.T) {

@@ -83,6 +83,32 @@ func insertDocumentsForTest(t *testing.T, ctx context.Context, handler *Handler,
 	tailStore.AddWALEntry(ns, walEntry)
 }
 
+func TestHandler_DeleteByFilter_RequiresTailStore(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	handler, err := NewHandlerWithTail(store, stateMan, nil)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	req := &WriteRequest{
+		RequestID: "delete-by-filter-no-tail",
+		DeleteByFilter: &DeleteByFilterRequest{
+			Filter: []any{"category", "Eq", "A"},
+		},
+	}
+
+	_, err = handler.Handle(ctx, "test-delete-no-tail", req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrFilterOpRequiresTail) {
+		t.Fatalf("expected ErrFilterOpRequiresTail, got %v", err)
+	}
+}
+
 // --- Test: delete_by_filter removes documents matching filter ---
 
 func TestHandler_DeleteByFilter_RemovesMatchingDocuments(t *testing.T) {

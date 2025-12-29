@@ -2267,7 +2267,7 @@
       "Disable tail store and issue delete_by_filter to verify a 5xx/400 error",
       "Verify normal execution still succeeds when tail is available"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/write/handler.go"
     ]
