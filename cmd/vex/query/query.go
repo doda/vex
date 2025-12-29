@@ -13,6 +13,7 @@ import (
 
 	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/pkg/api"
+	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 func Run(args []string) {
@@ -31,7 +32,29 @@ func Run(args []string) {
 	}
 	cfg.Mode = config.ModeQuery
 
+	var store objectstore.Store
+	if cfg.ObjectStore.Type != "" {
+		var err error
+		store, err = objectstore.New(objectstore.Config{
+			Type:      cfg.ObjectStore.Type,
+			Endpoint:  cfg.ObjectStore.Endpoint,
+			Bucket:    cfg.ObjectStore.Bucket,
+			AccessKey: cfg.ObjectStore.AccessKey,
+			SecretKey: cfg.ObjectStore.SecretKey,
+			Region:    cfg.ObjectStore.Region,
+			UseSSL:    cfg.ObjectStore.UseSSL,
+			RootPath:  cfg.ObjectStore.RootPath,
+		})
+		if err != nil {
+			log.Fatalf("Failed to initialize object store: %v", err)
+		}
+		fmt.Printf("Connected to object store: %s at %s\n", cfg.ObjectStore.Type, cfg.ObjectStore.Endpoint)
+	}
+
 	router := api.NewRouter(cfg)
+	if err := router.SetStore(store); err != nil {
+		log.Fatalf("Failed to initialize server store: %v", err)
+	}
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
@@ -59,6 +82,10 @@ func Run(args []string) {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Shutdown error: %v", err)
+	}
+
+	if err := router.Close(); err != nil {
+		log.Printf("Router close error: %v", err)
 	}
 
 	fmt.Println("Query node stopped")

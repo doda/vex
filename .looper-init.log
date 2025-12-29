@@ -27,9 +27,9 @@ Connected to object store: filesystem at http://localhost:9000
 Starting vex server on :8080
 
 8. Testing HTTP endpoints...
-{"time":"2025-12-29T20:53:35.389081615Z","level":"INFO","msg":"request completed","request_id":"f153f5b4-47f7-4659-9566-dc668890dd23","endpoint":"GET /health","cache_temperature":"cold","server_total_ms":0.276,"status":200,"method":"GET","path":"/health"}
+{"time":"2025-12-29T21:13:50.508972002Z","level":"INFO","msg":"request completed","request_id":"4192662a-d848-401f-b6bf-56d9bc3aecca","endpoint":"GET /health","cache_temperature":"cold","server_total_ms":0.103,"status":200,"method":"GET","path":"/health"}
    - GET /health: OK
-{"time":"2025-12-29T20:53:35.407767784Z","level":"INFO","msg":"request completed","request_id":"b96a554d-df21-40e8-bec7-091570c3f01e","endpoint":"GET /v1/namespaces","cache_temperature":"cold","server_total_ms":0.193,"status":200,"method":"GET","path":"/v1/namespaces"}
+{"time":"2025-12-29T21:13:50.527181835Z","level":"INFO","msg":"request completed","request_id":"54e37325-6561-4567-8bfe-aecc87fc19b8","endpoint":"GET /v1/namespaces","cache_temperature":"cold","server_total_ms":0.189,"status":200,"method":"GET","path":"/v1/namespaces"}
    - GET /v1/namespaces: OK
 
 9. Stopping vex server...
@@ -48,7 +48,7 @@ Server stopped
 === RUN   TestSubcommands/no_args_shows_usage_and_exits_1
 === RUN   TestSubcommands/unknown_command_exits_1
 --- PASS: TestSubcommands (0.14s)
-    --- PASS: TestSubcommands/help_shows_usage (0.03s)
+    --- PASS: TestSubcommands/help_shows_usage (0.04s)
     --- PASS: TestSubcommands/version_prints_version_info (0.03s)
     --- PASS: TestSubcommands/no_args_shows_usage_and_exits_1 (0.03s)
     --- PASS: TestSubcommands/unknown_command_exits_1 (0.04s)
@@ -59,7 +59,7 @@ Server stopped
 === RUN   TestConfigLoading
 --- PASS: TestConfigLoading (2.02s)
 PASS
-ok  	github.com/vexsearch/vex/cmd/vex	6.233s
+ok  	github.com/vexsearch/vex/cmd/vex	6.243s
 === RUN   TestNewDiskCache
 --- PASS: TestNewDiskCache (0.00s)
 === RUN   TestDiskCache_PutGet
