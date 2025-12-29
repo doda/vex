@@ -29,24 +29,24 @@ var (
 		[]string{"namespace"},
 	)
 
-	// CacheHits tracks cache hits per cache type.
+	// CacheHits tracks cache hits per cache type and namespace.
 	CacheHits = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "cache_hits_total",
 			Help:      "Total cache hits",
 		},
-		[]string{"cache_type"}, // "disk" or "ram"
+		[]string{"cache_type", "namespace"}, // cache_type: "disk" or "ram"
 	)
 
-	// CacheMisses tracks cache misses per cache type.
+	// CacheMisses tracks cache misses per cache type and namespace.
 	CacheMisses = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "cache_misses_total",
 			Help:      "Total cache misses",
 		},
-		[]string{"cache_type"}, // "disk" or "ram"
+		[]string{"cache_type", "namespace"}, // cache_type: "disk" or "ram"
 	)
 
 	// IndexLag tracks the lag between WAL head and indexed WAL seq per namespace.
@@ -179,13 +179,13 @@ func SetTailBytes(ns string, bytes int64) {
 }
 
 // IncCacheHit increments the cache hit counter.
-func IncCacheHit(cacheType string) {
-	CacheHits.WithLabelValues(cacheType).Inc()
+func IncCacheHit(cacheType, ns string) {
+	CacheHits.WithLabelValues(cacheType, ns).Inc()
 }
 
 // IncCacheMiss increments the cache miss counter.
-func IncCacheMiss(cacheType string) {
-	CacheMisses.WithLabelValues(cacheType).Inc()
+func IncCacheMiss(cacheType, ns string) {
+	CacheMisses.WithLabelValues(cacheType, ns).Inc()
 }
 
 // SetIndexLag sets the index lag for a namespace.
