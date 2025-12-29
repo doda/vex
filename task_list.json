@@ -2546,7 +2546,7 @@
       "Set per-namespace cap in config and verify enforcement under load",
       "Verify default cap is applied when config is unset"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/cache/memory.go",
       "internal/config/config.go"

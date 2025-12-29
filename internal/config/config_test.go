@@ -20,6 +20,9 @@ func TestDefault(t *testing.T) {
 	if cfg.Cache.BudgetPct != 95 {
 		t.Errorf("expected cache budget 95, got %d", cfg.Cache.BudgetPct)
 	}
+	if cfg.Cache.RAMNamespaceCapPct != 25 {
+		t.Errorf("expected ram namespace cap pct 25, got %d", cfg.Cache.RAMNamespaceCapPct)
+	}
 }
 
 func TestLoadEnvOverrides(t *testing.T) {
@@ -208,10 +211,11 @@ func TestObjectStoreConfigFromFile(t *testing.T) {
 
 func TestCacheSizeConfig(t *testing.T) {
 	envs := map[string]string{
-		"VEX_CACHE_NVME_PATH":    "/data/cache",
-		"VEX_CACHE_NVME_SIZE_GB": "500",
-		"VEX_CACHE_RAM_SIZE_MB":  "4096",
-		"VEX_CACHE_BUDGET_PCT":   "90",
+		"VEX_CACHE_NVME_PATH":             "/data/cache",
+		"VEX_CACHE_NVME_SIZE_GB":          "500",
+		"VEX_CACHE_RAM_SIZE_MB":           "4096",
+		"VEX_CACHE_RAM_NAMESPACE_CAP_PCT": "35",
+		"VEX_CACHE_BUDGET_PCT":            "90",
 	}
 	for k, v := range envs {
 		os.Setenv(k, v)
@@ -232,6 +236,9 @@ func TestCacheSizeConfig(t *testing.T) {
 	if cfg.Cache.RAMSizeMB != 4096 {
 		t.Errorf("expected ram size 4096MB, got %d", cfg.Cache.RAMSizeMB)
 	}
+	if cfg.Cache.RAMNamespaceCapPct != 35 {
+		t.Errorf("expected ram namespace cap pct 35, got %d", cfg.Cache.RAMNamespaceCapPct)
+	}
 	if cfg.Cache.BudgetPct != 90 {
 		t.Errorf("expected budget pct 90, got %d", cfg.Cache.BudgetPct)
 	}
@@ -245,6 +252,7 @@ func TestCacheConfigFromFile(t *testing.T) {
 			"nvme_path": "/mnt/ssd/vex",
 			"nvme_size_gb": 200,
 			"ram_size_mb": 8192,
+			"ram_namespace_cap_pct": 40,
 			"budget_pct": 85
 		}
 	}`
@@ -265,6 +273,9 @@ func TestCacheConfigFromFile(t *testing.T) {
 	}
 	if cfg.Cache.RAMSizeMB != 8192 {
 		t.Errorf("expected ram size 8192MB, got %d", cfg.Cache.RAMSizeMB)
+	}
+	if cfg.Cache.RAMNamespaceCapPct != 40 {
+		t.Errorf("expected ram namespace cap pct 40, got %d", cfg.Cache.RAMNamespaceCapPct)
 	}
 	if cfg.Cache.BudgetPct != 85 {
 		t.Errorf("expected budget pct 85, got %d", cfg.Cache.BudgetPct)
@@ -468,6 +479,9 @@ func TestPartialConfigMerge(t *testing.T) {
 	}
 	if cfg.Cache.BudgetPct != 95 {
 		t.Errorf("expected default budget pct to be preserved, got %d", cfg.Cache.BudgetPct)
+	}
+	if cfg.Cache.RAMNamespaceCapPct != 25 {
+		t.Errorf("expected default ram namespace cap pct to be preserved, got %d", cfg.Cache.RAMNamespaceCapPct)
 	}
 }
 

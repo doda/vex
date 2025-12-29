@@ -128,10 +128,11 @@ type ObjectStoreConfig struct {
 }
 
 type CacheConfig struct {
-	NVMePath     string `json:"nvme_path"`
-	NVMESizeGB   int    `json:"nvme_size_gb"`
-	RAMSizeMB    int    `json:"ram_size_mb"`
-	BudgetPct    int    `json:"budget_pct"`
+	NVMePath           string `json:"nvme_path"`
+	NVMESizeGB         int    `json:"nvme_size_gb"`
+	RAMSizeMB          int    `json:"ram_size_mb"`
+	RAMNamespaceCapPct int    `json:"ram_namespace_cap_pct"`
+	BudgetPct          int    `json:"budget_pct"`
 }
 
 type MembershipConfig struct {
@@ -206,10 +207,11 @@ func Default() *Config {
 			UseSSL:    false,
 		},
 		Cache: CacheConfig{
-			NVMePath:   "/tmp/vex-cache",
-			NVMESizeGB: 10,
-			RAMSizeMB:  512,
-			BudgetPct:  95,
+			NVMePath:           "/tmp/vex-cache",
+			NVMESizeGB:         10,
+			RAMSizeMB:          512,
+			RAMNamespaceCapPct: 25,
+			BudgetPct:          95,
 		},
 		Membership: MembershipConfig{
 			Type:  "static",
@@ -280,6 +282,11 @@ func Load(path string) (*Config, error) {
 	if env := os.Getenv("VEX_CACHE_RAM_SIZE_MB"); env != "" {
 		if n, err := parseIntEnv(env); err == nil {
 			cfg.Cache.RAMSizeMB = n
+		}
+	}
+	if env := os.Getenv("VEX_CACHE_RAM_NAMESPACE_CAP_PCT"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Cache.RAMNamespaceCapPct = n
 		}
 	}
 	if env := os.Getenv("VEX_CACHE_BUDGET_PCT"); env != "" {

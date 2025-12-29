@@ -1124,3 +1124,13 @@ KEY DEPENDENCIES:
 - Challenges: init.sh command timed out on first attempt.
 - Resolution: reran init.sh with extended timeout.
 - Follow-ups: none.
+[2025-12-30T03:45:00Z] Completed ram-cache-per-namespace-cap-config: PASS
+- Added RAM per-namespace cap config (ram_namespace_cap_pct) with default 25% and env override.
+- Wired RAM cache construction to apply default namespace cap percent.
+- Updated config tests for defaults, env overrides, and file loading of RAM namespace cap.
+- Updated task_list.json to mark ram-cache-per-namespace-cap-config as passing.
+- Files changed: internal/config/config.go, cmd/vex/serve/serve.go, internal/config/config_test.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/config -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/cache -run "PerNamespaceBudgetCaps|CustomNamespaceCap" -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
