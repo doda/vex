@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
@@ -725,41 +726,52 @@ func (h *Handler) searchIndexWithFilter(ctx context.Context, ns string, loaded *
 		return nil
 	}
 
-	// Load filter indexes from all segments
-	// For now, we use the first segment with filter keys
-	// TODO: Support multiple segments with filter indexes
-	var filterKeys []string
-	var totalDocs uint32
+	var filterBitmap *roaring.Bitmap
 	for _, seg := range segments {
-		if len(seg.FilterKeys) > 0 {
-			filterKeys = seg.FilterKeys
-			if seg.Stats.RowCount > 0 {
-				totalDocs = uint32(seg.Stats.RowCount)
-			} else if seg.IVFKeys != nil && seg.IVFKeys.VectorCount > 0 {
-				totalDocs = uint32(seg.IVFKeys.VectorCount)
+		hasIVF := (seg.IVFKeys != nil && seg.IVFKeys.HasIVF()) || seg.VectorsKey != ""
+		if !hasIVF {
+			continue
+		}
+		if len(seg.FilterKeys) == 0 {
+			return nil
+		}
+
+		filterIndexes, err := h.indexReader.LoadFilterIndexes(ctx, seg.FilterKeys)
+		if err != nil || len(filterIndexes) == 0 {
+			return nil
+		}
+
+		var totalDocs uint32
+		if seg.Stats.RowCount > 0 {
+			totalDocs = uint32(seg.Stats.RowCount)
+		} else if seg.IVFKeys != nil && seg.IVFKeys.VectorCount > 0 {
+			totalDocs = uint32(seg.IVFKeys.VectorCount)
+		} else {
+			for _, idx := range filterIndexes {
+				if docCount := idx.GetDocCount(); docCount > totalDocs {
+					totalDocs = docCount
+				}
 			}
-			break
+		}
+
+		segBitmap := h.indexReader.EvaluateFilterOnIndex(f, filterIndexes, totalDocs)
+		if segBitmap == nil {
+			return nil
+		}
+		if segBitmap.IsEmpty() {
+			continue
+		}
+		if filterBitmap == nil {
+			filterBitmap = segBitmap
+		} else {
+			filterBitmap.Or(segBitmap)
 		}
 	}
 
-	if len(filterKeys) == 0 {
-		return nil
-	}
-
-	// Load the filter bitmap indexes
-	filterIndexes, err := h.indexReader.LoadFilterIndexes(ctx, filterKeys)
-	if err != nil || len(filterIndexes) == 0 {
-		return nil
-	}
-
-	// Evaluate the filter against the bitmap indexes
-	filterBitmap := h.indexReader.EvaluateFilterOnIndex(f, filterIndexes, totalDocs)
 	if filterBitmap == nil {
-		// Filter cannot be fully evaluated using indexes
 		return nil
 	}
 
-	// If the filter bitmap is empty, no documents match
 	if filterBitmap.IsEmpty() {
 		return []vector.IVFSearchResult{}
 	}
