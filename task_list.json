@@ -2533,7 +2533,7 @@
     "steps": [
       "Call warm-cache endpoint and verify empty response body with 200 status"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "pkg/api/router.go"
     ]
