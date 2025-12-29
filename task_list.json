@@ -2143,7 +2143,7 @@
       "Index data with FTS, run a BM25 query, and confirm indexed docs are returned",
       "Verify tail overlay still applies with correct scoring"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/query/handler.go",
       "internal/fts"

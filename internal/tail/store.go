@@ -342,6 +342,44 @@ func (ts *TailStore) Scan(ctx context.Context, namespace string, f *filter.Filte
 	return results, nil
 }
 
+// ScanIncludingDeleted returns all documents in the tail, including deleted ones.
+// Deleted docs are returned regardless of filter so they can shadow indexed versions.
+func (ts *TailStore) ScanIncludingDeleted(ctx context.Context, namespace string, f *filter.Filter) ([]*Document, error) {
+	nt := ts.getNamespace(namespace)
+	if nt == nil {
+		return nil, nil
+	}
+
+	nt.mu.RLock()
+	defer nt.mu.RUnlock()
+
+	var results []*Document
+	for _, doc := range nt.documents {
+		if doc.Deleted {
+			results = append(results, doc)
+			continue
+		}
+
+		if f != nil {
+			filterDoc := buildFilterDoc(doc)
+			if !f.Eval(filterDoc) {
+				continue
+			}
+		}
+
+		results = append(results, doc)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].WalSeq != results[j].WalSeq {
+			return results[i].WalSeq > results[j].WalSeq
+		}
+		return results[i].SubBatchID > results[j].SubBatchID
+	})
+
+	return results, nil
+}
+
 func (ts *TailStore) VectorScan(ctx context.Context, namespace string, queryVector []float32, topK int, metric DistanceMetric, f *filter.Filter) ([]VectorScanResult, error) {
 	nt := ts.getNamespace(namespace)
 	if nt == nil {

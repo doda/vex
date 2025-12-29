@@ -810,3 +810,23 @@ KEY DEPENDENCIES:
 - Issues found: JSON tags mismatched docs column format (fixed).
 - Tests not re-run (per instruction to trust existing runs).
 - Marked task as passing in `task_list.json`.
+[2025-12-29T06:02:58Z] Completed fix-bm25-index-scan: Review BM25 index scan
+- Reviewed staged changes in , , and .
+- Verified BM25 queries now load indexed segment docs, merge with tail data, and compute BM25 scores across both sources.
+- Identified deletion shadowing gap when tail scan omitted deleted docs.
+- Added  to  and BM25 handler fallback to include deleted docs for deduplication.
+- Verified dedup logic keeps latest WAL version and excludes deleted docs in results.
+- Simplicity check: kept merge/dedup logic localized; optional interface avoids broad API churn.
+- Issues found: deleted tail docs were not shadowing indexed results (fixed).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in .
+[2025-12-29T06:02:58Z] Completed fix-bm25-index-scan: Review BM25 index scan
+- Reviewed staged changes in `internal/query/handler.go`, `internal/index/reader.go`, and `internal/query/bm25_index_scan_test.go`.
+- Verified BM25 queries now load indexed segment docs, merge with tail data, and compute BM25 scores across both sources.
+- Identified deletion shadowing gap when tail scan omitted deleted docs.
+- Added `ScanIncludingDeleted` to `internal/tail/store.go` and BM25 handler fallback to include deleted docs for deduplication.
+- Verified dedup logic keeps latest WAL version and excludes deleted docs in results.
+- Simplicity check: kept merge/dedup logic localized; optional interface avoids broad API churn.
+- Issues found: deleted tail docs were not shadowing indexed results (fixed).
+- Tests not re-run (per instruction to trust existing runs).
+- Marked task as passing in `task_list.json`.

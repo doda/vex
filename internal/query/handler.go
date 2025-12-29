@@ -942,15 +942,12 @@ func (h *Handler) deduplicateAttrQueryDocs(docs []*tail.Document, indexedWALSeq 
 }
 
 // executeBM25Query executes a BM25 full-text search query.
-// It searches the tail for documents matching the query and ranks them by BM25 score.
+// It searches both indexed segments and tail for documents matching the query
+// and ranks them by BM25 score.
 // Documents with zero score are excluded from results.
 // When LastAsPrefix is true, the last token is matched as a prefix for typeahead support,
 // and prefix matches score 1.0 (as per turbopuffer spec).
 func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest) ([]Row, error) {
-	if h.tailStore == nil {
-		return nil, nil
-	}
-
 	// Get FTS config for the field from schema
 	ftsCfg := h.getFTSConfig(loaded, parsed.Field)
 	if ftsCfg == nil {
@@ -970,22 +967,80 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 		return []Row{}, nil
 	}
 
-	// Scan documents from tail
-	docs, err := h.tailStore.Scan(ctx, ns, f)
-	if err != nil {
-		return nil, err
+	// Collect all documents from both indexed segments and tail
+	var allDocs []*tail.Document
+	// Step 1: Load documents from indexed segments if available
+	if loaded.State.Index.ManifestKey != "" && h.indexReader != nil {
+		indexedDocs, err := h.indexReader.LoadSegmentDocs(ctx, loaded.State.Index.ManifestKey)
+		if err == nil && len(indexedDocs) > 0 {
+			// Convert indexed documents to tail.Document format
+			for _, idoc := range indexedDocs {
+				// Skip deleted documents from index
+				if idoc.Deleted {
+					continue
+				}
+
+				// Parse document ID
+				var docID document.ID
+				if idoc.NumericID != 0 {
+					docID = document.NewU64ID(idoc.NumericID)
+				} else if idoc.ID != "" {
+					var err error
+					docID, err = document.ParseID(idoc.ID)
+					if err != nil {
+						// Fall back to string ID if parse fails
+						docID, _ = document.NewStringID(idoc.ID)
+					}
+				} else {
+					continue // Skip documents with no valid ID
+				}
+
+				doc := &tail.Document{
+					ID:         docID,
+					WalSeq:     idoc.WALSeq,
+					Attributes: idoc.Attributes,
+					Deleted:    false,
+				}
+
+				// Apply filter if present
+				if f != nil {
+					filterDoc := make(map[string]any)
+					filterDoc["id"] = docIDToAny(doc.ID)
+					for k, v := range doc.Attributes {
+						filterDoc[k] = v
+					}
+					if !f.Eval(filterDoc) {
+						continue
+					}
+				}
+
+				allDocs = append(allDocs, doc)
+			}
+		}
 	}
 
-	if len(docs) == 0 {
+	// Step 2: Get documents from tail (unindexed data), including deletes for deduplication.
+	if h.tailStore != nil {
+		tailDocs, err := h.scanTailForBM25(ctx, ns, f)
+		if err != nil {
+			return nil, err
+		}
+		allDocs = append(allDocs, tailDocs...)
+	}
+
+	// Step 3: Deduplicate documents - tail (newer WAL seq) takes precedence
+	allDocs = h.deduplicateBM25Docs(allDocs)
+
+	if len(allDocs) == 0 {
 		return []Row{}, nil
 	}
 
-	// Build a temporary FTS index from tail documents for BM25 scoring
+	// Step 4: Build a temporary FTS index from all documents for BM25 scoring
 	// This computes term frequencies and document statistics needed for BM25
 	index := fts.NewIndex(parsed.Field, ftsCfg)
-	docIDMap := make(map[uint32]*tail.Document) // Map internal doc IDs to tail docs
+	docIDMap := make(map[uint32]*tail.Document) // Map internal doc IDs to docs
 
-	for i, doc := range docs {
+	for i, doc := range allDocs {
 		if doc.Deleted {
 			continue
 		}
@@ -1006,7 +1061,7 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 		return []Row{}, nil
 	}
 
-	// Score documents using BM25 (with optional prefix matching for last token)
+	// Step 5: Score documents using BM25 (with optional prefix matching for last token)
 	type scoredDoc struct {
 		doc   *tail.Document
 		score float64
@@ -1042,6 +1097,49 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 	}
 
 	return rows, nil
+}
+
+// deduplicateBM25Docs removes duplicate documents, keeping the one with higher WAL seq.
+// If a document appears in both indexed (lower WAL seq) and tail (higher WAL seq),
+// the tail version takes precedence. Deleted documents are also handled.
+func (h *Handler) deduplicateBM25Docs(docs []*tail.Document) []*tail.Document {
+	// Map from document ID key to the latest version
+	seen := make(map[string]*tail.Document)
+
+	for _, doc := range docs {
+		key := doc.ID.String()
+		existing, ok := seen[key]
+		if !ok {
+			seen[key] = doc
+			continue
+		}
+
+		// Keep the document with the higher WAL sequence number
+		if doc.WalSeq > existing.WalSeq {
+			seen[key] = doc
+		}
+	}
+
+	// Collect non-deleted documents
+	result := make([]*tail.Document, 0, len(seen))
+	for _, doc := range seen {
+		if !doc.Deleted {
+			result = append(result, doc)
+		}
+	}
+
+	return result
+}
+
+// scanTailForBM25 includes deleted docs so they can shadow indexed versions.
+func (h *Handler) scanTailForBM25(ctx context.Context, ns string, f *filter.Filter) ([]*tail.Document, error) {
+	type scanIncludingDeleted interface {
+		ScanIncludingDeleted(ctx context.Context, namespace string, f *filter.Filter) ([]*tail.Document, error)
+	}
+	if scanner, ok := h.tailStore.(scanIncludingDeleted); ok {
+		return scanner.ScanIncludingDeleted(ctx, ns, f)
+	}
+	return h.tailStore.Scan(ctx, ns, f)
 }
 
 // getFTSConfig retrieves the FTS configuration for a field from the schema.

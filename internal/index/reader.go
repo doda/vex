@@ -877,6 +877,64 @@ func (r *Reader) loadDocsFromSegment(ctx context.Context, seg Segment) ([]Indexe
 	return docs, nil
 }
 
+// LoadFTSIndexes loads FTS indexes from all segments in a manifest.
+// Returns a map of attribute name -> list of FTS indexes (one per segment).
+// Multiple indexes for the same attribute need to be merged for BM25 scoring.
+func (r *Reader) LoadFTSIndexes(ctx context.Context, manifestKey string) (map[string][][]byte, error) {
+	if manifestKey == "" || r.store == nil {
+		return nil, nil
+	}
+
+	manifest, err := r.LoadManifest(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+
+	result := make(map[string][][]byte)
+	for _, seg := range manifest.Segments {
+		for _, ftsKey := range seg.FTSKeys {
+			data, err := r.loadObject(ctx, ftsKey)
+			if err != nil {
+				// Skip if we can't load this FTS index
+				continue
+			}
+			// Extract attribute name from the key
+			// Format: <segmentKey>/fts/<attribute>.idx
+			attrName := extractAttrNameFromFTSKey(ftsKey)
+			if attrName != "" {
+				result[attrName] = append(result[attrName], data)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// extractAttrNameFromFTSKey extracts the attribute name from an FTS key.
+// Key format: .../fts/<attribute>.idx
+func extractAttrNameFromFTSKey(key string) string {
+	// Find /fts/ in the key
+	idx := -1
+	for i := len(key) - 1; i >= 4; i-- {
+		if key[i-4:i+1] == "/fts/" {
+			idx = i + 1
+			break
+		}
+	}
+	if idx == -1 || idx >= len(key) {
+		return ""
+	}
+	// Extract attribute name (before .idx suffix)
+	rest := key[idx:]
+	if len(rest) > 4 && rest[len(rest)-4:] == ".idx" {
+		return rest[:len(rest)-4]
+	}
+	return ""
+}
+
 // Clear removes cached readers for a namespace.
 func (r *Reader) Clear(namespace string) {
 	r.mu.Lock()
