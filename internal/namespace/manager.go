@@ -411,6 +411,29 @@ func (m *StateManager) AdvanceIndex(ctx context.Context, namespace string, etag 
 	return loaded, err
 }
 
+// UpdateIndexManifest updates the manifest pointer for a compaction publish without changing WAL bytes.
+func (m *StateManager) UpdateIndexManifest(ctx context.Context, namespace string, etag string, manifestKey string, manifestSeq uint64, indexedWALSeq uint64) (*LoadedState, error) {
+	loaded, err := m.Update(ctx, namespace, etag, func(state *State) error {
+		state.Index.ManifestSeq = manifestSeq
+		state.Index.ManifestKey = manifestKey
+		state.Index.IndexedWALSeq = indexedWALSeq
+
+		if state.Index.IndexedWALSeq >= state.WAL.HeadSeq {
+			state.Index.Status = "up-to-date"
+			state.WAL.Status = "up-to-date"
+		} else {
+			state.Index.Status = "updating"
+		}
+
+		return nil
+	})
+	if err == nil && loaded != nil {
+		metrics.SetTailBytes(namespace, loaded.State.WAL.BytesUnindexedEst)
+		metrics.SetIndexLag(namespace, loaded.State.WAL.HeadSeq-loaded.State.Index.IndexedWALSeq)
+	}
+	return loaded, err
+}
+
 // AddPendingRebuild adds a pending index rebuild to track.
 func (m *StateManager) AddPendingRebuild(ctx context.Context, namespace string, etag string, kind, attribute string) (*LoadedState, error) {
 	return m.Update(ctx, namespace, etag, func(state *State) error {

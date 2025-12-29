@@ -1283,3 +1283,18 @@ KEY DEPENDENCIES:
 - Tests: /usr/local/go/bin/go test ./internal/query -run TestEuclideanSquaredMetric -count=1 (pass).
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
+[2025-12-30T10:45:00Z] Completed compaction-publish-manifest: PASS
+- Implemented compaction manifest publishing with state.json updates and retention-based cleanup of obsolete segment objects.
+- Added UpdateIndexManifest for compaction-only state updates without changing WAL bytes.
+- Added background compactor publish/cleanup logic and state manager wiring.
+- Added compaction test covering manifest/state updates, compacted doc reads, and retention cleanup.
+- Files changed: internal/index/compactor.go.
+- Files changed: internal/namespace/manager.go.
+- Files changed: internal/index/compactor_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/index -run TestBackgroundCompactor_PublishesManifestAndCleansSegments -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/index -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: Background compactor needed state initialization to publish manifests.
+- Resolution: added test helper to seed state+manifest and WAL head for compaction runs.
+- Follow-ups: none.

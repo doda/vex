@@ -2760,7 +2760,7 @@
       "Run compaction and verify a new manifest is written and state.json is updated",
       "Verify queries read compacted segments and old segments are eligible for GC after retention"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/index/compactor.go",

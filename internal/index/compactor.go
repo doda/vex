@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -34,6 +35,10 @@ type CompactorConfig struct {
 	// DisableChecksums disables checksum verification when writing segments.
 	// This is primarily used for testing with in-memory stores.
 	DisableChecksums bool
+
+	// RetentionTime is the minimum age for obsolete segments before cleanup.
+	// A zero value falls back to the default retention window.
+	RetentionTime time.Duration
 }
 
 // DefaultCompactorConfig returns sensible defaults.
@@ -43,7 +48,24 @@ func DefaultCompactorConfig() *CompactorConfig {
 		NClusters:                0,     // Auto-calculate
 		Metric:                   vector.MetricCosineDistance,
 		MaxConcurrentCompactions: 1, // Single compaction at a time
+		RetentionTime:            24 * time.Hour,
 	}
+}
+
+func normalizeCompactorConfig(config *CompactorConfig) *CompactorConfig {
+	if config == nil {
+		return DefaultCompactorConfig()
+	}
+	if config.MaxConcurrentCompactions <= 0 {
+		config.MaxConcurrentCompactions = 1
+	}
+	if config.Metric == "" {
+		config.Metric = vector.MetricCosineDistance
+	}
+	if config.RetentionTime == 0 {
+		config.RetentionTime = DefaultCompactorConfig().RetentionTime
+	}
+	return config
 }
 
 // FullCompactor performs actual segment merging with document deduplication.
@@ -58,17 +80,7 @@ type FullCompactor struct {
 
 // NewFullCompactor creates a compactor that performs real segment merging.
 func NewFullCompactor(store objectstore.Store, namespace string, config *CompactorConfig) *FullCompactor {
-	if config == nil {
-		config = DefaultCompactorConfig()
-	} else {
-		// Apply defaults for unset fields
-		if config.MaxConcurrentCompactions <= 0 {
-			config.MaxConcurrentCompactions = 1
-		}
-		if config.Metric == "" {
-			config.Metric = vector.MetricCosineDistance
-		}
-	}
+	config = normalizeCompactorConfig(config)
 	return &FullCompactor{
 		store:     store,
 		namespace: namespace,
@@ -512,6 +524,7 @@ type BackgroundCompactor struct {
 	store     objectstore.Store
 	lsmConfig *LSMConfig
 	compConfig *CompactorConfig
+	stateMan  *namespace.StateManager
 
 	mu        sync.RWMutex
 	trees     map[string]*LSMTree
@@ -527,9 +540,7 @@ func NewBackgroundCompactor(store objectstore.Store, lsmConfig *LSMConfig, compC
 	if lsmConfig == nil {
 		lsmConfig = DefaultLSMConfig()
 	}
-	if compConfig == nil {
-		compConfig = DefaultCompactorConfig()
-	}
+	compConfig = normalizeCompactorConfig(compConfig)
 	return &BackgroundCompactor{
 		store:        store,
 		lsmConfig:    lsmConfig,
@@ -544,6 +555,13 @@ func (bc *BackgroundCompactor) RegisterNamespace(ns string, tree *LSMTree) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	bc.trees[ns] = tree
+}
+
+// SetStateManager configures the state manager used to publish compaction manifests.
+func (bc *BackgroundCompactor) SetStateManager(stateMan *namespace.StateManager) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	bc.stateMan = stateMan
 }
 
 // UnregisterNamespace removes a namespace from compaction monitoring.
@@ -661,10 +679,14 @@ func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
 		return fmt.Errorf("L0->L1 compaction failed: %w", err)
 	}
 
-	// Apply result to LSM tree
+	if err := bc.publishCompaction(context.Background(), ns, tree, plan, *result.NewSegment); err != nil {
+		return err
+	}
+
 	if err := tree.ApplyCompaction(plan, *result.NewSegment); err != nil {
 		return fmt.Errorf("failed to apply compaction: %w", err)
 	}
+	_ = bc.cleanupObsoleteSegments(context.Background(), plan.SourceSegments)
 
 	return nil
 }
@@ -691,11 +713,136 @@ func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
 		return fmt.Errorf("L1->L2 compaction failed: %w", err)
 	}
 
+	if err := bc.publishCompaction(context.Background(), ns, tree, plan, *result.NewSegment); err != nil {
+		return err
+	}
+
 	if err := tree.ApplyCompaction(plan, *result.NewSegment); err != nil {
 		return fmt.Errorf("failed to apply compaction: %w", err)
 	}
+	_ = bc.cleanupObsoleteSegments(context.Background(), plan.SourceSegments)
 
 	return nil
+}
+
+func (bc *BackgroundCompactor) publishCompaction(ctx context.Context, ns string, tree *LSMTree, plan *CompactionPlan, newSegment Segment) error {
+	bc.mu.RLock()
+	stateMan := bc.stateMan
+	bc.mu.RUnlock()
+	if stateMan == nil {
+		return fmt.Errorf("compaction state manager not configured")
+	}
+
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		return fmt.Errorf("failed to load state: %w", err)
+	}
+
+	manifest := tree.Manifest()
+	if manifest == nil {
+		return fmt.Errorf("failed to load manifest from tree")
+	}
+
+	for _, src := range plan.SourceSegments {
+		manifest.RemoveSegment(src.ID)
+	}
+	newSegment.Level = plan.TargetLevel
+	manifest.AddSegment(newSegment)
+	manifest.UpdateIndexedWALSeq()
+	manifest.GeneratedAt = time.Now().UTC()
+
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("manifest invalid after compaction: %w", err)
+	}
+
+	if err := VerifyManifestReferences(ctx, bc.store, manifest); err != nil {
+		return fmt.Errorf("manifest references missing objects: %w", err)
+	}
+
+	manifestData, err := manifest.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("failed to serialize manifest: %w", err)
+	}
+
+	newManifestSeq := loaded.State.Index.ManifestSeq + 1
+	newManifestKey := ManifestKey(ns, newManifestSeq)
+	_, err = bc.store.PutIfAbsent(ctx, newManifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), &objectstore.PutOptions{
+		ContentType: "application/json",
+	})
+	if err != nil {
+		if objectstore.IsConflictError(err) {
+			return fmt.Errorf("manifest already exists: %w", err)
+		}
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	_, err = stateMan.UpdateIndexManifest(ctx, ns, loaded.ETag, newManifestKey, newManifestSeq, manifest.IndexedWALSeq)
+	if err != nil {
+		return fmt.Errorf("failed to update state: %w", err)
+	}
+
+	return nil
+}
+
+func (bc *BackgroundCompactor) cleanupObsoleteSegments(ctx context.Context, segments []Segment) error {
+	retention := bc.compConfig.RetentionTime
+	now := time.Now()
+	var lastErr error
+
+	for _, seg := range segments {
+		age, ok := bc.segmentAge(ctx, seg, now)
+		if !ok {
+			continue
+		}
+		if age < retention {
+			continue
+		}
+		for _, key := range segmentObjectKeys(seg) {
+			if key == "" {
+				continue
+			}
+			if err := bc.store.Delete(ctx, key); err != nil && !objectstore.IsNotFoundError(err) {
+				lastErr = err
+			}
+		}
+	}
+
+	return lastErr
+}
+
+func (bc *BackgroundCompactor) segmentAge(ctx context.Context, seg Segment, now time.Time) (time.Duration, bool) {
+	if !seg.CreatedAt.IsZero() {
+		return now.Sub(seg.CreatedAt), true
+	}
+	keys := segmentObjectKeys(seg)
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		info, err := bc.store.Head(ctx, key)
+		if err != nil {
+			if objectstore.IsNotFoundError(err) {
+				continue
+			}
+			return 0, false
+		}
+		return now.Sub(info.LastModified), true
+	}
+	return 0, false
+}
+
+func segmentObjectKeys(seg Segment) []string {
+	var keys []string
+	if seg.DocsKey != "" {
+		keys = append(keys, seg.DocsKey)
+	}
+	if seg.VectorsKey != "" {
+		keys = append(keys, seg.VectorsKey)
+	}
+	keys = append(keys, seg.IVFKeys.AllKeys()...)
+	keys = append(keys, seg.FilterKeys...)
+	keys = append(keys, seg.FTSKeys...)
+	return keys
 }
 
 // TriggerCompaction forces a compaction check for a namespace.

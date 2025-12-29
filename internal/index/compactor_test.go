@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -25,6 +27,9 @@ func TestCompactorConfig_Defaults(t *testing.T) {
 	}
 	if config.MaxConcurrentCompactions != 1 {
 		t.Errorf("expected MaxConcurrentCompactions to be 1, got %d", config.MaxConcurrentCompactions)
+	}
+	if config.RetentionTime <= 0 {
+		t.Errorf("expected RetentionTime to be set, got %v", config.RetentionTime)
 	}
 }
 
@@ -270,6 +275,7 @@ func TestBackgroundCompactor_TriggerCompaction_UnknownNamespace(t *testing.T) {
 }
 
 func TestBackgroundCompactor_L0Compaction(t *testing.T) {
+	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 
 	config := &LSMConfig{
@@ -289,6 +295,9 @@ func TestBackgroundCompactor_L0Compaction(t *testing.T) {
 	seg2 := Segment{ID: "seg_2", Level: L0, StartWALSeq: 11, EndWALSeq: 20, Stats: SegmentStats{RowCount: 100, LogicalBytes: 1024}}
 	tree.AddL0Segment(seg1)
 	tree.AddL0Segment(seg2)
+
+	stateMan := seedStateWithManifest(t, ctx, store, "test-ns", tree.Manifest())
+	bc.SetStateManager(stateMan)
 
 	if !tree.NeedsL0Compaction() {
 		t.Error("should need L0 compaction")
@@ -320,6 +329,7 @@ func TestBackgroundCompactor_L0Compaction(t *testing.T) {
 }
 
 func TestBackgroundCompactor_L1ToL2Compaction(t *testing.T) {
+	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 
 	config := &LSMConfig{
@@ -338,7 +348,11 @@ func TestBackgroundCompactor_L1ToL2Compaction(t *testing.T) {
 	tree.mu.Lock()
 	tree.manifest.AddSegment(Segment{ID: "l1_1", Level: L1, StartWALSeq: 1, EndWALSeq: 50, Stats: SegmentStats{RowCount: 500, LogicalBytes: 5000}})
 	tree.manifest.AddSegment(Segment{ID: "l1_2", Level: L1, StartWALSeq: 51, EndWALSeq: 100, Stats: SegmentStats{RowCount: 500, LogicalBytes: 5000}})
+	tree.manifest.UpdateIndexedWALSeq()
 	tree.mu.Unlock()
+
+	stateMan := seedStateWithManifest(t, ctx, store, "test-ns", tree.Manifest())
+	bc.SetStateManager(stateMan)
 
 	if !tree.NeedsL1Compaction() {
 		t.Error("should need L1 compaction")
@@ -363,6 +377,7 @@ func TestBackgroundCompactor_L1ToL2Compaction(t *testing.T) {
 }
 
 func TestBackgroundCompactor_AutomaticPolling(t *testing.T) {
+	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 
 	config := &LSMConfig{
@@ -384,6 +399,9 @@ func TestBackgroundCompactor_AutomaticPolling(t *testing.T) {
 	tree.AddL0Segment(seg1)
 	tree.AddL0Segment(seg2)
 
+	stateMan := seedStateWithManifest(t, ctx, store, "test-ns", tree.Manifest())
+	bc.SetStateManager(stateMan)
+
 	bc.Start()
 	defer bc.Stop()
 
@@ -399,6 +417,136 @@ func TestBackgroundCompactor_AutomaticPolling(t *testing.T) {
 	}
 	if len(l1Segs) != 1 {
 		t.Errorf("expected 1 L1 segment after background compaction, got %d", len(l1Segs))
+	}
+}
+
+func TestBackgroundCompactor_PublishesManifestAndCleansSegments(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+
+	config := &LSMConfig{
+		L0CompactionThreshold: 2,
+		L1CompactionThreshold: 4,
+		L0TargetSizeBytes:     1024,
+		L1TargetSizeBytes:     10 * 1024,
+		L2TargetSizeBytes:     100 * 1024,
+	}
+	bc := NewBackgroundCompactor(store, config, &CompactorConfig{
+		RetentionTime:    time.Nanosecond,
+		DisableChecksums: true,
+	})
+
+	ns := "test-ns"
+	createdAt := time.Now().Add(-time.Hour)
+	seg1Docs := []MergedDocument{
+		{ID: "1", NumericID: 1, WALSeq: 1, Attributes: map[string]any{"name": "alpha"}},
+		{ID: "2", NumericID: 2, WALSeq: 1, Attributes: map[string]any{"name": "beta"}},
+	}
+	seg2Docs := []MergedDocument{
+		{ID: "1", NumericID: 1, WALSeq: 2, Attributes: map[string]any{"name": "alpha2"}},
+		{ID: "3", NumericID: 3, WALSeq: 2, Attributes: map[string]any{"name": "gamma"}},
+	}
+	seg1Data, _ := json.Marshal(seg1Docs)
+	seg2Data, _ := json.Marshal(seg2Docs)
+	seg1Key := "vex/namespaces/test-ns/index/segments/seg_1/docs.json"
+	seg2Key := "vex/namespaces/test-ns/index/segments/seg_2/docs.json"
+	if _, err := store.Put(ctx, seg1Key, bytes.NewReader(seg1Data), int64(len(seg1Data)), nil); err != nil {
+		t.Fatalf("failed to write seg1 docs: %v", err)
+	}
+	if _, err := store.Put(ctx, seg2Key, bytes.NewReader(seg2Data), int64(len(seg2Data)), nil); err != nil {
+		t.Fatalf("failed to write seg2 docs: %v", err)
+	}
+
+	seg1 := Segment{
+		ID:          "seg_1",
+		Level:       L0,
+		StartWALSeq:  1,
+		EndWALSeq:    1,
+		CreatedAt:   createdAt,
+		DocsKey:     seg1Key,
+		Stats: SegmentStats{
+			RowCount:     2,
+			LogicalBytes: int64(len(seg1Data)),
+		},
+	}
+	seg2 := Segment{
+		ID:          "seg_2",
+		Level:       L0,
+		StartWALSeq:  2,
+		EndWALSeq:    2,
+		CreatedAt:   createdAt,
+		DocsKey:     seg2Key,
+		Stats: SegmentStats{
+			RowCount:     2,
+			LogicalBytes: int64(len(seg2Data)),
+		},
+	}
+
+	manifest := NewManifest(ns)
+	manifest.AddSegment(seg1)
+	manifest.AddSegment(seg2)
+	manifest.UpdateIndexedWALSeq()
+	manifest.GeneratedAt = time.Now().UTC()
+
+	stateMan := seedStateWithManifest(t, ctx, store, ns, manifest)
+	bc.SetStateManager(stateMan)
+
+	tree := LoadLSMTree(ns, store, manifest, config)
+	bc.RegisterNamespace(ns, tree)
+
+	if err := bc.TriggerCompaction(ns); err != nil {
+		t.Fatalf("TriggerCompaction failed: %v", err)
+	}
+
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+
+	if loaded.State.Index.ManifestSeq != 2 {
+		t.Fatalf("expected manifest seq 2, got %d", loaded.State.Index.ManifestSeq)
+	}
+
+	manifestKey := ManifestKey(ns, loaded.State.Index.ManifestSeq)
+	updatedManifest, err := LoadManifest(ctx, store, ns, loaded.State.Index.ManifestSeq)
+	if err != nil {
+		t.Fatalf("failed to load manifest: %v", err)
+	}
+	if len(updatedManifest.Segments) != 1 {
+		t.Fatalf("expected 1 compacted segment, got %d", len(updatedManifest.Segments))
+	}
+	if updatedManifest.Segments[0].Level != L1 {
+		t.Errorf("expected compacted segment to be L1, got %d", updatedManifest.Segments[0].Level)
+	}
+
+	reader := NewReader(store, nil, nil)
+	docs, err := reader.LoadSegmentDocs(ctx, manifestKey)
+	if err != nil {
+		t.Fatalf("failed to load compacted docs: %v", err)
+	}
+	if len(docs) != 3 {
+		t.Fatalf("expected 3 docs after compaction, got %d", len(docs))
+	}
+
+	var doc1 *IndexedDocument
+	for i := range docs {
+		if docs[i].ID == "1" {
+			doc1 = &docs[i]
+			break
+		}
+	}
+	if doc1 == nil || doc1.WALSeq != 2 {
+		t.Fatalf("expected doc 1 to have wal seq 2, got %+v", doc1)
+	}
+	if name, ok := doc1.Attributes["name"].(string); !ok || name != "alpha2" {
+		t.Fatalf("expected doc 1 to have name alpha2, got %v", doc1.Attributes["name"])
+	}
+
+	if _, err := store.Head(ctx, seg1Key); !objectstore.IsNotFoundError(err) {
+		t.Fatalf("expected seg1 docs to be deleted, got %v", err)
+	}
+	if _, err := store.Head(ctx, seg2Key); !objectstore.IsNotFoundError(err) {
+		t.Fatalf("expected seg2 docs to be deleted, got %v", err)
 	}
 }
 
@@ -820,4 +968,40 @@ func TestFullCompactor_NumericIDDerivedFromDocsColumn(t *testing.T) {
 	if result.MergedDocs != 3 {
 		t.Errorf("expected 3 merged docs, got %d", result.MergedDocs)
 	}
+}
+
+func seedStateWithManifest(t *testing.T, ctx context.Context, store objectstore.Store, ns string, manifest *Manifest) *namespace.StateManager {
+	t.Helper()
+
+	stateMan := namespace.NewStateManager(store)
+	loaded, err := stateMan.Create(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to create state: %v", err)
+	}
+
+	for seq := uint64(1); seq <= manifest.IndexedWALSeq; seq++ {
+		walKey := fmt.Sprintf("wal/%d.wal.zst", seq)
+		loaded, err = stateMan.AdvanceWAL(ctx, ns, loaded.ETag, walKey, 1, nil)
+		if err != nil {
+			t.Fatalf("failed to advance wal to %d: %v", seq, err)
+		}
+	}
+
+	manifestKey := ManifestKey(ns, 1)
+	data, err := manifest.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal manifest: %v", err)
+	}
+	if _, err := store.PutIfAbsent(ctx, manifestKey, bytes.NewReader(data), int64(len(data)), &objectstore.PutOptions{
+		ContentType: "application/json",
+	}); err != nil {
+		t.Fatalf("failed to write manifest: %v", err)
+	}
+
+	loaded, err = stateMan.UpdateIndexManifest(ctx, ns, loaded.ETag, manifestKey, 1, manifest.IndexedWALSeq)
+	if err != nil {
+		t.Fatalf("failed to update state manifest: %v", err)
+	}
+
+	return stateMan
 }
