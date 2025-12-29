@@ -20,17 +20,23 @@ type SegmentBuilder struct {
 
 	// Mapping from document ID to internal row ID
 	docIDMap map[string]uint32
-	nextRowID uint32
+	// Tracks which FTS fields are currently indexed for a document
+	docFields map[string]map[string]bool
+	// Tracks tombstoned documents
+	deletedDocs map[string]bool
+	nextRowID   uint32
 }
 
 // NewSegmentBuilder creates a new FTS segment builder.
 func NewSegmentBuilder(namespace string, ftsConfigs map[string]*Config) *SegmentBuilder {
 	return &SegmentBuilder{
-		namespace:  namespace,
-		builder:    NewIndexBuilder(),
-		ftsConfigs: ftsConfigs,
-		docIDMap:   make(map[string]uint32),
-		nextRowID:  0,
+		namespace:   namespace,
+		builder:     NewIndexBuilder(),
+		ftsConfigs:  ftsConfigs,
+		docIDMap:    make(map[string]uint32),
+		docFields:   make(map[string]map[string]bool),
+		deletedDocs: make(map[string]bool),
+		nextRowID:   0,
 	}
 }
 
@@ -48,19 +54,20 @@ func (sb *SegmentBuilder) AddWALEntry(entry *wal.WalEntry) error {
 
 // processMutation processes a single mutation.
 func (sb *SegmentBuilder) processMutation(mutation *wal.Mutation) error {
-	if mutation.Type != wal.MutationType_MUTATION_TYPE_UPSERT {
-		// Only process upserts for FTS indexing
-		// Deletes and patches are handled via tombstones
-		return nil
-	}
-
 	if len(sb.ftsConfigs) == 0 {
 		// No FTS-enabled fields
 		return nil
 	}
 
+	if mutation.Id == nil {
+		return nil
+	}
+
 	// Get or assign row ID for this document
 	docKey := documentIDKey(mutation.Id)
+	if docKey == "" {
+		return nil
+	}
 	rowID, ok := sb.docIDMap[docKey]
 	if !ok {
 		rowID = sb.nextRowID
@@ -68,15 +75,107 @@ func (sb *SegmentBuilder) processMutation(mutation *wal.Mutation) error {
 		sb.nextRowID++
 	}
 
-	// Extract attributes as map[string]any
-	attrs := make(map[string]any)
-	for name, value := range mutation.Attributes {
-		attrs[name] = attributeValueToAny(value)
+	switch mutation.Type {
+	case wal.MutationType_MUTATION_TYPE_DELETE:
+		sb.applyDelete(docKey, rowID)
+	case wal.MutationType_MUTATION_TYPE_PATCH:
+		sb.applyPatch(docKey, rowID, mutation.Attributes)
+	case wal.MutationType_MUTATION_TYPE_UPSERT:
+		sb.applyUpsert(docKey, rowID, mutation.Attributes)
+	}
+	return nil
+}
+
+func (sb *SegmentBuilder) applyDelete(docKey string, rowID uint32) {
+	fields := sb.docFields[docKey]
+	for field := range fields {
+		if idx := sb.builder.indexes[field]; idx != nil {
+			idx.removeDocument(rowID)
+		}
+	}
+	delete(sb.docFields, docKey)
+	sb.deletedDocs[docKey] = true
+}
+
+func (sb *SegmentBuilder) applyPatch(docKey string, rowID uint32, attrs map[string]*wal.AttributeValue) {
+	if sb.deletedDocs[docKey] {
+		return
 	}
 
-	// Add to index builder
-	sb.builder.AddDocument(rowID, attrs, sb.ftsConfigs)
-	return nil
+	for name, value := range attrs {
+		cfg := sb.ftsConfigs[name]
+		if cfg == nil {
+			continue
+		}
+		val := attributeValueToAny(value)
+		text, ok := val.(string)
+		if ok {
+			idx := sb.ensureIndex(name, cfg)
+			idx.AddDocument(rowID, text)
+			fields := sb.ensureDocFields(docKey)
+			fields[name] = true
+			continue
+		}
+
+		sb.removeDocField(docKey, rowID, name)
+	}
+}
+
+func (sb *SegmentBuilder) applyUpsert(docKey string, rowID uint32, attrs map[string]*wal.AttributeValue) {
+	delete(sb.deletedDocs, docKey)
+
+	for name, cfg := range sb.ftsConfigs {
+		if cfg == nil {
+			continue
+		}
+		val, ok := attrs[name]
+		if !ok {
+			sb.removeDocField(docKey, rowID, name)
+			continue
+		}
+		conv := attributeValueToAny(val)
+		text, ok := conv.(string)
+		if !ok {
+			sb.removeDocField(docKey, rowID, name)
+			continue
+		}
+		idx := sb.ensureIndex(name, cfg)
+		idx.AddDocument(rowID, text)
+		fields := sb.ensureDocFields(docKey)
+		fields[name] = true
+	}
+}
+
+func (sb *SegmentBuilder) ensureIndex(name string, cfg *Config) *Index {
+	idx := sb.builder.indexes[name]
+	if idx == nil {
+		idx = NewIndex(name, cfg)
+		sb.builder.indexes[name] = idx
+	}
+	return idx
+}
+
+func (sb *SegmentBuilder) ensureDocFields(docKey string) map[string]bool {
+	fields := sb.docFields[docKey]
+	if fields == nil {
+		fields = make(map[string]bool)
+		sb.docFields[docKey] = fields
+	}
+	return fields
+}
+
+func (sb *SegmentBuilder) removeDocField(docKey string, rowID uint32, name string) {
+	fields := sb.docFields[docKey]
+	if fields == nil || !fields[name] {
+		return
+	}
+	if idx := sb.builder.indexes[name]; idx != nil {
+		idx.removeDocument(rowID)
+	}
+	delete(fields, name)
+	if len(fields) == 0 {
+		delete(sb.docFields, docKey)
+	}
 }
 
 // documentIDKey converts a document ID to a string key.
@@ -216,4 +315,3 @@ func (sb *SegmentBuilder) WriteToObjectStore(ctx context.Context, store objectst
 
 	return result, nil
 }
-

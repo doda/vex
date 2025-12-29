@@ -76,7 +76,7 @@ func TestSegmentBuilder_Basic(t *testing.T) {
 	}
 }
 
-func TestSegmentBuilder_SkipsDeletes(t *testing.T) {
+func TestSegmentBuilder_AppliesDeletes(t *testing.T) {
 	ftsConfigs := map[string]*Config{
 		"content": DefaultConfig(),
 	}
@@ -96,7 +96,7 @@ func TestSegmentBuilder_SkipsDeletes(t *testing.T) {
 	)
 
 	// Add a delete
-	batch.AddDelete(&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 2}})
+	batch.AddDelete(&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 1}})
 
 	entry.SubBatches = append(entry.SubBatches, batch)
 
@@ -107,12 +107,15 @@ func TestSegmentBuilder_SkipsDeletes(t *testing.T) {
 	indexes := sb.Build()
 	contentIdx := indexes["content"]
 
-	if contentIdx.TotalDocs != 1 {
-		t.Errorf("TotalDocs = %d, want 1 (delete should be skipped)", contentIdx.TotalDocs)
+	if contentIdx.TotalDocs != 0 {
+		t.Errorf("TotalDocs = %d, want 0 after delete", contentIdx.TotalDocs)
+	}
+	if contentIdx.HasTerm("hello") {
+		t.Error("expected 'hello' to be removed after delete")
 	}
 }
 
-func TestSegmentBuilder_SkipsPatches(t *testing.T) {
+func TestSegmentBuilder_AppliesPatches(t *testing.T) {
 	ftsConfigs := map[string]*Config{
 		"content": DefaultConfig(),
 	}
@@ -133,7 +136,7 @@ func TestSegmentBuilder_SkipsPatches(t *testing.T) {
 
 	// Add a patch
 	batch.AddPatch(
-		&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 2}},
+		&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 1}},
 		map[string]*wal.AttributeValue{
 			"content": wal.StringValue("Patched Content"),
 		},
@@ -149,7 +152,13 @@ func TestSegmentBuilder_SkipsPatches(t *testing.T) {
 	contentIdx := indexes["content"]
 
 	if contentIdx.TotalDocs != 1 {
-		t.Errorf("TotalDocs = %d, want 1 (patch should be skipped)", contentIdx.TotalDocs)
+		t.Errorf("TotalDocs = %d, want 1", contentIdx.TotalDocs)
+	}
+	if contentIdx.HasTerm("hello") {
+		t.Error("expected 'hello' to be removed after patch")
+	}
+	if !contentIdx.HasTerm("patched") {
+		t.Error("expected 'patched' to be indexed after patch")
 	}
 }
 
