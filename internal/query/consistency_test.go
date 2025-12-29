@@ -362,6 +362,57 @@ func TestStrongQueryFailsIfRefreshFails(t *testing.T) {
 	})
 }
 
+func TestMissingWalEntryFailsStrongQueries(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	defer tailStore.Close()
+
+	ctx := context.Background()
+
+	if err := writeTestState(ctx, store, "test-ns", 2, 0); err != nil {
+		t.Fatalf("failed to write test state: %v", err)
+	}
+
+	entry := wal.NewWalEntry("test-ns", 1)
+	batch := wal.NewWriteSubBatch("req")
+	batch.AddUpsert(
+		&wal.DocumentID{Id: &wal.DocumentID_U64{U64: 1}},
+		map[string]*wal.AttributeValue{"name": wal.StringValue("doc1")},
+		nil, 0,
+	)
+	entry.SubBatches = append(entry.SubBatches, batch)
+	tailStore.AddWALEntry("test-ns", entry)
+
+	h := NewHandler(store, stateMan, tailStore)
+
+	strongReq := &QueryRequest{
+		RankBy:      []any{"id", "asc"},
+		Limit:       10,
+		Consistency: "strong",
+	}
+	_, err := h.Handle(ctx, "test-ns", strongReq)
+	if err == nil {
+		t.Fatal("expected strong query to fail when WAL is missing")
+	}
+	if !errors.Is(err, ErrSnapshotRefreshFailed) {
+		t.Fatalf("expected ErrSnapshotRefreshFailed, got %v", err)
+	}
+
+	eventualReq := &QueryRequest{
+		RankBy:      []any{"id", "asc"},
+		Limit:       10,
+		Consistency: "eventual",
+	}
+	resp, err := h.Handle(ctx, "test-ns", eventualReq)
+	if err != nil {
+		t.Fatalf("expected eventual query to succeed, got %v", err)
+	}
+	if resp == nil || len(resp.Rows) != 1 {
+		t.Fatalf("expected 1 row from eventual query, got %+v", resp)
+	}
+}
+
 func TestStrongQueryNoRefreshWhenFullyIndexed(t *testing.T) {
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)

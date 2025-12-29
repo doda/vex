@@ -3,6 +3,7 @@ package tail
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"math"
 	"testing"
@@ -200,6 +201,23 @@ func TestTailStore_RefreshFromObjectStorage(t *testing.T) {
 	}
 	if len(docs) != 3 {
 		t.Errorf("expected 3 docs, got %d", len(docs))
+	}
+}
+
+func TestTailStore_RefreshMissingWALEntry(t *testing.T) {
+	store := newMockStore()
+	ts := New(DefaultConfig(), store, nil, nil)
+	defer ts.Close()
+
+	_, data := createTestWALEntry("test-ns", 1, []testDoc{
+		{id: 1, attrs: map[string]any{"category": "A"}},
+	})
+	store.objects["vex/namespaces/test-ns/wal/00000000000000000001.wal.zst"] = data
+
+	ctx := context.Background()
+	err := ts.Refresh(ctx, "test-ns", 0, 2)
+	if !errors.Is(err, ErrSeqNotFound) {
+		t.Fatalf("expected ErrSeqNotFound, got %v", err)
 	}
 }
 

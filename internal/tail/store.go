@@ -15,6 +15,7 @@ package tail
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -256,8 +257,7 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 			reader, _, err := ts.objectStore.Get(ctx, fullKey, nil)
 			if err != nil {
 				if objectstore.IsNotFoundError(err) {
-					// WAL entry doesn't exist yet
-					continue
+					return fmt.Errorf("%w: %d", ErrSeqNotFound, seq)
 				}
 				return err
 			}

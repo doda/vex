@@ -991,3 +991,14 @@ KEY DEPENDENCIES:
 - Tests: /usr/local/go/bin/go test ./pkg/api -run "TestMultiQueryAPI|TestQueryAPIPendingRebuild|TestQueryAPIIndexBuilding" -count=1 (pass).
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: none.
+[2025-12-29T20:10:00Z] Completed tail-refresh-missing-wal-error: PASS
+- Implemented tail refresh failure when a referenced WAL object is missing to avoid silent skips.
+- Added tail store unit test for missing WAL seq and query consistency coverage for strong failure/eventual success.
+- Files changed: internal/tail/store.go.
+- Files changed: internal/tail/store_test.go.
+- Files changed: internal/query/consistency_test.go.
+- Tests: /usr/local/go/bin/go test ./internal/tail -run RefreshMissingWALEntry -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/query -run MissingWalEntryFailsStrongQueries -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

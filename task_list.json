@@ -2373,7 +2373,7 @@
       "Simulate missing WAL object for a strong query and verify failure response",
       "Verify eventual queries still degrade gracefully where allowed"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/tail/store.go"
     ]
