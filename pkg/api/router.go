@@ -217,6 +217,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx = logging.ContextWithRequestID(ctx, requestID)
 	ctx = logging.ContextWithRequestTime(ctx, start)
 	ctx = logging.ContextWithEndpoint(ctx, req.Method+" "+req.URL.Path)
+	ctx = logging.ContextWithRequestMetrics(ctx, &logging.RequestMetrics{CacheTemp: logging.CacheCold})
 	req = req.WithContext(ctx)
 
 	// Wrap response writer to capture status code
@@ -262,6 +263,14 @@ func (r *Router) logRequest(req *http.Request, status int, start time.Time, name
 		Endpoint:      req.Method + " " + req.URL.Path,
 		CacheTemp:     cacheTemp,
 		ServerTotalMs: elapsed,
+	}
+	if metrics := logging.RequestMetricsFromContext(req.Context()); metrics != nil {
+		if metrics.CacheTemp != "" {
+			info.CacheTemp = metrics.CacheTemp
+		}
+		if metrics.QueryExecMs > 0 {
+			info.QueryExecMs = metrics.QueryExecMs
+		}
 	}
 
 	r.logger.WithRequestInfo(info).Info("request completed",
@@ -809,7 +818,14 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 
 	// Execute query if handler is available
 	if r.queryHandler != nil {
+		queryStart := time.Now()
 		resp, err := r.queryHandler.Handle(req.Context(), ns, queryReq)
+		if metrics := logging.RequestMetricsFromContext(req.Context()); metrics != nil {
+			metrics.QueryExecMs = float64(time.Since(queryStart).Microseconds()) / 1000.0
+			if err == nil && resp != nil && resp.Performance.CacheTemperature != "" {
+				metrics.CacheTemp = logging.CacheTemperature(resp.Performance.CacheTemperature)
+			}
+		}
 		if err != nil {
 			// Check for context timeout first
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -983,7 +999,14 @@ func (r *Router) handleMultiQuery(w http.ResponseWriter, req *http.Request, ns s
 
 	// Execute multi-query if handler is available
 	if r.queryHandler != nil {
+		queryStart := time.Now()
 		resp, err := r.queryHandler.HandleMultiQuery(req.Context(), ns, queries, consistency)
+		if metrics := logging.RequestMetricsFromContext(req.Context()); metrics != nil {
+			metrics.QueryExecMs = float64(time.Since(queryStart).Microseconds()) / 1000.0
+			if err == nil && resp != nil && resp.Performance.CacheTemperature != "" {
+				metrics.CacheTemp = logging.CacheTemperature(resp.Performance.CacheTemperature)
+			}
+		}
 		if err != nil {
 			// Check for context timeout first
 			if errors.Is(err, context.DeadlineExceeded) {

@@ -17,10 +17,11 @@ type Logger struct {
 type contextKey string
 
 const (
-	requestIDKey   contextKey = "request_id"
-	namespaceKey   contextKey = "namespace"
-	endpointKey    contextKey = "endpoint"
-	requestTimeKey contextKey = "request_time"
+	requestIDKey      contextKey = "request_id"
+	namespaceKey      contextKey = "namespace"
+	endpointKey       contextKey = "endpoint"
+	requestTimeKey    contextKey = "request_time"
+	requestMetricsKey contextKey = "request_metrics"
 )
 
 // CacheTemperature represents cache warmth status.
@@ -34,13 +35,19 @@ const (
 
 // RequestInfo contains contextual information about the request.
 type RequestInfo struct {
-	RequestID       string
-	Namespace       string
-	Endpoint        string
-	CacheTemp       CacheTemperature
-	ServerTotalMs   float64
-	QueryExecMs     float64
-	RequestTime     time.Time
+	RequestID     string
+	Namespace     string
+	Endpoint      string
+	CacheTemp     CacheTemperature
+	ServerTotalMs float64
+	QueryExecMs   float64
+	RequestTime   time.Time
+}
+
+// RequestMetrics holds mutable per-request measurements for logging.
+type RequestMetrics struct {
+	CacheTemp   CacheTemperature
+	QueryExecMs float64
 }
 
 // New creates a new Logger with JSON output.
@@ -124,6 +131,11 @@ func ContextWithRequestTime(ctx context.Context, t time.Time) context.Context {
 	return context.WithValue(ctx, requestTimeKey, t)
 }
 
+// ContextWithRequestMetrics adds mutable request metrics to the context.
+func ContextWithRequestMetrics(ctx context.Context, metrics *RequestMetrics) context.Context {
+	return context.WithValue(ctx, requestMetricsKey, metrics)
+}
+
 // RequestIDFromContext extracts the request ID from the context.
 func RequestIDFromContext(ctx context.Context) string {
 	if id, ok := ctx.Value(requestIDKey).(string); ok {
@@ -154,6 +166,14 @@ func RequestTimeFromContext(ctx context.Context) time.Time {
 		return t
 	}
 	return time.Time{}
+}
+
+// RequestMetricsFromContext extracts request metrics from the context.
+func RequestMetricsFromContext(ctx context.Context) *RequestMetrics {
+	if metrics, ok := ctx.Value(requestMetricsKey).(*RequestMetrics); ok {
+		return metrics
+	}
+	return nil
 }
 
 // ElapsedMs returns the milliseconds elapsed since the request time.
