@@ -2791,7 +2791,7 @@
       "Configure a low RAM cap, ingest WAL tail, and verify spill files are created on NVMe",
       "Verify RAM usage stays within cap while strong queries still access full tail via spill"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/tail/store.go"

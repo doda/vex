@@ -1,9 +1,7 @@
 package tail
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/cache"
@@ -91,13 +89,8 @@ func TestVerification_RAMTierForRecentSubBatches(t *testing.T) {
 	}
 
 	// Check RAM entries
-	if len(nt.ramEntries) != 5 {
-		t.Errorf("expected 5 RAM entries, got %d", len(nt.ramEntries))
-	}
-
-	// Verify entries are in decoded columnar form (documents map)
-	if len(nt.documents) != 5 {
-		t.Errorf("expected 5 materialized documents, got %d", len(nt.documents))
+	if countRAMEntries(nt) != 5 {
+		t.Errorf("expected 5 RAM entries, got %d", countRAMEntries(nt))
 	}
 
 	// Verify documents are immediately queryable
@@ -139,74 +132,65 @@ func TestVerification_NVMeTierForSpilledTailBlocks(t *testing.T) {
 		t.Fatalf("failed to create disk cache: %v", err)
 	}
 
-	ts := New(DefaultConfig(), store, diskCache, nil)
+	namespace := "nvme-tier-ns"
+	entry1, _ := createTestWALEntry(namespace, 1, []testDoc{
+		{id: 1, attrs: map[string]any{"test": "nvme-data-1"}},
+	})
+	entry2, data2 := createTestWALEntry(namespace, 2, []testDoc{
+		{id: 2, attrs: map[string]any{"test": "nvme-data-2"}},
+	})
+
+	cfg := DefaultConfig()
+	cfg.MaxRAMBytes = int64(len(data2))
+
+	ts := New(cfg, store, diskCache, nil)
 	defer ts.Close()
 
-	namespace := "nvme-tier-ns"
+	ts.AddWALEntry(namespace, entry1)
+	ts.AddWALEntry(namespace, entry2)
 
-	// Store WAL entry in object storage
-	_, data := createTestWALEntry(namespace, 1, []testDoc{
-		{id: 1, attrs: map[string]any{"test": "nvme-data"}},
-	})
-	store.objects["vex/namespaces/"+namespace+"/wal/00000000000000000001.wal.zst"] = data
-
-	// Refresh to load from object storage
-	ctx := context.Background()
-	err = ts.Refresh(ctx, namespace, 0, 1)
-	if err != nil {
-		t.Fatalf("Refresh failed: %v", err)
+	nt := ts.getNamespace(namespace)
+	if nt == nil {
+		t.Fatal("namespace not found")
+	}
+	if countRAMEntries(nt) != 1 {
+		t.Fatalf("expected 1 RAM entry after spill, got %d", countRAMEntries(nt))
+	}
+	if nt.entries[1].inRAM {
+		t.Fatal("expected seq 1 to be spilled to NVMe")
 	}
 
-	// Verify WAL was cached to NVMe tier (disk cache)
 	cacheKey := cache.CacheKey{
 		ObjectKey: "vex/namespaces/" + namespace + "/wal/00000000000000000001.wal.zst",
 		ETag:      "",
 	}
-
 	if !diskCache.Contains(cacheKey) {
-		t.Error("WAL entry was not spilled to NVMe tier")
+		t.Fatal("expected spilled WAL entry to be cached on NVMe")
 	}
 
-	// Verify cached data matches original
-	reader, err := diskCache.GetReader(cacheKey)
+	// Verify strong reads still access full tail via spill
+	ctx := context.Background()
+	docs, err := ts.Scan(ctx, namespace, nil)
 	if err != nil {
-		t.Fatalf("failed to read from NVMe cache: %v", err)
+		t.Fatalf("Scan failed: %v", err)
 	}
-	cachedData, err := io.ReadAll(reader)
-	reader.Close()
-	if err != nil {
-		t.Fatalf("failed to read cached data: %v", err)
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs from tail, got %d", len(docs))
 	}
 
-	if !bytes.Equal(cachedData, data) {
-		t.Error("NVMe cached data doesn't match original")
-	}
-
-	// Simulate cold start: clear RAM tier but keep NVMe
-	ts.Clear(namespace)
-
-	// Remove from object storage to prove we're reading from NVMe
-	delete(store.objects, namespace+"/wal/00000000000000000001.wal.zst")
-
-	// Refresh should use NVMe cache
-	err = ts.Refresh(ctx, namespace, 0, 1)
-	if err != nil {
-		t.Fatalf("Refresh from NVMe cache failed: %v", err)
-	}
-
-	// Verify document is accessible from NVMe cache
 	doc, err := ts.GetDocument(ctx, namespace, document.NewU64ID(1))
 	if err != nil {
 		t.Fatalf("GetDocument failed: %v", err)
 	}
 	if doc == nil {
-		t.Fatal("expected document from NVMe cache")
-	}
-	if doc.Attributes["test"] != "nvme-data" {
-		t.Errorf("expected test='nvme-data', got %v", doc.Attributes["test"])
+		t.Fatal("expected document from spilled entry")
 	}
 
-	t.Log("✓ NVMe tier correctly stores spilled tail blocks")
+	if nt.ramBytes > cfg.MaxRAMBytes {
+		t.Fatalf("expected RAM bytes <= cap, got %d > %d", nt.ramBytes, cfg.MaxRAMBytes)
+	}
+
+	t.Log("✓ NVMe spill keeps RAM within cap while preserving strong tail access")
 }
 
 // TestVerification_TailSupportsVectorScanAndFilterEvaluation verifies that:
