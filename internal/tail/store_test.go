@@ -757,8 +757,8 @@ func TestTailStore_RefreshHonorsGuardrailsTailCap(t *testing.T) {
 	defer ts.Close()
 
 	err := ts.Refresh(context.Background(), "guard-ns", 0, 2)
-	if !errors.Is(err, ErrTailTooLarge) {
-		t.Fatalf("expected ErrTailTooLarge, got %v", err)
+	if err != nil {
+		t.Fatalf("unexpected refresh error: %v", err)
 	}
 
 	nt := ts.getNamespace("guard-ns")
@@ -768,8 +768,8 @@ func TestTailStore_RefreshHonorsGuardrailsTailCap(t *testing.T) {
 	if entry, ok := nt.entries[1]; !ok || entry == nil || !entry.inRAM {
 		t.Fatal("expected seq 1 to be loaded")
 	}
-	if entry, ok := nt.entries[2]; ok && entry != nil && entry.inRAM {
-		t.Fatal("expected seq 2 to be skipped due to cap")
+	if entry, ok := nt.entries[2]; !ok || entry == nil || entry.inRAM {
+		t.Fatal("expected seq 2 to be present but spilled due to cap")
 	}
 
 	state := guard.Get("guard-ns")
@@ -778,6 +778,23 @@ func TestTailStore_RefreshHonorsGuardrailsTailCap(t *testing.T) {
 	}
 	if state.TailBytes != int64(len(data1)) {
 		t.Fatalf("expected guardrails tail bytes %d, got %d", len(data1), state.TailBytes)
+	}
+
+	docs, err := ts.Scan(context.Background(), "guard-ns", nil)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs, got %d", len(docs))
+	}
+	seen := map[uint64]bool{}
+	for _, doc := range docs {
+		if doc.ID.Type() == document.IDTypeU64 {
+			seen[doc.ID.U64()] = true
+		}
+	}
+	if !seen[1] || !seen[2] {
+		t.Fatalf("expected docs 1 and 2 to be present, got %+v", seen)
 	}
 }
 

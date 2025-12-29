@@ -2805,7 +2805,7 @@
       "Enable guardrails with low per-namespace cap and verify strong queries still include all committed WAL entries",
       "Verify tail data beyond caps is served via spill/object store rather than dropped"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/tail/store.go"
