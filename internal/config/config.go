@@ -124,6 +124,7 @@ type ObjectStoreConfig struct {
 	SecretKey string `json:"secret_key"`
 	Region    string `json:"region"`
 	UseSSL    bool   `json:"use_ssl"`
+	RootPath  string `json:"root_path"`
 }
 
 type CacheConfig struct {
@@ -243,11 +244,17 @@ func Load(path string) (*Config, error) {
 	if env := os.Getenv("VEX_ADMIN_TOKEN"); env != "" {
 		cfg.AdminToken = env
 	}
+	if env := os.Getenv("VEX_OBJECT_STORE_TYPE"); env != "" {
+		cfg.ObjectStore.Type = env
+	}
 	if env := os.Getenv("VEX_OBJECT_STORE_ENDPOINT"); env != "" {
 		cfg.ObjectStore.Endpoint = env
 	}
 	if env := os.Getenv("VEX_OBJECT_STORE_BUCKET"); env != "" {
 		cfg.ObjectStore.Bucket = env
+	}
+	if env := os.Getenv("VEX_OBJECT_STORE_ROOT"); env != "" {
+		cfg.ObjectStore.RootPath = env
 	}
 	if env := os.Getenv("VEX_OBJECT_STORE_ACCESS_KEY"); env != "" {
 		cfg.ObjectStore.AccessKey = env

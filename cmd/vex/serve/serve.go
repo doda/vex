@@ -55,6 +55,7 @@ func Run(args []string) {
 			SecretKey: cfg.ObjectStore.SecretKey,
 			Region:    cfg.ObjectStore.Region,
 			UseSSL:    cfg.ObjectStore.UseSSL,
+			RootPath:  cfg.ObjectStore.RootPath,
 		})
 		if err != nil {
 			log.Fatalf("Failed to initialize object store: %v", err)

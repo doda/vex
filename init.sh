@@ -40,6 +40,8 @@ echo "6. Verifying package structure..."
 
 echo ""
 echo "7. Starting vex server for smoke test..."
+export VEX_OBJECT_STORE_TYPE=filesystem
+export VEX_OBJECT_STORE_ROOT="/tmp/vex-objectstore"
 ./vex serve &
 VEX_PID=$!
 sleep 2

@@ -585,6 +585,63 @@ func TestMutationTypes(t *testing.T) {
 	}
 }
 
+func TestMutationStableOrderingSameID(t *testing.T) {
+	encoder, err := NewEncoder()
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	defer encoder.Close()
+
+	decoder, err := NewDecoder()
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+	defer decoder.Close()
+
+	entry := NewWalEntry("mutation-stable-order", 1)
+	batch := NewWriteSubBatch("req-1")
+
+	id1 := &DocumentID{Id: &DocumentID_U64{U64: 1}}
+	id2 := &DocumentID{Id: &DocumentID_U64{U64: 2}}
+
+	batch.AddUpsert(id1, map[string]*AttributeValue{"step": StringValue("upsert")}, nil, 0)
+	batch.AddUpsert(id2, map[string]*AttributeValue{"step": StringValue("other")}, nil, 0)
+	batch.AddPatch(id1, map[string]*AttributeValue{"step": StringValue("patch")})
+	batch.AddDelete(id1)
+
+	entry.SubBatches = append(entry.SubBatches, batch)
+
+	result, err := encoder.Encode(entry)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := decoder.Decode(result.Data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	var id1Types []MutationType
+	for _, mutation := range decoded.SubBatches[0].Mutations {
+		if mutation.Id.GetU64() == 1 {
+			id1Types = append(id1Types, mutation.Type)
+		}
+	}
+
+	if len(id1Types) != 3 {
+		t.Fatalf("expected 3 mutations for id=1, got %d", len(id1Types))
+	}
+	if id1Types[0] != MutationType_MUTATION_TYPE_UPSERT {
+		t.Errorf("first id=1 mutation should be upsert, got %v", id1Types[0])
+	}
+	if id1Types[1] != MutationType_MUTATION_TYPE_PATCH {
+		t.Errorf("second id=1 mutation should be patch, got %v", id1Types[1])
+	}
+	if id1Types[2] != MutationType_MUTATION_TYPE_DELETE {
+		t.Errorf("third id=1 mutation should be delete, got %v", id1Types[2])
+	}
+}
+
 func TestFilterOperation(t *testing.T) {
 	encoder, err := NewEncoder()
 	if err != nil {

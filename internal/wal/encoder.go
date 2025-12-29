@@ -166,7 +166,7 @@ func CheckWALFormatVersion(version int) error {
 
 func sortEntry(entry *WalEntry) {
 	for _, batch := range entry.SubBatches {
-		sort.Slice(batch.Mutations, func(i, j int) bool {
+		sort.SliceStable(batch.Mutations, func(i, j int) bool {
 			return compareDocumentIDs(batch.Mutations[i].Id, batch.Mutations[j].Id) < 0
 		})
 		sort.Slice(batch.SchemaDeltas, func(i, j int) bool {

@@ -2212,7 +2212,7 @@
       "Run identical writes twice and confirm WAL bytes are identical",
       "Verify same-ID mutations preserve phase ordering"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "internal/wal/encoder.go",
       "internal/write/handler.go"
