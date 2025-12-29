@@ -2103,7 +2103,7 @@
       "Send a write to a non-home node and verify it proxies to the home node",
       "Simulate proxy failure and verify the request is handled locally without error"
     ],
-    "passes": false,
+    "passes": true,
     "scope": [
       "pkg/api/router.go",
       "internal/routing"

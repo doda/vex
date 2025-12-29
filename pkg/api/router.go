@@ -578,6 +578,25 @@ func (r *Router) handleWarmCache(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 	ns := req.PathValue("namespace")
 
+	// Try to proxy to home node if we're not the home node
+	// This ensures writes go to the node with the warmest cache for this namespace
+	if r.proxy != nil && r.proxy.ShouldProxy(ns, req) {
+		resp, err := r.proxy.ProxyRequest(req.Context(), ns, req)
+		if err == nil {
+			// Proxy succeeded, copy response
+			defer resp.Body.Close()
+			for key, values := range resp.Header {
+				for _, value := range values {
+					w.Header().Add(key, value)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			io.Copy(w, resp.Body)
+			return
+		}
+		// Proxy failed, fall back to local handling
+	}
+
 	// Check object store availability
 	if err := r.checkObjectStore(); err != nil {
 		r.writeAPIError(w, err)
@@ -692,6 +711,25 @@ func (r *Router) handleWrite(w http.ResponseWriter, req *http.Request) {
 
 func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 	ns := req.PathValue("namespace")
+
+	// Try to proxy to home node if we're not the home node
+	// This ensures queries go to the node with the warmest cache for this namespace
+	if r.proxy != nil && r.proxy.ShouldProxy(ns, req) {
+		resp, err := r.proxy.ProxyRequest(req.Context(), ns, req)
+		if err == nil {
+			// Proxy succeeded, copy response
+			defer resp.Body.Close()
+			for key, values := range resp.Header {
+				for _, value := range values {
+					w.Header().Add(key, value)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			io.Copy(w, resp.Body)
+			return
+		}
+		// Proxy failed, fall back to local handling
+	}
 
 	// Check object store availability
 	if err := r.checkObjectStore(); err != nil {
