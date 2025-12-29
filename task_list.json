@@ -2675,7 +2675,7 @@
       "Test conditional upsert/patch/delete against indexed docs",
       "Test copy_from_namespace over indexed source data"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/write"
