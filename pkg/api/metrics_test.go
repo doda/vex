@@ -5,18 +5,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/vexsearch/vex/internal/config"
 )
 
 func TestMetricsEndpoint(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 	defer router.Close()
 
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -42,7 +40,7 @@ func TestMetricsEndpoint(t *testing.T) {
 }
 
 func TestMetricsEndpointNoAuth(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "secret-token" // Require auth for regular endpoints
 	router := NewRouter(cfg)
 	defer router.Close()
@@ -50,7 +48,7 @@ func TestMetricsEndpointNoAuth(t *testing.T) {
 	// Metrics endpoint should NOT require auth
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

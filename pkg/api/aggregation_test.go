@@ -120,7 +120,7 @@ func TestAggregationAPIResponse(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -171,7 +171,7 @@ func TestAggregationAPIResponse(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -219,7 +219,7 @@ func TestAggregationAPIResponse(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -254,7 +254,7 @@ func TestAggregationAPIResponse(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
@@ -275,7 +275,7 @@ func TestAggregationAPIResponse(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -331,7 +331,7 @@ func TestAggregationAPIResponse(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -383,7 +383,7 @@ func TestAggregationAPIResponse(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
@@ -404,7 +404,7 @@ func TestAggregationAPIResponse(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())

@@ -11,7 +11,7 @@ import (
 )
 
 func TestQueryAPIWithFilters(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -162,7 +162,7 @@ func TestQueryAPIWithFilters(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			router.ServeHTTP(rec, req)
+			router.ServeAuthed(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("expected status %d, got %d", tt.wantStatus, rec.Code)
@@ -179,7 +179,7 @@ func TestQueryAPIWithFilters(t *testing.T) {
 }
 
 func TestVectorQueryWithFiltersAPI(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -240,7 +240,7 @@ func TestVectorQueryWithFiltersAPI(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			router.ServeHTTP(rec, req)
+			router.ServeAuthed(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("expected status %d, got %d", tt.wantStatus, rec.Code)
@@ -261,7 +261,7 @@ func TestVectorQueryWithFiltersAPI(t *testing.T) {
 }
 
 func TestQueryFiltersWithArrayOperators(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -309,7 +309,7 @@ func TestQueryFiltersWithArrayOperators(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			router.ServeHTTP(rec, req)
+			router.ServeAuthed(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("expected status %d, got %d", tt.wantStatus, rec.Code)
@@ -320,7 +320,7 @@ func TestQueryFiltersWithArrayOperators(t *testing.T) {
 }
 
 func TestQueryFiltersWithGlobOperators(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -368,7 +368,7 @@ func TestQueryFiltersWithGlobOperators(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			router.ServeHTTP(rec, req)
+			router.ServeAuthed(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("expected status %d, got %d", tt.wantStatus, rec.Code)

@@ -9,13 +9,12 @@ import (
 	"testing"
 
 	"github.com/vexsearch/vex/internal/cache"
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // TestDebugCacheEndpoint_ReturnsCacheStatus tests that the endpoint returns cache status for namespace.
 func TestDebugCacheEndpoint_ReturnsCacheStatus(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -48,7 +47,7 @@ func TestDebugCacheEndpoint_ReturnsCacheStatus(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-cache-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(w.Result().Body)
@@ -59,7 +58,7 @@ func TestDebugCacheEndpoint_ReturnsCacheStatus(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/cache/test-cache-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -117,7 +116,7 @@ func TestDebugCacheEndpoint_ReturnsCacheStatus(t *testing.T) {
 
 // TestDebugCacheEndpoint_RequiresAdminAuth tests that the endpoint is gated behind admin auth.
 func TestDebugCacheEndpoint_RequiresAdminAuth(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -132,7 +131,7 @@ func TestDebugCacheEndpoint_RequiresAdminAuth(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns-auth", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Test without any auth header
 	req = httptest.NewRequest("GET", "/_debug/cache/test-ns-auth", nil)
@@ -147,7 +146,7 @@ func TestDebugCacheEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/cache/test-ns-auth", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 with wrong token, got %d", w.Result().StatusCode)
@@ -158,7 +157,7 @@ func TestDebugCacheEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/cache/test-ns-auth", nil)
 	req.Header.Set("Authorization", "Bearer regular-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 with regular token on admin endpoint, got %d", w.Result().StatusCode)
@@ -168,7 +167,7 @@ func TestDebugCacheEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/cache/test-ns-auth", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(w.Result().Body)
@@ -178,7 +177,7 @@ func TestDebugCacheEndpoint_RequiresAdminAuth(t *testing.T) {
 
 // TestDebugCacheEndpoint_NoAdminTokenConfigured tests that the endpoint returns 403 when no admin token is configured.
 func TestDebugCacheEndpoint_NoAdminTokenConfigured(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "" // No admin token configured
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -193,13 +192,13 @@ func TestDebugCacheEndpoint_NoAdminTokenConfigured(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns-notoken", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Try to access debug endpoint
 	req = httptest.NewRequest("GET", "/_debug/cache/test-ns-notoken", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 when no admin token configured, got %d", w.Result().StatusCode)
@@ -217,7 +216,7 @@ func TestDebugCacheEndpoint_NoAdminTokenConfigured(t *testing.T) {
 
 // TestDebugCacheEndpoint_NamespaceNotFound tests that the endpoint returns 404 for nonexistent namespace.
 func TestDebugCacheEndpoint_NamespaceNotFound(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -226,7 +225,7 @@ func TestDebugCacheEndpoint_NamespaceNotFound(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/cache/nonexistent-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for nonexistent namespace, got %d", w.Result().StatusCode)
@@ -235,7 +234,7 @@ func TestDebugCacheEndpoint_NamespaceNotFound(t *testing.T) {
 
 // TestDebugCacheEndpoint_DeletedNamespace tests that the endpoint returns 404 for deleted namespace.
 func TestDebugCacheEndpoint_DeletedNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -250,7 +249,7 @@ func TestDebugCacheEndpoint_DeletedNamespace(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns-delete", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -259,7 +258,7 @@ func TestDebugCacheEndpoint_DeletedNamespace(t *testing.T) {
 	// Delete namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/test-ns-delete", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to delete namespace: %d", w.Result().StatusCode)
@@ -269,7 +268,7 @@ func TestDebugCacheEndpoint_DeletedNamespace(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/cache/test-ns-delete", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for deleted namespace, got %d", w.Result().StatusCode)
@@ -278,7 +277,7 @@ func TestDebugCacheEndpoint_DeletedNamespace(t *testing.T) {
 
 // TestDebugCacheEndpoint_TestMode tests fallback mode when no caches are configured.
 func TestDebugCacheEndpoint_TestMode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	router := NewRouter(cfg)
 	defer router.Close()
@@ -294,7 +293,7 @@ func TestDebugCacheEndpoint_TestMode(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/cache/test-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -318,7 +317,7 @@ func TestDebugCacheEndpoint_TestMode(t *testing.T) {
 
 // TestDebugCacheEndpoint_InvalidNamespace tests validation of namespace name.
 func TestDebugCacheEndpoint_InvalidNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -332,7 +331,7 @@ func TestDebugCacheEndpoint_InvalidNamespace(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/cache/"+longName, nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid namespace name, got %d", w.Result().StatusCode)
@@ -341,7 +340,7 @@ func TestDebugCacheEndpoint_InvalidNamespace(t *testing.T) {
 
 // TestDebugCacheEndpoint_WithCachedData tests cache stats with actual cached data.
 func TestDebugCacheEndpoint_WithCachedData(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -372,7 +371,7 @@ func TestDebugCacheEndpoint_WithCachedData(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-cached-ns", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -391,7 +390,7 @@ func TestDebugCacheEndpoint_WithCachedData(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/cache/test-cached-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -420,7 +419,7 @@ func TestDebugCacheEndpoint_WithCachedData(t *testing.T) {
 
 // TestDebugCacheEndpoint_PinnedNamespace tests that pinned status is returned.
 func TestDebugCacheEndpoint_PinnedNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -445,7 +444,7 @@ func TestDebugCacheEndpoint_PinnedNamespace(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/pinned-ns", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Pin the namespace
 	diskCache.Pin("vex/namespaces/pinned-ns/")
@@ -454,7 +453,7 @@ func TestDebugCacheEndpoint_PinnedNamespace(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/cache/pinned-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

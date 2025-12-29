@@ -15,7 +15,7 @@ import (
 
 func TestMultiQueryAPI(t *testing.T) {
 	// Set up router with real object store
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	r := NewRouter(cfg)
 
 	store := objectstore.NewMemoryStore()
@@ -63,7 +63,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
@@ -106,7 +106,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
@@ -150,7 +150,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
@@ -168,7 +168,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
@@ -190,7 +190,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
@@ -209,7 +209,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
@@ -223,7 +223,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
@@ -242,7 +242,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
@@ -281,7 +281,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
@@ -307,7 +307,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusAccepted {
 			t.Errorf("expected status %d, got %d: %s", http.StatusAccepted, w.Code, w.Body.String())
@@ -333,7 +333,7 @@ func TestMultiQueryAPI(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusNotFound {
 			t.Errorf("expected status %d, got %d", http.StatusNotFound, w.Code)
@@ -343,7 +343,7 @@ func TestMultiQueryAPI(t *testing.T) {
 
 func TestMultiQueryFallbackMode(t *testing.T) {
 	// Test fallback mode when queryHandler is not available
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	r := NewRouter(cfg)
 
 	// Mark namespace as existing
@@ -366,7 +366,7 @@ func TestMultiQueryFallbackMode(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
@@ -401,7 +401,7 @@ func TestMultiQueryFallbackMode(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		r.ServeHTTP(w, req)
+		r.ServeAuthed(w, req)
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)

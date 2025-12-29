@@ -8,13 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // TestDebugStateEndpoint_ReturnsNamespaceState tests that the endpoint returns namespace state.
 func TestDebugStateEndpoint_ReturnsNamespaceState(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -31,7 +30,7 @@ func TestDebugStateEndpoint_ReturnsNamespaceState(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-debug-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(w.Result().Body)
@@ -42,7 +41,7 @@ func TestDebugStateEndpoint_ReturnsNamespaceState(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/state/test-debug-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -73,7 +72,7 @@ func TestDebugStateEndpoint_ReturnsNamespaceState(t *testing.T) {
 
 // TestDebugStateEndpoint_RequiresAdminAuth tests that the endpoint is gated behind admin auth.
 func TestDebugStateEndpoint_RequiresAdminAuth(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -88,7 +87,7 @@ func TestDebugStateEndpoint_RequiresAdminAuth(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns-auth", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Test without any auth header
 	req = httptest.NewRequest("GET", "/_debug/state/test-ns-auth", nil)
@@ -103,7 +102,7 @@ func TestDebugStateEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/state/test-ns-auth", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 with wrong token, got %d", w.Result().StatusCode)
@@ -114,7 +113,7 @@ func TestDebugStateEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/state/test-ns-auth", nil)
 	req.Header.Set("Authorization", "Bearer regular-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 with regular token on admin endpoint, got %d", w.Result().StatusCode)
@@ -124,7 +123,7 @@ func TestDebugStateEndpoint_RequiresAdminAuth(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/state/test-ns-auth", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(w.Result().Body)
@@ -134,7 +133,7 @@ func TestDebugStateEndpoint_RequiresAdminAuth(t *testing.T) {
 
 // TestDebugStateEndpoint_NoAdminTokenConfigured tests that the endpoint returns 403 when no admin token is configured.
 func TestDebugStateEndpoint_NoAdminTokenConfigured(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "" // No admin token configured
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -149,13 +148,13 @@ func TestDebugStateEndpoint_NoAdminTokenConfigured(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns-notoken", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Try to access debug endpoint
 	req = httptest.NewRequest("GET", "/_debug/state/test-ns-notoken", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 when no admin token configured, got %d", w.Result().StatusCode)
@@ -173,7 +172,7 @@ func TestDebugStateEndpoint_NoAdminTokenConfigured(t *testing.T) {
 
 // TestDebugStateEndpoint_NamespaceNotFound tests that the endpoint returns 404 for nonexistent namespace.
 func TestDebugStateEndpoint_NamespaceNotFound(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -182,7 +181,7 @@ func TestDebugStateEndpoint_NamespaceNotFound(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/state/nonexistent-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for nonexistent namespace, got %d", w.Result().StatusCode)
@@ -191,7 +190,7 @@ func TestDebugStateEndpoint_NamespaceNotFound(t *testing.T) {
 
 // TestDebugStateEndpoint_DeletedNamespace tests that the endpoint returns 404 for deleted namespace.
 func TestDebugStateEndpoint_DeletedNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -206,7 +205,7 @@ func TestDebugStateEndpoint_DeletedNamespace(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-ns-delete", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -215,7 +214,7 @@ func TestDebugStateEndpoint_DeletedNamespace(t *testing.T) {
 	// Delete namespace
 	req = httptest.NewRequest("DELETE", "/v2/namespaces/test-ns-delete", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to delete namespace: %d", w.Result().StatusCode)
@@ -225,7 +224,7 @@ func TestDebugStateEndpoint_DeletedNamespace(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/state/test-ns-delete", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for deleted namespace, got %d", w.Result().StatusCode)
@@ -234,7 +233,7 @@ func TestDebugStateEndpoint_DeletedNamespace(t *testing.T) {
 
 // TestDebugStateEndpoint_TestMode tests fallback mode when no object store is configured.
 func TestDebugStateEndpoint_TestMode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	router := NewRouter(cfg)
 	defer router.Close()
@@ -250,7 +249,7 @@ func TestDebugStateEndpoint_TestMode(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/state/test-ns", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -274,7 +273,7 @@ func TestDebugStateEndpoint_TestMode(t *testing.T) {
 
 // TestDebugStateEndpoint_InvalidNamespace tests validation of namespace name.
 func TestDebugStateEndpoint_InvalidNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -288,7 +287,7 @@ func TestDebugStateEndpoint_InvalidNamespace(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_debug/state/"+longName, nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid namespace name, got %d", w.Result().StatusCode)
@@ -297,7 +296,7 @@ func TestDebugStateEndpoint_InvalidNamespace(t *testing.T) {
 
 // TestDebugStateEndpoint_ReturnsWALState tests that WAL state fields are returned.
 func TestDebugStateEndpoint_ReturnsWALState(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AdminToken = "admin-secret"
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
@@ -313,7 +312,7 @@ func TestDebugStateEndpoint_ReturnsWALState(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-wal-state", bytes.NewReader(bodyBytes))
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -323,7 +322,7 @@ func TestDebugStateEndpoint_ReturnsWALState(t *testing.T) {
 	req = httptest.NewRequest("GET", "/_debug/state/test-wal-state", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

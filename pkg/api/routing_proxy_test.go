@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/routing"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -52,7 +51,7 @@ func TestWriteProxiesToHomeNode(t *testing.T) {
 	defer homeServer.Close()
 
 	// Set up cluster with home node and this node
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	clusterRouter := routing.New("other-node:8080")
@@ -76,7 +75,7 @@ func TestWriteProxiesToHomeNode(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the request was proxied to the home node
 	if receivedMethod != "POST" {
@@ -111,7 +110,7 @@ func TestWriteProxiesToHomeNode(t *testing.T) {
 
 // TestWriteFallbackOnProxyFailure tests that writes fall back to local handling when proxy fails.
 func TestWriteFallbackOnProxyFailure(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create a cluster router with an unreachable home node
@@ -142,7 +141,7 @@ func TestWriteFallbackOnProxyFailure(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	start := time.Now()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 	elapsed := time.Since(start)
 
 	// Verify the request was handled locally (with proxy timeout)
@@ -201,7 +200,7 @@ func TestQueryProxiesToHomeNode(t *testing.T) {
 	defer homeServer.Close()
 
 	// Set up cluster with home node and this node
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	clusterRouter := routing.New("other-node:8080")
@@ -225,7 +224,7 @@ func TestQueryProxiesToHomeNode(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the request was proxied to the home node
 	if receivedMethod != "POST" {
@@ -261,7 +260,7 @@ func TestQueryProxiesToHomeNode(t *testing.T) {
 
 // TestQueryFallbackOnProxyFailure tests that queries fall back to local handling when proxy fails.
 func TestQueryFallbackOnProxyFailure(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create a cluster router with an unreachable home node
@@ -291,7 +290,7 @@ func TestQueryFallbackOnProxyFailure(t *testing.T) {
 	writeReq.Header.Set("Content-Type", "application/json")
 	writeReq.Header.Set("X-Vex-Proxied", "true") // Skip proxy for write
 	ww := httptest.NewRecorder()
-	router.ServeHTTP(ww, writeReq)
+	router.ServeAuthed(ww, writeReq)
 	if ww.Result().StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(ww.Result().Body)
 		t.Fatalf("Failed to create namespace: %d: %s", ww.Result().StatusCode, string(body))
@@ -308,7 +307,7 @@ func TestQueryFallbackOnProxyFailure(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	start := time.Now()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 	elapsed := time.Since(start)
 
 	// Verify the request was handled locally (with proxy timeout)
@@ -326,7 +325,7 @@ func TestQueryFallbackOnProxyFailure(t *testing.T) {
 
 // TestWriteNoProxyWhenHomeNode tests that writes are handled locally when this is the home node.
 func TestWriteNoProxyWhenHomeNode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create a cluster router where this node is the only node
@@ -349,7 +348,7 @@ func TestWriteNoProxyWhenHomeNode(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the request was handled locally
 	resp := w.Result()
@@ -368,7 +367,7 @@ func TestWriteNoProxyWhenHomeNode(t *testing.T) {
 
 // TestQueryNoProxyWhenHomeNode tests that queries are handled locally when this is the home node.
 func TestQueryNoProxyWhenHomeNode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create a cluster router where this node is the only node
@@ -390,7 +389,7 @@ func TestQueryNoProxyWhenHomeNode(t *testing.T) {
 	writeReq := httptest.NewRequest("POST", "/v2/namespaces/local-ns", bytes.NewReader(bodyBytes))
 	writeReq.Header.Set("Content-Type", "application/json")
 	ww := httptest.NewRecorder()
-	router.ServeHTTP(ww, writeReq)
+	router.ServeAuthed(ww, writeReq)
 
 	if ww.Result().StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(ww.Result().Body)
@@ -407,7 +406,7 @@ func TestQueryNoProxyWhenHomeNode(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the request was handled locally
 	resp := w.Result()
@@ -426,7 +425,7 @@ func TestQueryNoProxyWhenHomeNode(t *testing.T) {
 
 // TestWriteProxiedHeaderPreventsProxy tests that already-proxied writes are not proxied again.
 func TestWriteProxiedHeaderPreventsProxy(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create a cluster router with two nodes
@@ -457,7 +456,7 @@ func TestWriteProxiedHeaderPreventsProxy(t *testing.T) {
 	req.Header.Set("X-Vex-Proxied", "true") // Simulate already-proxied request
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the request was handled locally (not proxied again)
 	resp := w.Result()
@@ -476,7 +475,7 @@ func TestWriteProxiedHeaderPreventsProxy(t *testing.T) {
 
 // TestQueryProxiedHeaderPreventsProxy tests that already-proxied queries are not proxied again.
 func TestQueryProxiedHeaderPreventsProxy(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create a cluster router with two nodes
@@ -506,7 +505,7 @@ func TestQueryProxiedHeaderPreventsProxy(t *testing.T) {
 	writeReq.Header.Set("Content-Type", "application/json")
 	writeReq.Header.Set("X-Vex-Proxied", "true")
 	ww := httptest.NewRecorder()
-	router.ServeHTTP(ww, writeReq)
+	router.ServeAuthed(ww, writeReq)
 
 	if ww.Result().StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(ww.Result().Body)
@@ -524,7 +523,7 @@ func TestQueryProxiedHeaderPreventsProxy(t *testing.T) {
 	req.Header.Set("X-Vex-Proxied", "true") // Simulate already-proxied request
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the request was handled locally (not proxied again)
 	resp := w.Result()
@@ -543,7 +542,7 @@ func TestQueryProxiedHeaderPreventsProxy(t *testing.T) {
 
 // TestWriteNoProxyWithoutClusterRouter tests writes work without cluster routing.
 func TestWriteNoProxyWithoutClusterRouter(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create router without cluster router
@@ -560,7 +559,7 @@ func TestWriteNoProxyWithoutClusterRouter(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the request was handled locally
 	resp := w.Result()
@@ -572,7 +571,7 @@ func TestWriteNoProxyWithoutClusterRouter(t *testing.T) {
 
 // TestQueryNoProxyWithoutClusterRouter tests queries work without cluster routing.
 func TestQueryNoProxyWithoutClusterRouter(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	// Create router without cluster router
@@ -589,7 +588,7 @@ func TestQueryNoProxyWithoutClusterRouter(t *testing.T) {
 	writeReq := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(bodyBytes))
 	writeReq.Header.Set("Content-Type", "application/json")
 	ww := httptest.NewRecorder()
-	router.ServeHTTP(ww, writeReq)
+	router.ServeAuthed(ww, writeReq)
 
 	if ww.Result().StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(ww.Result().Body)
@@ -605,7 +604,7 @@ func TestQueryNoProxyWithoutClusterRouter(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the request was handled locally
 	resp := w.Result()
@@ -628,7 +627,7 @@ func TestProxyPreservesErrorResponses(t *testing.T) {
 	}))
 	defer homeServer.Close()
 
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 
 	clusterRouter := routing.New("other-node:8080")
@@ -652,7 +651,7 @@ func TestProxyPreservesErrorResponses(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	// Verify the error response was forwarded
 	resp := w.Result()

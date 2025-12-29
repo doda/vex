@@ -8,13 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 func TestWriteAPI_BasicUpsert(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -31,7 +30,7 @@ func TestWriteAPI_BasicUpsert(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -59,7 +58,7 @@ func TestWriteAPI_BasicUpsert(t *testing.T) {
 }
 
 func TestWriteAPI_Deletes(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -73,7 +72,7 @@ func TestWriteAPI_Deletes(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -95,7 +94,7 @@ func TestWriteAPI_Deletes(t *testing.T) {
 }
 
 func TestWriteAPI_ImplicitNamespaceCreation(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -114,7 +113,7 @@ func TestWriteAPI_ImplicitNamespaceCreation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -133,7 +132,7 @@ func TestWriteAPI_ImplicitNamespaceCreation(t *testing.T) {
 }
 
 func TestWriteAPI_WALCommitToObjectStorage(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -151,7 +150,7 @@ func TestWriteAPI_WALCommitToObjectStorage(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -185,7 +184,7 @@ func TestWriteAPI_WALCommitToObjectStorage(t *testing.T) {
 }
 
 func TestWriteAPI_ResponseFormat(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -201,7 +200,7 @@ func TestWriteAPI_ResponseFormat(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -224,7 +223,7 @@ func TestWriteAPI_ResponseFormat(t *testing.T) {
 }
 
 func TestWriteAPI_DuplicateColumnarIDs(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -241,7 +240,7 @@ func TestWriteAPI_DuplicateColumnarIDs(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -250,7 +249,7 @@ func TestWriteAPI_DuplicateColumnarIDs(t *testing.T) {
 }
 
 func TestWriteAPI_InvalidJSON(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -259,7 +258,7 @@ func TestWriteAPI_InvalidJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -268,7 +267,7 @@ func TestWriteAPI_InvalidJSON(t *testing.T) {
 }
 
 func TestWriteAPI_InvalidNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -285,7 +284,7 @@ func TestWriteAPI_InvalidNamespace(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -294,7 +293,7 @@ func TestWriteAPI_InvalidNamespace(t *testing.T) {
 }
 
 func TestWriteAPI_VectorSupport(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -314,7 +313,7 @@ func TestWriteAPI_VectorSupport(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -333,7 +332,7 @@ func TestWriteAPI_VectorSupport(t *testing.T) {
 }
 
 func TestWriteAPI_DeletedNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -359,7 +358,7 @@ func TestWriteAPI_DeletedNamespace(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -368,7 +367,7 @@ func TestWriteAPI_DeletedNamespace(t *testing.T) {
 }
 
 func TestWriteAPI_ObjectStoreUnavailable(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -390,7 +389,7 @@ func TestWriteAPI_ObjectStoreUnavailable(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -399,7 +398,7 @@ func TestWriteAPI_ObjectStoreUnavailable(t *testing.T) {
 }
 
 func TestWriteAPI_Backpressure(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -429,7 +428,7 @@ func TestWriteAPI_Backpressure(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusTooManyRequests {
@@ -438,7 +437,7 @@ func TestWriteAPI_Backpressure(t *testing.T) {
 }
 
 func TestWriteAPI_MultipleIDTypes(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -456,7 +455,7 @@ func TestWriteAPI_MultipleIDTypes(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -475,7 +474,7 @@ func TestWriteAPI_MultipleIDTypes(t *testing.T) {
 }
 
 func TestWriteAPI_UpsertColumns(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -493,7 +492,7 @@ func TestWriteAPI_UpsertColumns(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -515,7 +514,7 @@ func TestWriteAPI_UpsertColumns(t *testing.T) {
 }
 
 func TestWriteAPI_UpsertColumnsWithVectors(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -533,7 +532,7 @@ func TestWriteAPI_UpsertColumnsWithVectors(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -552,7 +551,7 @@ func TestWriteAPI_UpsertColumnsWithVectors(t *testing.T) {
 }
 
 func TestWriteAPI_UpsertColumnsCombinedWithRows(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -572,7 +571,7 @@ func TestWriteAPI_UpsertColumnsCombinedWithRows(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -592,7 +591,7 @@ func TestWriteAPI_UpsertColumnsCombinedWithRows(t *testing.T) {
 }
 
 func TestWriteAPI_UpsertColumnsMismatchedLengths(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -609,7 +608,7 @@ func TestWriteAPI_UpsertColumnsMismatchedLengths(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -618,7 +617,7 @@ func TestWriteAPI_UpsertColumnsMismatchedLengths(t *testing.T) {
 }
 
 func TestWriteAPI_UpsertColumnsMissingIds(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -635,7 +634,7 @@ func TestWriteAPI_UpsertColumnsMissingIds(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -648,7 +647,7 @@ func TestWriteAPI_UpsertColumnsMissingIds(t *testing.T) {
 // TestWriteAPI_DeleteNonExistentIDSucceedsSilently verifies that deleting
 // a document ID that doesn't exist succeeds without error (silent no-op).
 func TestWriteAPI_DeleteNonExistentIDSucceedsSilently(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -663,7 +662,7 @@ func TestWriteAPI_DeleteNonExistentIDSucceedsSilently(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -688,7 +687,7 @@ func TestWriteAPI_DeleteNonExistentIDSucceedsSilently(t *testing.T) {
 // TestWriteAPI_DeleteMixedExistentAndNonExistent verifies that a request
 // with both existing and non-existing document IDs succeeds.
 func TestWriteAPI_DeleteMixedExistentAndNonExistent(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -708,7 +707,7 @@ func TestWriteAPI_DeleteMixedExistentAndNonExistent(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create initial documents: %d", w.Result().StatusCode)
@@ -724,7 +723,7 @@ func TestWriteAPI_DeleteMixedExistentAndNonExistent(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -748,7 +747,7 @@ func TestWriteAPI_DeleteMixedExistentAndNonExistent(t *testing.T) {
 
 // TestWriteAPI_DeleteWithVariousIDTypes verifies deletes work with different ID types.
 func TestWriteAPI_DeleteWithVariousIDTypes(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -767,7 +766,7 @@ func TestWriteAPI_DeleteWithVariousIDTypes(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -787,7 +786,7 @@ func TestWriteAPI_DeleteWithVariousIDTypes(t *testing.T) {
 
 // TestWriteAPI_DeleteEmptyArray verifies empty deletes array is allowed.
 func TestWriteAPI_DeleteEmptyArray(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -801,7 +800,7 @@ func TestWriteAPI_DeleteEmptyArray(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -826,7 +825,7 @@ func TestWriteAPI_DeleteEmptyArray(t *testing.T) {
 
 // TestWriteAPI_SchemaSpecifiedInWriteRequest verifies schema can be specified in write request.
 func TestWriteAPI_SchemaSpecifiedInWriteRequest(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -849,7 +848,7 @@ func TestWriteAPI_SchemaSpecifiedInWriteRequest(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -882,7 +881,7 @@ func TestWriteAPI_SchemaSpecifiedInWriteRequest(t *testing.T) {
 
 // TestWriteAPI_SchemaChangesAppliedAtomically verifies schema changes are applied atomically.
 func TestWriteAPI_SchemaChangesAppliedAtomically(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -903,7 +902,7 @@ func TestWriteAPI_SchemaChangesAppliedAtomically(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body1Bytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("first write failed: %d", w.Result().StatusCode)
@@ -923,7 +922,7 @@ func TestWriteAPI_SchemaChangesAppliedAtomically(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body2Bytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("second write failed: %d", w.Result().StatusCode)
@@ -948,7 +947,7 @@ func TestWriteAPI_SchemaChangesAppliedAtomically(t *testing.T) {
 
 // TestWriteAPI_TypeChangeReturns400 verifies that changing attribute type returns 400.
 func TestWriteAPI_TypeChangeReturns400(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -969,7 +968,7 @@ func TestWriteAPI_TypeChangeReturns400(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body1Bytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("first write failed: %d", w.Result().StatusCode)
@@ -989,7 +988,7 @@ func TestWriteAPI_TypeChangeReturns400(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body2Bytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -1005,7 +1004,7 @@ func TestWriteAPI_TypeChangeReturns400(t *testing.T) {
 
 // TestWriteAPI_FilterableCanBeUpdated verifies filterable can be updated on existing attributes.
 func TestWriteAPI_FilterableCanBeUpdated(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -1026,7 +1025,7 @@ func TestWriteAPI_FilterableCanBeUpdated(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body1Bytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("first write failed: %d", w.Result().StatusCode)
@@ -1046,7 +1045,7 @@ func TestWriteAPI_FilterableCanBeUpdated(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body2Bytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -1071,7 +1070,7 @@ func TestWriteAPI_FilterableCanBeUpdated(t *testing.T) {
 
 // TestWriteAPI_FullTextSearchCanBeUpdated verifies full_text_search can be updated.
 func TestWriteAPI_FullTextSearchCanBeUpdated(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -1092,7 +1091,7 @@ func TestWriteAPI_FullTextSearchCanBeUpdated(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body1Bytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("first write failed: %d", w.Result().StatusCode)
@@ -1112,7 +1111,7 @@ func TestWriteAPI_FullTextSearchCanBeUpdated(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(body2Bytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

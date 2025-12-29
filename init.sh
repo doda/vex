@@ -42,6 +42,7 @@ echo ""
 echo "7. Starting vex server for smoke test..."
 export VEX_OBJECT_STORE_TYPE=filesystem
 export VEX_OBJECT_STORE_ROOT="/tmp/vex-objectstore"
+export VEX_AUTH_TOKEN="dev-token"
 ./vex serve &
 VEX_PID=$!
 sleep 2
@@ -57,7 +58,7 @@ else
     exit 1
 fi
 
-NS_RESP=$(curl -s http://localhost:8080/v1/namespaces)
+NS_RESP=$(curl -s -H "Authorization: Bearer ${VEX_AUTH_TOKEN}" http://localhost:8080/v1/namespaces)
 if echo "$NS_RESP" | grep -q '"namespaces"'; then
     echo "   - GET /v1/namespaces: OK"
 else

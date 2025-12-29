@@ -15,7 +15,7 @@ import (
 
 func TestQueryConcurrencyLimit(t *testing.T) {
 	t.Run("queries queue when concurrency exceeds 16", func(t *testing.T) {
-		cfg := &config.Config{}
+		cfg := &config.Config{AuthToken: testAuthToken}
 		store := objectstore.NewMemoryStore()
 		stateMan := namespace.NewStateManager(store)
 
@@ -81,7 +81,7 @@ func TestQueryConcurrencyLimit(t *testing.T) {
 	})
 
 	t.Run("verify queued queries eventually execute", func(t *testing.T) {
-		cfg := &config.Config{}
+		cfg := &config.Config{AuthToken: testAuthToken}
 		store := objectstore.NewMemoryStore()
 		stateMan := namespace.NewStateManager(store)
 
@@ -141,7 +141,7 @@ func TestQueryConcurrencyLimit(t *testing.T) {
 	})
 
 	t.Run("default concurrency limit is 16", func(t *testing.T) {
-		cfg := &config.Config{}
+		cfg := &config.Config{AuthToken: testAuthToken}
 		store := objectstore.NewMemoryStore()
 		stateMan := namespace.NewStateManager(store)
 

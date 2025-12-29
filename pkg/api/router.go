@@ -293,11 +293,6 @@ func (r *Router) decompressBody(req *http.Request) io.ReadCloser {
 
 func (r *Router) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if r.cfg.AuthToken == "" {
-			next(w, req)
-			return
-		}
-
 		auth := req.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
 			r.writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
@@ -305,6 +300,10 @@ func (r *Router) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		token := strings.TrimPrefix(auth, "Bearer ")
+		if r.cfg.AuthToken == "" {
+			r.writeError(w, http.StatusForbidden, "auth token not configured")
+			return
+		}
 		if token != r.cfg.AuthToken {
 			r.writeError(w, http.StatusUnauthorized, "invalid token")
 			return

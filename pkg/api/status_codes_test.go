@@ -9,12 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 )
 
 // TestStatus200Success tests that 200 is returned for successful operations.
 func TestStatus200Success(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up a namespace that exists
@@ -52,7 +51,7 @@ func TestStatus200Success(t *testing.T) {
 				req.Header.Set("Content-Type", "application/json")
 			}
 			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			router.ServeAuthed(w, req)
 
 			if w.Result().StatusCode != http.StatusOK {
 				t.Errorf("expected status 200, got %d", w.Result().StatusCode)
@@ -63,7 +62,7 @@ func TestStatus200Success(t *testing.T) {
 
 // TestStatus202IndexBuilding tests that 202 is returned when query depends on index still building.
 func TestStatus202IndexBuilding(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up a namespace with index still building
@@ -81,7 +80,7 @@ func TestStatus202IndexBuilding(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/building-ns/query", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusAccepted {
 		t.Errorf("expected status 202, got %d", w.Result().StatusCode)
@@ -101,7 +100,7 @@ func TestStatus202IndexBuilding(t *testing.T) {
 
 // TestStatus400InvalidRequest tests that 400 is returned for invalid requests.
 func TestStatus400InvalidRequest(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up a namespace that exists
@@ -116,7 +115,7 @@ func TestStatus400InvalidRequest(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", strings.NewReader(`{invalid json`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusBadRequest {
 			t.Errorf("expected status 400, got %d", w.Result().StatusCode)
@@ -134,7 +133,7 @@ func TestStatus400InvalidRequest(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test%40namespace", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusBadRequest {
 			t.Errorf("expected status 400, got %d", w.Result().StatusCode)
@@ -146,7 +145,7 @@ func TestStatus400InvalidRequest(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+longName, strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusBadRequest {
 			t.Errorf("expected status 400, got %d", w.Result().StatusCode)
@@ -158,7 +157,7 @@ func TestStatus400InvalidRequest(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusBadRequest {
 			t.Errorf("expected status 400, got %d", w.Result().StatusCode)
@@ -175,7 +174,7 @@ func TestStatus400InvalidRequest(t *testing.T) {
 
 // TestStatus401Unauthorized tests that 401 is returned for authentication errors.
 func TestStatus401Unauthorized(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "secret-token"
 	router := NewRouter(cfg)
 
@@ -200,7 +199,7 @@ func TestStatus401Unauthorized(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 		req.Header.Set("Authorization", "Bearer wrong-token")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusUnauthorized {
 			t.Errorf("expected status 401, got %d", w.Result().StatusCode)
@@ -211,7 +210,7 @@ func TestStatus401Unauthorized(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 		req.Header.Set("Authorization", "secret-token") // Missing "Bearer "
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusUnauthorized {
 			t.Errorf("expected status 401, got %d", w.Result().StatusCode)
@@ -221,7 +220,7 @@ func TestStatus401Unauthorized(t *testing.T) {
 
 // TestStatus404NotFound tests that 404 is returned when namespace is not found.
 func TestStatus404NotFound(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up with explicit namespace states
@@ -236,7 +235,7 @@ func TestStatus404NotFound(t *testing.T) {
 	t.Run("namespace not found - metadata", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/namespaces/nonexistent/metadata", nil)
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusNotFound {
 			t.Errorf("expected status 404, got %d", w.Result().StatusCode)
@@ -257,7 +256,7 @@ func TestStatus404NotFound(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/nonexistent/query", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusNotFound {
 			t.Errorf("expected status 404, got %d", w.Result().StatusCode)
@@ -267,7 +266,7 @@ func TestStatus404NotFound(t *testing.T) {
 	t.Run("namespace deleted", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/namespaces/deleted-ns/metadata", nil)
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusNotFound {
 			t.Errorf("expected status 404, got %d", w.Result().StatusCode)
@@ -285,7 +284,7 @@ func TestStatus404NotFound(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/deleted-ns", strings.NewReader(`{"upsert_rows":[]}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusNotFound {
 			t.Errorf("expected status 404, got %d", w.Result().StatusCode)
@@ -295,7 +294,7 @@ func TestStatus404NotFound(t *testing.T) {
 
 // TestStatus413PayloadTooLarge tests that 413 is returned when request body is too large.
 func TestStatus413PayloadTooLarge(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up namespace
@@ -312,7 +311,7 @@ func TestStatus413PayloadTooLarge(t *testing.T) {
 		req.ContentLength = MaxRequestBodySize + 1
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusRequestEntityTooLarge {
 			t.Errorf("expected status 413, got %d", w.Result().StatusCode)
@@ -337,7 +336,7 @@ func TestStatus413PayloadTooLarge(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		// Don't set ContentLength to let MaxBytesReader kick in
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// Should return 413 or 400 (bad JSON due to truncation)
 		if w.Result().StatusCode != http.StatusRequestEntityTooLarge && w.Result().StatusCode != http.StatusBadRequest {
@@ -348,7 +347,7 @@ func TestStatus413PayloadTooLarge(t *testing.T) {
 
 // TestStatus429Backpressure tests that 429 is returned for rate limiting/backpressure.
 func TestStatus429Backpressure(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	// Set up namespace with high unindexed bytes (above 2GB threshold)
@@ -367,7 +366,7 @@ func TestStatus429Backpressure(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/backpressure-ns", strings.NewReader(`{"upsert_rows":[]}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusTooManyRequests {
 			t.Errorf("expected status 429, got %d", w.Result().StatusCode)
@@ -400,7 +399,7 @@ func TestStatus429Backpressure(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/no-backpressure-ns", strings.NewReader(`{"upsert_rows":[]}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		// With backpressure disabled, write should succeed
 		if w.Result().StatusCode != http.StatusOK {
@@ -424,7 +423,7 @@ func TestStatus500InternalServerError(t *testing.T) {
 	}
 
 	// Verify error format when written
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	w := httptest.NewRecorder()
@@ -445,7 +444,7 @@ func TestStatus500InternalServerError(t *testing.T) {
 // TestStatus503ServiceUnavailable tests that 503 is returned for object store failures
 // and strong query with disable_backpressure when unindexed > 2GB.
 func TestStatus503ServiceUnavailable(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	t.Run("object store unavailable", func(t *testing.T) {
@@ -460,7 +459,7 @@ func TestStatus503ServiceUnavailable(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", strings.NewReader(`{"upsert_rows":[]}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusServiceUnavailable {
 			t.Errorf("expected status 503, got %d", w.Result().StatusCode)
@@ -488,7 +487,7 @@ func TestStatus503ServiceUnavailable(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusServiceUnavailable {
 			t.Errorf("expected status 503, got %d", w.Result().StatusCode)
@@ -502,7 +501,7 @@ func TestStatus503ServiceUnavailable(t *testing.T) {
 
 		req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusServiceUnavailable {
 			t.Errorf("expected status 503, got %d", w.Result().StatusCode)
@@ -524,7 +523,7 @@ func TestStatus503ServiceUnavailable(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/backpressure-off-ns/query", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusServiceUnavailable {
 			t.Errorf("expected status 503, got %d", w.Result().StatusCode)
@@ -541,7 +540,7 @@ func TestStatus503ServiceUnavailable(t *testing.T) {
 
 // TestErrorResponseFormatStatusCodes verifies all errors follow the standard format.
 func TestErrorResponseFormatStatusCodes(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "test-token"
 	router := NewRouter(cfg)
 

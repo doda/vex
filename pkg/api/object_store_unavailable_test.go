@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/namespace"
@@ -24,7 +23,7 @@ import (
 // fail with HTTP 503 Service Unavailable when object storage is unavailable.
 // This is task step 1: "Test writes fail with 503 when object store unavailable"
 func TestWriteFailsWith503WhenObjectStoreUnavailable(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -46,7 +45,7 @@ func TestWriteFailsWith503WhenObjectStoreUnavailable(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected status 503, got %d", w.Code)

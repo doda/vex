@@ -8,13 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // TestRecallDebugEndpoint_ReturnsRecallMetrics tests that the recall debug endpoint returns recall metrics.
 func TestRecallDebugEndpoint_ReturnsRecallMetrics(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -32,7 +31,7 @@ func TestRecallDebugEndpoint_ReturnsRecallMetrics(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-recall-ns", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(w.Result().Body)
@@ -48,7 +47,7 @@ func TestRecallDebugEndpoint_ReturnsRecallMetrics(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v1/namespaces/test-recall-ns/_debug/recall", bytes.NewReader(recallReqBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -85,7 +84,7 @@ func TestRecallDebugEndpoint_ReturnsRecallMetrics(t *testing.T) {
 
 // TestRecallDebugEndpoint_DefaultParams tests that the endpoint uses default parameters when none provided.
 func TestRecallDebugEndpoint_DefaultParams(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -101,7 +100,7 @@ func TestRecallDebugEndpoint_DefaultParams(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-recall-defaults", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -110,7 +109,7 @@ func TestRecallDebugEndpoint_DefaultParams(t *testing.T) {
 	// Call recall debug with empty body (use defaults)
 	req = httptest.NewRequest("POST", "/v1/namespaces/test-recall-defaults/_debug/recall", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -132,14 +131,14 @@ func TestRecallDebugEndpoint_DefaultParams(t *testing.T) {
 
 // TestRecallDebugEndpoint_NamespaceNotFound tests that the endpoint returns 404 for nonexistent namespace.
 func TestRecallDebugEndpoint_NamespaceNotFound(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
 
 	req := httptest.NewRequest("POST", "/v1/namespaces/nonexistent-ns/_debug/recall", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
@@ -149,7 +148,7 @@ func TestRecallDebugEndpoint_NamespaceNotFound(t *testing.T) {
 
 // TestRecallDebugEndpoint_EmptyNamespace tests recall on namespace with no vectors.
 func TestRecallDebugEndpoint_EmptyNamespace(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -165,7 +164,7 @@ func TestRecallDebugEndpoint_EmptyNamespace(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-recall-empty", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -174,7 +173,7 @@ func TestRecallDebugEndpoint_EmptyNamespace(t *testing.T) {
 	// Call recall debug
 	req = httptest.NewRequest("POST", "/v1/namespaces/test-recall-empty/_debug/recall", nil)
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -207,7 +206,7 @@ func TestRecallDebugEndpoint_EmptyNamespace(t *testing.T) {
 
 // TestRecallDebugEndpoint_SamplesVectors tests that the endpoint samples the requested number of vectors.
 func TestRecallDebugEndpoint_SamplesVectors(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	store := objectstore.NewMemoryStore()
 	router := NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -227,7 +226,7 @@ func TestRecallDebugEndpoint_SamplesVectors(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test-recall-sample", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
@@ -242,7 +241,7 @@ func TestRecallDebugEndpoint_SamplesVectors(t *testing.T) {
 	req = httptest.NewRequest("POST", "/v1/namespaces/test-recall-sample/_debug/recall", bytes.NewReader(recallReqBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -267,7 +266,7 @@ func TestRecallDebugEndpoint_SamplesVectors(t *testing.T) {
 
 // TestRecallDebugEndpoint_TestMode tests fallback mode when no query handler is configured.
 func TestRecallDebugEndpoint_TestMode(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 	defer router.Close()
 
@@ -281,7 +280,7 @@ func TestRecallDebugEndpoint_TestMode(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/v1/namespaces/test-ns/_debug/recall", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

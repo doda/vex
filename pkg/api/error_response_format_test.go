@@ -8,12 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 )
 
 // TestAllErrorsReturnCorrectFormat verifies all errors return {"status":"error","error":"..."}.
 func TestAllErrorsReturnCorrectFormat(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "secret"
 	router := NewRouter(cfg)
 
@@ -157,7 +156,7 @@ func TestAllErrorsReturnCorrectFormat(t *testing.T) {
 
 // TestErrorMessagesAreDescriptive verifies that error messages provide useful information.
 func TestErrorMessagesAreDescriptive(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "secret"
 	router := NewRouter(cfg)
 
@@ -284,7 +283,7 @@ func TestErrorMessagesAreDescriptive(t *testing.T) {
 
 // TestServiceUnavailableErrors tests 503 error format.
 func TestServiceUnavailableErrors(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -320,7 +319,7 @@ func TestServiceUnavailableErrors(t *testing.T) {
 			}
 
 			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			router.ServeAuthed(w, req)
 
 			if w.Result().StatusCode != http.StatusServiceUnavailable {
 				t.Errorf("expected 503, got %d", w.Result().StatusCode)
@@ -344,7 +343,7 @@ func TestServiceUnavailableErrors(t *testing.T) {
 
 // TestStrongQueryBackpressureError tests 503 for strong query with backpressure disabled.
 func TestStrongQueryBackpressureError(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -361,7 +360,7 @@ func TestStrongQueryBackpressureError(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/bp-off/query", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d", w.Result().StatusCode)
@@ -386,7 +385,7 @@ func TestStrongQueryBackpressureError(t *testing.T) {
 
 // TestPayloadTooLargeError tests 413 error format.
 func TestPayloadTooLargeError(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -400,7 +399,7 @@ func TestPayloadTooLargeError(t *testing.T) {
 	req.ContentLength = MaxRequestBodySize + 1
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("expected 413, got %d", w.Result().StatusCode)
@@ -422,13 +421,13 @@ func TestPayloadTooLargeError(t *testing.T) {
 
 // TestErrorResponseHasOnlyExpectedFields verifies no extra fields in error responses.
 func TestErrorResponseHasOnlyExpectedFields(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "test"
 	router := NewRouter(cfg)
 
 	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	body, _ := io.ReadAll(w.Result().Body)
 	var result map[string]interface{}
@@ -448,7 +447,7 @@ func TestErrorResponseHasOnlyExpectedFields(t *testing.T) {
 
 // TestAllEndpointsHaveProperErrorFormat ensures every endpoint returns proper error format.
 func TestAllEndpointsHaveProperErrorFormat(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "secret"
 	router := NewRouter(cfg)
 
@@ -484,7 +483,7 @@ func TestAllEndpointsHaveProperErrorFormat(t *testing.T) {
 			}
 
 			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			router.ServeAuthed(w, req)
 
 			if w.Result().StatusCode != http.StatusUnauthorized {
 				t.Errorf("expected 401 without auth, got %d", w.Result().StatusCode)

@@ -15,7 +15,7 @@ import (
 )
 
 func TestQueryAPI(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	// Set up a namespace that exists
@@ -155,7 +155,7 @@ func TestQueryAPI(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			router.ServeHTTP(rec, req)
+			router.ServeAuthed(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("expected status %d, got %d", tt.wantStatus, rec.Code)
@@ -174,7 +174,7 @@ func TestQueryAPI(t *testing.T) {
 }
 
 func TestQueryAPIResponse(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	// Set up a namespace that exists
@@ -193,7 +193,7 @@ func TestQueryAPIResponse(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
+	router.ServeAuthed(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
@@ -237,7 +237,7 @@ func TestQueryAPIResponse(t *testing.T) {
 }
 
 func TestQueryAPIVectorDimsValidation(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	store := objectstore.NewMemoryStore()
@@ -272,7 +272,7 @@ func TestQueryAPIVectorDimsValidation(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected status 400, got %d", rec.Code)
@@ -288,7 +288,7 @@ func TestQueryAPIVectorDimsValidation(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d", rec.Code)
@@ -332,7 +332,7 @@ func TestQueryAPIWithAuth(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer test-token")
 		rec := httptest.NewRecorder()
 
-		router.ServeHTTP(rec, req)
+		router.ServeAuthed(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Errorf("expected 200, got %d", rec.Code)
@@ -341,7 +341,7 @@ func TestQueryAPIWithAuth(t *testing.T) {
 }
 
 func TestQueryAPIIndexBuilding(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	// Set up a namespace that is still building
@@ -360,7 +360,7 @@ func TestQueryAPIIndexBuilding(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
+	router.ServeAuthed(rec, req)
 
 	if rec.Code != http.StatusAccepted {
 		t.Errorf("expected 202 Accepted for building index, got %d", rec.Code)
@@ -368,7 +368,7 @@ func TestQueryAPIIndexBuilding(t *testing.T) {
 }
 
 func TestQueryAPIPendingRebuild(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	store := objectstore.NewMemoryStore()
@@ -402,7 +402,7 @@ func TestQueryAPIPendingRebuild(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
+	router.ServeAuthed(rec, req)
 
 	if rec.Code != http.StatusAccepted {
 		t.Errorf("expected 202 Accepted for pending rebuild, got %d", rec.Code)
@@ -410,7 +410,7 @@ func TestQueryAPIPendingRebuild(t *testing.T) {
 }
 
 func TestQueryAPIDeletedNamespace(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -428,7 +428,7 @@ func TestQueryAPIDeletedNamespace(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
+	router.ServeAuthed(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404 for deleted namespace, got %d", rec.Code)
@@ -436,7 +436,7 @@ func TestQueryAPIDeletedNamespace(t *testing.T) {
 }
 
 func TestQueryAPIObjectStoreUnavailable(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthToken: testAuthToken}
 	router := NewRouter(cfg)
 
 	router.SetState(&ServerState{
@@ -454,7 +454,7 @@ func TestQueryAPIObjectStoreUnavailable(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
+	router.ServeAuthed(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 for unavailable object store, got %d", rec.Code)

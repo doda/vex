@@ -18,13 +18,13 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -43,7 +43,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestAuthMiddleware(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "test-token"
 	router := NewRouter(cfg)
 
@@ -63,7 +63,7 @@ func TestAuthMiddleware(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer wrong-token")
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusUnauthorized {
 			t.Errorf("expected status 401, got %d", w.Result().StatusCode)
@@ -75,7 +75,7 @@ func TestAuthMiddleware(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer test-token")
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusOK {
 			t.Errorf("expected status 200, got %d", w.Result().StatusCode)
@@ -84,13 +84,14 @@ func TestAuthMiddleware(t *testing.T) {
 }
 
 func TestListNamespaces(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
+	addAuth(req)
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -109,7 +110,7 @@ func TestListNamespaces(t *testing.T) {
 }
 
 func TestErrorResponseFormat(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.AuthToken = "test-token"
 	router := NewRouter(cfg)
 
@@ -133,7 +134,7 @@ func TestErrorResponseFormat(t *testing.T) {
 }
 
 func TestGzipRequestDecompression(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	body := []byte(`{"upsert_rows":[{"id":1,"name":"test"}]}`)
@@ -145,9 +146,10 @@ func TestGzipRequestDecompression(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v2/namespaces/test", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
+	addAuth(req)
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", w.Result().StatusCode)
@@ -155,14 +157,14 @@ func TestGzipRequestDecompression(t *testing.T) {
 }
 
 func TestGzipResponseCompression(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	w := httptest.NewRecorder()
 
-	router.ServeHTTP(w, req)
+	router.ServeAuthed(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -191,7 +193,7 @@ func TestGzipResponseCompression(t *testing.T) {
 }
 
 func TestNamespaceValidation(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	router := NewRouter(cfg)
 
 	t.Run("valid namespace names are accepted", func(t *testing.T) {
@@ -209,8 +211,9 @@ func TestNamespaceValidation(t *testing.T) {
 			// Write to non-existent namespace should succeed (implicitly creates)
 			req := httptest.NewRequest("POST", "/v2/namespaces/"+name, strings.NewReader(`{"upsert_rows":[]}`))
 			req.Header.Set("Content-Type", "application/json")
+			addAuth(req)
 			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			router.ServeAuthed(w, req)
 
 			if w.Result().StatusCode != http.StatusOK {
 				t.Errorf("namespace %q should be valid, got status %d", name, w.Result().StatusCode)
@@ -221,8 +224,9 @@ func TestNamespaceValidation(t *testing.T) {
 	t.Run("names longer than 128 chars are rejected with 400", func(t *testing.T) {
 		longName := strings.Repeat("a", 129)
 		req := httptest.NewRequest("POST", "/v2/namespaces/"+longName, nil)
+		addAuth(req)
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode != http.StatusBadRequest {
 			t.Errorf("expected status 400 for name >128 chars, got %d", w.Result().StatusCode)
@@ -238,8 +242,9 @@ func TestNamespaceValidation(t *testing.T) {
 
 	t.Run("empty names are rejected", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/", nil)
+		addAuth(req)
 		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Result().StatusCode == http.StatusOK {
 			t.Error("empty namespace should not be accepted")
@@ -258,8 +263,9 @@ func TestNamespaceValidation(t *testing.T) {
 
 		for _, name := range invalidNames {
 			req := httptest.NewRequest("POST", "/v2/namespaces/"+url.PathEscape(name), nil)
+			addAuth(req)
 			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			router.ServeAuthed(w, req)
 
 			if w.Result().StatusCode != http.StatusBadRequest {
 				t.Errorf("namespace %q should be invalid, got status %d", name, w.Result().StatusCode)
@@ -283,8 +289,9 @@ func TestNamespaceValidation(t *testing.T) {
 
 		for _, ep := range endpoints {
 			req := httptest.NewRequest(ep.method, ep.path, nil)
+			addAuth(req)
 			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			router.ServeAuthed(w, req)
 
 			if w.Result().StatusCode != http.StatusBadRequest {
 				t.Errorf("%s %s should return 400, got %d", ep.method, ep.path, w.Result().StatusCode)
@@ -295,7 +302,7 @@ func TestNamespaceValidation(t *testing.T) {
 
 func TestMembershipIntegration(t *testing.T) {
 	t.Run("router with static membership from config", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		cfg.Membership = config.MembershipConfig{
 			Type:  "static",
 			Nodes: []string{"node1:8080", "node2:8080", "node3:8080"},
@@ -338,7 +345,7 @@ func TestMembershipIntegration(t *testing.T) {
 	})
 
 	t.Run("router without membership still works", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 
 		// Without membership, IsHomeNode returns true (assume local)
@@ -359,7 +366,7 @@ func TestMembershipIntegration(t *testing.T) {
 	})
 
 	t.Run("membership manager accessible from router", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		cfg.Membership = config.MembershipConfig{
 			Type:  "static",
 			Nodes: []string{"node1:8080", "node2:8080"},
@@ -386,7 +393,7 @@ func TestMembershipIntegration(t *testing.T) {
 	})
 
 	t.Run("routing is consistent across nodes", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		cfg.Membership = config.MembershipConfig{
 			Type:  "static",
 			Nodes: []string{"node1:8080", "node2:8080", "node3:8080"},
@@ -430,13 +437,13 @@ func TestStructuredLogging(t *testing.T) {
 	t.Run("logs are structured JSON", func(t *testing.T) {
 		var logBuf bytes.Buffer
 		logger := logging.NewWithWriter(&logBuf)
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouterWithLogger(cfg, nil, nil, logger)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		logOutput := logBuf.String()
 		if logOutput == "" {
@@ -463,7 +470,7 @@ func TestStructuredLogging(t *testing.T) {
 	t.Run("request_id namespace endpoint logged", func(t *testing.T) {
 		var logBuf bytes.Buffer
 		logger := logging.NewWithWriter(&logBuf)
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouterWithLogger(cfg, nil, nil, logger)
 
 		// Create namespace state for query to succeed
@@ -477,9 +484,10 @@ func TestStructuredLogging(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns/query", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Request-ID", "test-req-123")
+		addAuth(req)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		logOutput := logBuf.String()
 		var logEntry map[string]interface{}
@@ -501,7 +509,7 @@ func TestStructuredLogging(t *testing.T) {
 	t.Run("cache temperature logged", func(t *testing.T) {
 		var logBuf bytes.Buffer
 		logger := logging.NewWithWriter(&logBuf)
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouterWithLogger(cfg, nil, nil, logger)
 
 		// Create namespace state
@@ -514,9 +522,10 @@ func TestStructuredLogging(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/v2/namespaces/cache-ns/query", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
+		addAuth(req)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		logOutput := logBuf.String()
 		var logEntry map[string]interface{}
@@ -532,13 +541,13 @@ func TestStructuredLogging(t *testing.T) {
 	t.Run("timings server_total_ms logged", func(t *testing.T) {
 		var logBuf bytes.Buffer
 		logger := logging.NewWithWriter(&logBuf)
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouterWithLogger(cfg, nil, nil, logger)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		logOutput := logBuf.String()
 		var logEntry map[string]interface{}
@@ -556,13 +565,13 @@ func TestStructuredLogging(t *testing.T) {
 	})
 
 	t.Run("request_id set in response header", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		requestID := w.Header().Get("X-Request-ID")
 		if requestID == "" {
@@ -571,14 +580,14 @@ func TestStructuredLogging(t *testing.T) {
 	})
 
 	t.Run("provided request_id preserved", func(t *testing.T) {
-		cfg := config.Default()
+		cfg := testConfig()
 		router := NewRouter(cfg)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		req.Header.Set("X-Request-ID", "custom-request-id")
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeAuthed(w, req)
 
 		if w.Header().Get("X-Request-ID") != "custom-request-id" {
 			t.Error("expected provided X-Request-ID to be preserved")
