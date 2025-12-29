@@ -2645,7 +2645,7 @@
       "Run conditional writes against indexed docs and verify conditions are evaluated correctly",
       "Run copy_from_namespace and verify all indexed docs are copied"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/write"

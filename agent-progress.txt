@@ -1200,3 +1200,13 @@ KEY DEPENDENCIES:
 - Challenges: gofmt not available in environment.
 - Resolution: kept changes formatted and relied on existing style.
 - Follow-ups: none.
+[2025-12-29T22:14:35Z] Completed filter-conditional-copy-snapshot-full: PASS
+- Implemented full snapshot reads (index + tail) for filter operations, conditional writes, and copy_from_namespace.
+- Added snapshot helpers to merge indexed docs with tail tombstones and filter by indexed_wal_seq.
+- Added indexed snapshot tests for delete_by_filter, patch_by_filter, conditional upsert/patch/delete, and copy_from_namespace.
+- Files changed: internal/write/handler.go, internal/write/snapshot.go, internal/write/snapshot_full_test.go, internal/write/batcher.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/write -run "IndexedSnapshot" -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: tail snapshot needed to avoid stale tail docs overlapping indexed data.
+- Resolution: filtered tail scans to WAL seqs above indexed_wal_seq and deduped by WAL seq/sub-batch.
+- Follow-ups: none.

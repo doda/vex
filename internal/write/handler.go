@@ -12,6 +12,7 @@ import (
 
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/schema"
 	"github.com/vexsearch/vex/internal/tail"
@@ -115,6 +116,7 @@ type Handler struct {
 	encoder     *wal.Encoder
 	canon       *wal.Canonicalizer
 	tailStore   tail.Store        // Optional tail store for filter evaluation
+	indexReader *index.Reader
 	idempotency *IdempotencyStore // Optional idempotency store for de-duplication
 	compatMode  string            // Compatibility mode: "turbopuffer" or "vex"
 }
@@ -142,6 +144,7 @@ func NewHandlerWithOptions(store objectstore.Store, stateMan *namespace.StateMan
 		encoder:     encoder,
 		canon:       wal.NewCanonicalizer(),
 		tailStore:   tailStore,
+		indexReader: index.NewReader(store, nil, nil),
 		idempotency: NewIdempotencyStore(),
 		compatMode:  compatMode,
 	}, nil
@@ -250,7 +253,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// PHASE 1: delete_by_filter runs BEFORE all other operations
 	if req.DeleteByFilter != nil {
-		remaining, err := h.processDeleteByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.DeleteByFilter, subBatch, loaded.State.Schema)
+		remaining, err := h.processDeleteByFilter(ctx, ns, loaded.State.WAL.HeadSeq, loaded.State, req.DeleteByFilter, subBatch)
 		if err != nil {
 			releaseOnError(err)
 			return nil, err
@@ -260,7 +263,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// PHASE 2: patch_by_filter runs AFTER delete_by_filter, BEFORE other operations
 	if req.PatchByFilter != nil {
-		remaining, err := h.processPatchByFilter(ctx, ns, loaded.State.WAL.HeadSeq, req.PatchByFilter, subBatch, loaded.State.Schema, schemaCollector)
+		remaining, err := h.processPatchByFilter(ctx, ns, loaded.State.WAL.HeadSeq, loaded.State, req.PatchByFilter, subBatch, schemaCollector)
 		if err != nil {
 			releaseOnError(err)
 			return nil, err
@@ -289,7 +292,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// If upsert_condition is specified, process conditionally
 	if req.UpsertCondition != nil {
-		if err := h.processConditionalUpserts(ctx, ns, loaded.State.WAL.HeadSeq, dedupedUpserts, req.UpsertCondition, subBatch, schemaCollector); err != nil {
+		if err := h.processConditionalUpserts(ctx, ns, loaded.State.WAL.HeadSeq, loaded.State, dedupedUpserts, req.UpsertCondition, subBatch, schemaCollector); err != nil {
 			releaseOnError(err)
 			return nil, err
 		}
@@ -312,7 +315,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// If patch_condition is specified, process conditionally
 	if req.PatchCondition != nil {
-		if err := h.processConditionalPatches(ctx, ns, loaded.State.WAL.HeadSeq, dedupedPatches, req.PatchCondition, subBatch, schemaCollector); err != nil {
+		if err := h.processConditionalPatches(ctx, ns, loaded.State.WAL.HeadSeq, loaded.State, dedupedPatches, req.PatchCondition, subBatch, schemaCollector); err != nil {
 			releaseOnError(err)
 			return nil, err
 		}
@@ -363,7 +366,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	// PHASE 6: Process deletes (runs after patches per write ordering spec)
 	// If delete_condition is specified, process conditionally
 	if req.DeleteCondition != nil {
-		if err := h.processConditionalDeletes(ctx, ns, loaded.State.WAL.HeadSeq, req.Deletes, req.DeleteCondition, subBatch); err != nil {
+		if err := h.processConditionalDeletes(ctx, ns, loaded.State.WAL.HeadSeq, loaded.State, req.Deletes, req.DeleteCondition, subBatch); err != nil {
 			releaseOnError(err)
 			return nil, err
 		}
@@ -462,7 +465,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 // Phase 1: Evaluate filter at snapshot, select matching IDs (bounded by limit)
 // Phase 2: Re-evaluate filter and delete IDs that still match
 // Returns true if rows_remaining (more rows matched than limit)
-func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *DeleteByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema) (bool, error) {
+func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, req *DeleteByFilterRequest, batch *wal.WriteSubBatch) (bool, error) {
 	// Parse the filter
 	f, err := filter.Parse(req.Filter)
 	if err != nil {
@@ -476,7 +479,7 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 
 	// Validate regex filters against schema
 	if f.UsesRegexOperators() {
-		schemaChecker := buildSchemaChecker(nsSchema)
+		schemaChecker := buildSchemaChecker(state.Schema)
 		if err := f.ValidateWithSchema(schemaChecker); err != nil {
 			return false, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
 		}
@@ -488,36 +491,33 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 		return false, fmt.Errorf("failed to serialize filter: %w", err)
 	}
 
-	// Phase 1: Get candidate IDs at the current snapshot
-	// We need a tail store to evaluate the filter
-	if h.tailStore == nil {
-		return false, fmt.Errorf("%w: delete_by_filter requires tail store", ErrFilterOpRequiresTail)
-	}
-
-	// Refresh tail to ensure we have current data
-	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
-		return false, fmt.Errorf("failed to refresh tail: %w", err)
-	}
-
-	// Scan for matching documents
-	docs, err := h.tailStore.Scan(ctx, ns, f)
+	docMap, err := h.loadSnapshotDocMap(ctx, ns, snapshotSeq, state, fmt.Errorf("%w: delete_by_filter requires tail store", ErrFilterOpRequiresTail))
 	if err != nil {
-		return false, fmt.Errorf("failed to scan for matching documents: %w", err)
+		return false, err
 	}
 
-	// Check if we exceed the limit
-	rowsRemaining := len(docs) > MaxDeleteByFilterRows
-	if rowsRemaining && !req.AllowPartial {
-		return false, fmt.Errorf("%w: %d rows match filter, max is %d", ErrDeleteByFilterTooMany, len(docs), MaxDeleteByFilterRows)
-	}
-
-	// Limit the candidates if we're in partial mode
+	docs := snapshotDocsFromMap(docMap)
+	matches := 0
+	rowsRemaining := false
 	candidateIDs := make([]document.ID, 0, len(docs))
-	for i, doc := range docs {
-		if i >= MaxDeleteByFilterRows {
-			break
+	for _, doc := range docs {
+		if doc.Deleted {
+			continue
 		}
-		candidateIDs = append(candidateIDs, doc.ID)
+		filterDoc := buildSnapshotFilterDoc(doc)
+		if !f.Eval(filterDoc) {
+			continue
+		}
+		matches++
+		if matches <= MaxDeleteByFilterRows {
+			candidateIDs = append(candidateIDs, doc.ID)
+			continue
+		}
+		rowsRemaining = true
+		if !req.AllowPartial {
+			return false, fmt.Errorf("%w: %d rows match filter, max is %d", ErrDeleteByFilterTooMany, matches, MaxDeleteByFilterRows)
+		}
+		break
 	}
 
 	// Record filter operation metadata in WAL for deterministic replay.
@@ -534,22 +534,14 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 	// This implements "Read Committed" semantics - docs that newly qualify between
 	// phases can be missed, and docs that no longer qualify are not deleted
 	for _, id := range candidateIDs {
-		// Get the document again to re-evaluate
-		doc, err := h.tailStore.GetDocument(ctx, ns, id)
-		if err != nil {
-			continue // Skip on error
-		}
-		if doc == nil || doc.Deleted {
-			continue // Document was deleted between phases
+		doc, ok := docMap[id.String()]
+		if !ok || doc == nil || doc.Deleted {
+			continue
 		}
 
-		// Re-evaluate the filter
-		filterDoc := make(filter.Document)
-		for k, v := range doc.Attributes {
-			filterDoc[k] = v
-		}
+		filterDoc := buildSnapshotFilterDoc(doc)
 		if !f.Eval(filterDoc) {
-			continue // Document no longer matches filter
+			continue
 		}
 
 		// Add delete mutation
@@ -564,7 +556,7 @@ func (h *Handler) processDeleteByFilter(ctx context.Context, ns string, snapshot
 // Phase 1: Evaluate filter at snapshot, select matching IDs (bounded by limit)
 // Phase 2: Re-evaluate filter and patch IDs that still match
 // Returns true if rows_remaining (more rows matched than limit)
-func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, req *PatchByFilterRequest, batch *wal.WriteSubBatch, nsSchema *namespace.Schema, schemaCollector *schemaCollector) (bool, error) {
+func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, req *PatchByFilterRequest, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) (bool, error) {
 	// Parse the filter
 	f, err := filter.Parse(req.Filter)
 	if err != nil {
@@ -578,7 +570,7 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 
 	// Validate regex filters against schema
 	if f.UsesRegexOperators() {
-		schemaChecker := buildSchemaChecker(nsSchema)
+		schemaChecker := buildSchemaChecker(state.Schema)
 		if err := f.ValidateWithSchema(schemaChecker); err != nil {
 			return false, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
 		}
@@ -594,36 +586,33 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 		return false, fmt.Errorf("failed to serialize updates: %w", err)
 	}
 
-	// Phase 1: Get candidate IDs at the current snapshot
-	// We need a tail store to evaluate the filter
-	if h.tailStore == nil {
-		return false, fmt.Errorf("%w: patch_by_filter requires tail store", ErrFilterOpRequiresTail)
-	}
-
-	// Refresh tail to ensure we have current data
-	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
-		return false, fmt.Errorf("failed to refresh tail: %w", err)
-	}
-
-	// Scan for matching documents
-	docs, err := h.tailStore.Scan(ctx, ns, f)
+	docMap, err := h.loadSnapshotDocMap(ctx, ns, snapshotSeq, state, fmt.Errorf("%w: patch_by_filter requires tail store", ErrFilterOpRequiresTail))
 	if err != nil {
-		return false, fmt.Errorf("failed to scan for matching documents: %w", err)
+		return false, err
 	}
 
-	// Check if we exceed the limit
-	rowsRemaining := len(docs) > MaxPatchByFilterRows
-	if rowsRemaining && !req.AllowPartial {
-		return false, fmt.Errorf("%w: %d rows match filter, max is %d", ErrPatchByFilterTooMany, len(docs), MaxPatchByFilterRows)
-	}
-
-	// Limit the candidates if we're in partial mode
+	docs := snapshotDocsFromMap(docMap)
+	matches := 0
+	rowsRemaining := false
 	candidateIDs := make([]document.ID, 0, len(docs))
-	for i, doc := range docs {
-		if i >= MaxPatchByFilterRows {
-			break
+	for _, doc := range docs {
+		if doc.Deleted {
+			continue
 		}
-		candidateIDs = append(candidateIDs, doc.ID)
+		filterDoc := buildSnapshotFilterDoc(doc)
+		if !f.Eval(filterDoc) {
+			continue
+		}
+		matches++
+		if matches <= MaxPatchByFilterRows {
+			candidateIDs = append(candidateIDs, doc.ID)
+			continue
+		}
+		rowsRemaining = true
+		if !req.AllowPartial {
+			return false, fmt.Errorf("%w: %d rows match filter, max is %d", ErrPatchByFilterTooMany, matches, MaxPatchByFilterRows)
+		}
+		break
 	}
 
 	// Record filter operation metadata in WAL for deterministic replay.
@@ -671,22 +660,14 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 			continue
 		}
 
-		// Get the document again to re-evaluate
-		doc, err := h.tailStore.GetDocument(ctx, ns, id)
-		if err != nil {
-			continue // Skip on error
-		}
-		if doc == nil || doc.Deleted {
-			continue // Document was deleted between phases
+		doc, ok := docMap[id.String()]
+		if !ok || doc == nil || doc.Deleted {
+			continue
 		}
 
-		// Re-evaluate the filter
-		filterDoc := make(filter.Document)
-		for k, v := range doc.Attributes {
-			filterDoc[k] = v
-		}
+		filterDoc := buildSnapshotFilterDoc(doc)
 		if !f.Eval(filterDoc) {
-			continue // Document no longer matches filter
+			continue
 		}
 
 		// Add patch mutation
@@ -701,27 +682,19 @@ func (h *Handler) processPatchByFilter(ctx context.Context, ns string, snapshotS
 // It reads all documents from the source namespace at a consistent snapshot
 // and adds them as upserts to the current batch.
 func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
-	// We need a tail store to read source documents
-	if h.tailStore == nil {
-		return fmt.Errorf("%w: tail store required for copy_from_namespace", ErrInvalidRequest)
-	}
-
 	// Load source namespace state to get a consistent snapshot
 	sourceLoaded, err := h.stateMan.Load(ctx, sourceNs)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %v", ErrSourceNamespaceNotFound, sourceNs, err)
 	}
 
-	// Refresh tail for source namespace at consistent snapshot
-	if err := h.tailStore.Refresh(ctx, sourceNs, 0, sourceLoaded.State.WAL.HeadSeq); err != nil {
-		return fmt.Errorf("failed to refresh source namespace tail: %w", err)
+	tailErr := fmt.Errorf("%w: tail store required for copy_from_namespace", ErrInvalidRequest)
+	docMap, err := h.loadSnapshotDocMap(ctx, sourceNs, sourceLoaded.State.WAL.HeadSeq, sourceLoaded.State, tailErr)
+	if err != nil {
+		return err
 	}
 
-	// Scan all documents from source namespace (no filter = all docs)
-	docs, err := h.tailStore.Scan(ctx, sourceNs, nil)
-	if err != nil {
-		return fmt.Errorf("failed to scan source namespace: %w", err)
-	}
+	docs := snapshotDocsFromMap(docMap)
 
 	// Add each document as an upsert
 	for _, doc := range docs {
@@ -764,15 +737,10 @@ func (h *Handler) processCopyFromNamespace(ctx context.Context, sourceNs string,
 //
 // The condition can contain $ref_new references that are resolved
 // to values from the new document being upserted.
-func (h *Handler) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
-	// We need a tail store to read existing documents for snapshot evaluation
-	if h.tailStore == nil {
-		return fmt.Errorf("%w: conditional upsert requires tail store", ErrConditionalRequiresTail)
-	}
-
-	// Refresh tail to ensure we have current data
-	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
-		return fmt.Errorf("%w: failed to refresh tail for conditional upsert: %v", ErrConditionalRequiresTail, err)
+func (h *Handler) processConditionalUpserts(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
+	docMap, err := h.loadSnapshotDocMap(ctx, ns, snapshotSeq, state, ErrConditionalRequiresTail)
+	if err != nil {
+		return err
 	}
 
 	for _, row := range rows {
@@ -786,10 +754,9 @@ func (h *Handler) processConditionalUpserts(ctx context.Context, ns string, snap
 			return fmt.Errorf("%w: %v", ErrInvalidID, err)
 		}
 
-		// Get existing document
-		existingDoc, err := h.tailStore.GetDocument(ctx, ns, docID)
-		if err != nil {
-			return fmt.Errorf("failed to get existing document: %w", err)
+		existingDoc := docMap[docID.String()]
+		if existingDoc != nil && existingDoc.Deleted {
+			existingDoc = nil
 		}
 
 		// Build new doc attributes for $ref_new resolution (exclude id and vector)
@@ -860,15 +827,10 @@ func (h *Handler) shouldApplyConditionalUpsert(existingDoc *tail.Document, condi
 //
 // The condition can contain $ref_new references that are resolved
 // to values from the patch data being applied.
-func (h *Handler) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
-	// We need a tail store to read existing documents for snapshot evaluation
-	if h.tailStore == nil {
-		return fmt.Errorf("%w: conditional patch requires tail store", ErrConditionalRequiresTail)
-	}
-
-	// Refresh tail to ensure we have current data
-	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
-		return fmt.Errorf("%w: failed to refresh tail for conditional patch: %v", ErrConditionalRequiresTail, err)
+func (h *Handler) processConditionalPatches(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, rows []map[string]any, condition any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
+	docMap, err := h.loadSnapshotDocMap(ctx, ns, snapshotSeq, state, ErrConditionalRequiresTail)
+	if err != nil {
+		return err
 	}
 
 	for _, row := range rows {
@@ -882,11 +844,7 @@ func (h *Handler) processConditionalPatches(ctx context.Context, ns string, snap
 			return fmt.Errorf("%w: %v", ErrInvalidID, err)
 		}
 
-		// Get existing document
-		existingDoc, err := h.tailStore.GetDocument(ctx, ns, docID)
-		if err != nil {
-			return fmt.Errorf("failed to get existing document: %w", err)
-		}
+		existingDoc := docMap[docID.String()]
 
 		// Build patch attributes for $ref_new resolution (exclude id and vector)
 		patchAttrs := make(map[string]any)
@@ -956,15 +914,10 @@ func (h *Handler) shouldApplyConditionalPatch(existingDoc *tail.Document, condit
 //
 // For $ref_new references in conditions, all attributes are supplied as null
 // since deletion has no "new" values.
-func (h *Handler) processConditionalDeletes(ctx context.Context, ns string, snapshotSeq uint64, ids []any, condition any, batch *wal.WriteSubBatch) error {
-	// We need a tail store to read existing documents for snapshot evaluation
-	if h.tailStore == nil {
-		return fmt.Errorf("%w: conditional delete requires tail store", ErrConditionalRequiresTail)
-	}
-
-	// Refresh tail to ensure we have current data
-	if err := h.tailStore.Refresh(ctx, ns, 0, snapshotSeq); err != nil {
-		return fmt.Errorf("%w: failed to refresh tail for conditional delete: %v", ErrConditionalRequiresTail, err)
+func (h *Handler) processConditionalDeletes(ctx context.Context, ns string, snapshotSeq uint64, state *namespace.State, ids []any, condition any, batch *wal.WriteSubBatch) error {
+	docMap, err := h.loadSnapshotDocMap(ctx, ns, snapshotSeq, state, ErrConditionalRequiresTail)
+	if err != nil {
+		return err
 	}
 
 	for _, rawID := range ids {
@@ -973,11 +926,7 @@ func (h *Handler) processConditionalDeletes(ctx context.Context, ns string, snap
 			return fmt.Errorf("%w: %v", ErrInvalidID, err)
 		}
 
-		// Get existing document
-		existingDoc, err := h.tailStore.GetDocument(ctx, ns, docID)
-		if err != nil {
-			return fmt.Errorf("failed to get existing document: %w", err)
-		}
+		existingDoc := docMap[docID.String()]
 
 		// Apply delete based on conditional semantics
 		shouldApply, err := h.shouldApplyConditionalDelete(existingDoc, condition)
