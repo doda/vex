@@ -1298,3 +1298,12 @@ KEY DEPENDENCIES:
 - Challenges: Background compactor needed state initialization to publish manifests.
 - Resolution: added test helper to seed state+manifest and WAL head for compaction runs.
 - Follow-ups: none.
+[2025-12-29T23:29:30Z] Completed test-indexer-nonvector-patch-filter: PASS
+- Verified indexer tests cover non-vector docs, patch mutations, and filter artifact publishing.
+- Marked task as passing after confirming targeted test coverage.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run "TestIndexerIncludesNonVectorDocs|TestIndexerAppliesPatchMutations|TestIndexerPublishesFilterArtifacts" -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Resolution: none needed.
+- Follow-ups: none.

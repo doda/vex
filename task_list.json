@@ -2776,7 +2776,7 @@
       "Test indexing after patch mutations",
       "Test filter artifact creation for filterable attributes"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/indexer",
