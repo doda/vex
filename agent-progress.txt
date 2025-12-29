@@ -1307,3 +1307,15 @@ KEY DEPENDENCIES:
 - Challenges: none.
 - Resolution: none needed.
 - Follow-ups: none.
+[2025-12-30T12:00:00Z] Completed tailstore-spill-and-ram-evict: PASS
+- Implemented TailStore RAM cap enforcement with spill-to-NVMe and on-demand reload for scans/get/vector paths.
+- Reworked tail entry tracking to support RAM eviction while preserving strong-read completeness via disk/object store fallback.
+- Added spill verification in tail tests and updated verification expectations for RAM tier behavior.
+- Files changed: internal/tail/store.go.
+- Files changed: internal/tail/store_test.go.
+- Files changed: internal/tail/verification_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/tail -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: ensured spill path works for AddWALEntry without object store data.
+- Resolution: spill writes to disk cache and scans reload from NVMe for spilled entries.

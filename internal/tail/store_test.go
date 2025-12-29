@@ -156,6 +156,16 @@ func encodeVector(vec []float32) []byte {
 	return buf
 }
 
+func countRAMEntries(nt *namespaceTail) int {
+	count := 0
+	for _, entry := range nt.entries {
+		if entry != nil && entry.inRAM {
+			count++
+		}
+	}
+	return count
+}
+
 func TestTailStore_AddWALEntry(t *testing.T) {
 	store := newMockStore()
 	ts := New(DefaultConfig(), store, nil, nil)
@@ -206,11 +216,11 @@ func TestTailStore_AddWALEntry_UsesCompressedBytesForTailCap(t *testing.T) {
 		t.Fatal("namespace not found")
 	}
 
-	if nt.ramEntries[1].sizeBytes != int64(len(data1)) {
-		t.Fatalf("expected entry1 size %d, got %d", len(data1), nt.ramEntries[1].sizeBytes)
+	if nt.entries[1].sizeBytes != int64(len(data1)) {
+		t.Fatalf("expected entry1 size %d, got %d", len(data1), nt.entries[1].sizeBytes)
 	}
-	if nt.ramEntries[2].sizeBytes != int64(len(data2)) {
-		t.Fatalf("expected entry2 size %d, got %d", len(data2), nt.ramEntries[2].sizeBytes)
+	if nt.entries[2].sizeBytes != int64(len(data2)) {
+		t.Fatalf("expected entry2 size %d, got %d", len(data2), nt.entries[2].sizeBytes)
 	}
 
 	ctx := context.Background()
@@ -300,11 +310,65 @@ func TestTailStore_RAMTier(t *testing.T) {
 	if nt == nil {
 		t.Fatal("namespace not found")
 	}
-	if len(nt.ramEntries) != 5 {
-		t.Errorf("expected 5 RAM entries, got %d", len(nt.ramEntries))
+	if countRAMEntries(nt) != 5 {
+		t.Errorf("expected 5 RAM entries, got %d", countRAMEntries(nt))
 	}
-	if len(nt.documents) != 5 {
-		t.Errorf("expected 5 documents, got %d", len(nt.documents))
+}
+
+func TestTailStore_SpillsToNVMeWhenRAMCapExceeded(t *testing.T) {
+	store := newMockStore()
+	diskCache, err := cache.NewDiskCache(cache.DiskCacheConfig{
+		RootPath: t.TempDir(),
+		MaxBytes: 100 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("failed to create disk cache: %v", err)
+	}
+
+	entry1, _ := createTestWALEntry("test-ns", 1, []testDoc{
+		{id: 1, attrs: map[string]any{"payload": "small"}},
+	})
+	entry2, data2 := createTestWALEntry("test-ns", 2, []testDoc{
+		{id: 2, attrs: map[string]any{"payload": "larger payload for spill"}},
+	})
+
+	cfg := DefaultConfig()
+	cfg.MaxRAMBytes = int64(len(data2))
+	ts := New(cfg, store, diskCache, nil)
+	defer ts.Close()
+
+	ts.AddWALEntry("test-ns", entry1)
+	ts.AddWALEntry("test-ns", entry2)
+
+	nt := ts.getNamespace("test-ns")
+	if nt == nil {
+		t.Fatal("namespace not found")
+	}
+	if countRAMEntries(nt) != 1 {
+		t.Fatalf("expected 1 RAM entry after spill, got %d", countRAMEntries(nt))
+	}
+	if nt.entries[1].inRAM {
+		t.Fatal("expected seq 1 to be spilled")
+	}
+	if nt.ramBytes > cfg.MaxRAMBytes {
+		t.Fatalf("expected RAM bytes <= cap, got %d > %d", nt.ramBytes, cfg.MaxRAMBytes)
+	}
+
+	cacheKey := cache.CacheKey{
+		ObjectKey: "vex/namespaces/test-ns/" + wal.KeyForSeq(1),
+		ETag:      "",
+	}
+	if !diskCache.Contains(cacheKey) {
+		t.Fatal("expected spilled entry to be cached on disk")
+	}
+
+	ctx := context.Background()
+	docs, err := ts.Scan(ctx, "test-ns", nil)
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs from tail, got %d", len(docs))
 	}
 }
 
@@ -701,10 +765,10 @@ func TestTailStore_RefreshHonorsGuardrailsTailCap(t *testing.T) {
 	if nt == nil {
 		t.Fatal("expected namespace to be loaded")
 	}
-	if _, ok := nt.ramEntries[1]; !ok {
+	if entry, ok := nt.entries[1]; !ok || entry == nil || !entry.inRAM {
 		t.Fatal("expected seq 1 to be loaded")
 	}
-	if _, ok := nt.ramEntries[2]; ok {
+	if entry, ok := nt.entries[2]; ok && entry != nil && entry.inRAM {
 		t.Fatal("expected seq 2 to be skipped due to cap")
 	}
 
@@ -873,7 +937,7 @@ func TestTailStore_ScanWithByteLimit(t *testing.T) {
 	}
 
 	// Calculate size of newest entry only
-	newestEntrySize := nt.ramEntries[3].sizeBytes
+	newestEntrySize := nt.entries[3].sizeBytes
 
 	t.Run("byte limit includes only newest entry", func(t *testing.T) {
 		// Limit to only fit the newest entry
@@ -893,7 +957,7 @@ func TestTailStore_ScanWithByteLimit(t *testing.T) {
 
 	t.Run("byte limit uses newest first ordering", func(t *testing.T) {
 		// Limit to fit 2 entries (should include seq=3 and seq=2, but not seq=1)
-		twoEntriesSize := nt.ramEntries[3].sizeBytes + nt.ramEntries[2].sizeBytes
+		twoEntriesSize := nt.entries[3].sizeBytes + nt.entries[2].sizeBytes
 
 		docs, err := ts.ScanWithByteLimit(ctx, "test-ns", nil, twoEntriesSize)
 		if err != nil {
@@ -965,7 +1029,7 @@ func TestTailStore_VectorScanWithByteLimit(t *testing.T) {
 
 	t.Run("vector scan with byte limit excludes oldest entries", func(t *testing.T) {
 		// Limit to only the newest entry (seq=3)
-		newestEntrySize := nt.ramEntries[3].sizeBytes
+		newestEntrySize := nt.entries[3].sizeBytes
 
 		results, err := ts.VectorScanWithByteLimit(ctx, "test-ns", query, 10, MetricCosineDistance, nil, newestEntrySize)
 		if err != nil {
@@ -1011,12 +1075,12 @@ func TestTailStore_ByteLimitNewestFirstOrdering(t *testing.T) {
 	}
 
 	// Verify we have all 5 entries
-	if len(nt.ramEntries) != 5 {
-		t.Fatalf("expected 5 RAM entries, got %d", len(nt.ramEntries))
+	if countRAMEntries(nt) != 5 {
+		t.Fatalf("expected 5 RAM entries, got %d", countRAMEntries(nt))
 	}
 
 	// Calculate size to include only 2 newest entries (seq=5 and seq=4)
-	twoNewestSize := nt.ramEntries[5].sizeBytes + nt.ramEntries[4].sizeBytes
+	twoNewestSize := nt.entries[5].sizeBytes + nt.entries[4].sizeBytes
 
 	docs, err := ts.ScanWithByteLimit(ctx, "test-ns", nil, twoNewestSize)
 	if err != nil {

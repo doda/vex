@@ -148,12 +148,8 @@ type TailStore struct {
 type namespaceTail struct {
 	mu sync.RWMutex
 
-	// WAL entries in RAM tier, keyed by seq
-	ramEntries map[uint64]*walEntryCache
-
-	// Materialized documents (deduplicated view)
-	// Key is document ID string
-	documents map[string]*Document
+	// WAL entries tracked for the namespace (RAM or spilled)
+	entries map[uint64]*walEntryState
 
 	// Loaded WAL sequence range (afterSeq, upToSeq]
 	afterSeq uint64
@@ -161,14 +157,18 @@ type namespaceTail struct {
 
 	// Approximate bytes in tail
 	tailBytes int64
+
+	// Approximate bytes kept in RAM
+	ramBytes int64
 }
 
-// walEntryCache holds a decoded WAL entry in the RAM tier.
-type walEntryCache struct {
-	entry      *wal.WalEntry
-	documents  []*Document
-	sizeBytes  int64
-	compressed []byte // Original compressed data for NVMe spill
+// walEntryState tracks an entry's RAM/spill state.
+type walEntryState struct {
+	entry     *wal.WalEntry
+	documents []*Document
+	sizeBytes int64
+	fullKey   string
+	inRAM     bool
 }
 
 // New creates a new TailStore.
@@ -202,8 +202,7 @@ func (ts *TailStore) getOrCreateNamespace(namespace string) (*namespaceTail, boo
 	}
 
 	nt := &namespaceTail{
-		ramEntries: make(map[uint64]*walEntryCache),
-		documents:  make(map[string]*Document),
+		entries: make(map[uint64]*walEntryState),
 	}
 	ts.namespaces[namespace] = nt
 	return nt, true
@@ -318,21 +317,23 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 		}
 
 		docs := materializeEntry(entry)
-		entryCache := &walEntryCache{
-			entry:      entry,
-			documents:  docs,
-			sizeBytes:  int64(len(compressed)),
-			compressed: compressed,
+		entryState := &walEntryState{
+			entry:     entry,
+			documents: docs,
+			sizeBytes: int64(len(compressed)),
+			fullKey:   fullKey,
+			inRAM:     true,
 		}
 
 		if ts.guardrails != nil {
-			if err := ts.guardrails.CheckTailBytes(namespace, entryCache.sizeBytes); err != nil {
+			if err := ts.guardrails.CheckTailBytes(namespace, entryState.sizeBytes); err != nil {
 				return ErrTailTooLarge
 			}
 		}
 
-		nt.ramEntries[seq] = entryCache
-		nt.tailBytes += entryCache.sizeBytes
+		nt.entries[seq] = entryState
+		nt.tailBytes += entryState.sizeBytes
+		nt.ramBytes += entryState.sizeBytes
 		if ts.guardrails != nil {
 			if err := ts.guardrails.SetTailBytes(namespace, nt.tailBytes); err != nil {
 				return err
@@ -342,14 +343,8 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 			nt.upToSeq = seq
 		}
 
-		// Update deduplicated document view
-		for _, doc := range docs {
-			idStr := doc.ID.String()
-			existing, exists := nt.documents[idStr]
-			if !exists || doc.WalSeq > existing.WalSeq ||
-				(doc.WalSeq == existing.WalSeq && doc.SubBatchID > existing.SubBatchID) {
-				nt.documents[idStr] = doc
-			}
+		if err := ts.enforceRAMCapLocked(nt); err != nil {
+			return err
 		}
 	}
 
@@ -359,114 +354,70 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 }
 
 func (ts *TailStore) Scan(ctx context.Context, namespace string, f *filter.Filter) ([]*Document, error) {
-	nt := ts.getNamespace(namespace)
-	if nt == nil {
-		return nil, nil
-	}
-
-	nt.mu.RLock()
-	defer nt.mu.RUnlock()
-
-	var results []*Document
-	for _, doc := range nt.documents {
-		if doc.Deleted {
-			continue
-		}
-
-		if f != nil {
-			filterDoc := buildFilterDoc(doc)
-			if !f.Eval(filterDoc) {
-				continue
-			}
-		}
-
-		results = append(results, doc)
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].WalSeq != results[j].WalSeq {
-			return results[i].WalSeq > results[j].WalSeq
-		}
-		return results[i].SubBatchID > results[j].SubBatchID
-	})
-
-	return results, nil
+	return ts.scanDocuments(ctx, namespace, f, false, 0)
 }
 
 // ScanIncludingDeleted returns all documents in the tail, including deleted ones.
 // Deleted docs are returned regardless of filter so they can shadow indexed versions.
 func (ts *TailStore) ScanIncludingDeleted(ctx context.Context, namespace string, f *filter.Filter) ([]*Document, error) {
-	nt := ts.getNamespace(namespace)
-	if nt == nil {
-		return nil, nil
-	}
-
-	nt.mu.RLock()
-	defer nt.mu.RUnlock()
-
-	var results []*Document
-	for _, doc := range nt.documents {
-		if doc.Deleted {
-			results = append(results, doc)
-			continue
-		}
-
-		if f != nil {
-			filterDoc := buildFilterDoc(doc)
-			if !f.Eval(filterDoc) {
-				continue
-			}
-		}
-
-		results = append(results, doc)
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].WalSeq != results[j].WalSeq {
-			return results[i].WalSeq > results[j].WalSeq
-		}
-		return results[i].SubBatchID > results[j].SubBatchID
-	})
-
-	return results, nil
+	return ts.scanDocuments(ctx, namespace, f, true, 0)
 }
 
 // ScanIncludingDeletedWithByteLimit returns documents within the byte limit, including deleted ones.
 // Deleted docs are returned regardless of filter so they can shadow indexed versions.
 func (ts *TailStore) ScanIncludingDeletedWithByteLimit(ctx context.Context, namespace string, f *filter.Filter, byteLimitBytes int64) ([]*Document, error) {
-	if byteLimitBytes <= 0 {
-		return ts.ScanIncludingDeleted(ctx, namespace, f)
+	return ts.scanDocuments(ctx, namespace, f, true, byteLimitBytes)
+}
+
+func (ts *TailStore) VectorScan(ctx context.Context, namespace string, queryVector []float32, topK int, metric DistanceMetric, f *filter.Filter) ([]VectorScanResult, error) {
+	return ts.vectorScan(ctx, namespace, queryVector, topK, metric, f, 0)
+}
+
+func (ts *TailStore) scanDocuments(ctx context.Context, namespace string, f *filter.Filter, includeDeleted bool, byteLimitBytes int64) ([]*Document, error) {
+	if byteLimitBytes < 0 {
+		byteLimitBytes = 0
 	}
 
-	nt := ts.getNamespace(namespace)
-	if nt == nil {
-		return nil, nil
+	entries, err := ts.entriesForScan(namespace, byteLimitBytes)
+	if err != nil {
+		return nil, err
 	}
 
-	nt.mu.RLock()
-	defer nt.mu.RUnlock()
+	results := make([]*Document, 0, len(entries))
+	seen := make(map[string]struct{})
 
-	allowedSeqs := ts.getSeqsWithinByteLimit(nt, byteLimitBytes)
-
-	var results []*Document
-	for _, doc := range nt.documents {
-		if !allowedSeqs[doc.WalSeq] {
-			continue
-		}
-
-		if doc.Deleted {
-			results = append(results, doc)
-			continue
-		}
-
-		if f != nil {
-			filterDoc := buildFilterDoc(doc)
-			if !f.Eval(filterDoc) {
-				continue
+	for _, entry := range entries {
+		docs := entry.docs
+		if docs == nil {
+			docs, err = ts.loadEntryDocuments(ctx, entry.fullKey)
+			if err != nil {
+				return nil, err
 			}
 		}
 
-		results = append(results, doc)
+		for _, doc := range docs {
+			idStr := doc.ID.String()
+			if _, ok := seen[idStr]; ok {
+				continue
+			}
+			seen[idStr] = struct{}{}
+
+			if doc.Deleted {
+				if includeDeleted {
+					results = append(results, doc)
+				}
+				continue
+			}
+
+			if f != nil {
+				filterDoc := buildFilterDoc(doc)
+				if !f.Eval(filterDoc) {
+					continue
+				}
+			}
+
+			results = append(results, doc)
+		}
 	}
 
 	sort.Slice(results, func(i, j int) bool {
@@ -479,39 +430,55 @@ func (ts *TailStore) ScanIncludingDeletedWithByteLimit(ctx context.Context, name
 	return results, nil
 }
 
-func (ts *TailStore) VectorScan(ctx context.Context, namespace string, queryVector []float32, topK int, metric DistanceMetric, f *filter.Filter) ([]VectorScanResult, error) {
-	nt := ts.getNamespace(namespace)
-	if nt == nil {
-		return nil, nil
+func (ts *TailStore) vectorScan(ctx context.Context, namespace string, queryVector []float32, topK int, metric DistanceMetric, f *filter.Filter, byteLimitBytes int64) ([]VectorScanResult, error) {
+	if byteLimitBytes < 0 {
+		byteLimitBytes = 0
 	}
 
-	nt.mu.RLock()
-	defer nt.mu.RUnlock()
+	entries, err := ts.entriesForScan(namespace, byteLimitBytes)
+	if err != nil {
+		return nil, err
+	}
 
+	seen := make(map[string]struct{})
 	var candidates []VectorScanResult
 
-	for _, doc := range nt.documents {
-		if doc.Deleted || doc.Vector == nil {
-			continue
-		}
-
-		if f != nil {
-			filterDoc := buildFilterDoc(doc)
-			if !f.Eval(filterDoc) {
-				continue
+	for _, entry := range entries {
+		docs := entry.docs
+		if docs == nil {
+			docs, err = ts.loadEntryDocuments(ctx, entry.fullKey)
+			if err != nil {
+				return nil, err
 			}
 		}
 
-		dist := computeDistance(queryVector, doc.Vector, metric)
-		candidates = append(candidates, VectorScanResult{
-			Doc:      doc,
-			Distance: dist,
-		})
+		for _, doc := range docs {
+			idStr := doc.ID.String()
+			if _, ok := seen[idStr]; ok {
+				continue
+			}
+			seen[idStr] = struct{}{}
+
+			if doc.Deleted || doc.Vector == nil {
+				continue
+			}
+
+			if f != nil {
+				filterDoc := buildFilterDoc(doc)
+				if !f.Eval(filterDoc) {
+					continue
+				}
+			}
+
+			dist := computeDistance(queryVector, doc.Vector, metric)
+			candidates = append(candidates, VectorScanResult{
+				Doc:      doc,
+				Distance: dist,
+			})
+		}
 	}
 
-	// Sort by distance
 	sortByDistance(candidates)
-
 	if len(candidates) > topK {
 		candidates = candidates[:topK]
 	}
@@ -520,20 +487,33 @@ func (ts *TailStore) VectorScan(ctx context.Context, namespace string, queryVect
 }
 
 func (ts *TailStore) GetDocument(ctx context.Context, namespace string, id document.ID) (*Document, error) {
-	nt := ts.getNamespace(namespace)
-	if nt == nil {
-		return nil, nil
+	entries, err := ts.entriesForScan(namespace, 0)
+	if err != nil {
+		return nil, err
 	}
 
-	nt.mu.RLock()
-	defer nt.mu.RUnlock()
+	idStr := id.String()
+	for _, entry := range entries {
+		docs := entry.docs
+		if docs == nil {
+			docs, err = ts.loadEntryDocuments(ctx, entry.fullKey)
+			if err != nil {
+				return nil, err
+			}
+		}
 
-	doc, ok := nt.documents[id.String()]
-	if !ok || doc.Deleted {
-		return nil, nil
+		for _, doc := range docs {
+			if doc.ID.String() != idStr {
+				continue
+			}
+			if doc.Deleted {
+				return nil, nil
+			}
+			return doc, nil
+		}
 	}
 
-	return doc, nil
+	return nil, nil
 }
 
 func (ts *TailStore) TailBytes(namespace string) int64 {
@@ -575,34 +555,32 @@ func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
 		sizeBytes = estimateEntrySize(entry)
 	}
 
-	entryCache := &walEntryCache{
+	fullKey := "vex/namespaces/" + namespace + "/" + wal.KeyForSeq(entry.Seq)
+	entryState := &walEntryState{
 		entry:     entry,
 		documents: docs,
 		sizeBytes: sizeBytes,
+		fullKey:   fullKey,
+		inRAM:     true,
 	}
 
 	if ts.guardrails != nil {
-		if err := ts.guardrails.CheckTailBytes(namespace, entryCache.sizeBytes); err != nil {
+		if err := ts.guardrails.CheckTailBytes(namespace, entryState.sizeBytes); err != nil {
 			return
 		}
 	}
 
-	nt.ramEntries[entry.Seq] = entryCache
-	nt.tailBytes += entryCache.sizeBytes
+	nt.entries[entry.Seq] = entryState
+	nt.tailBytes += entryState.sizeBytes
+	nt.ramBytes += entryState.sizeBytes
 	if ts.guardrails != nil {
 		if err := ts.guardrails.SetTailBytes(namespace, nt.tailBytes); err != nil {
 			return
 		}
 	}
 
-	// Update deduplicated document view
-	for _, doc := range docs {
-		idStr := doc.ID.String()
-		existing, exists := nt.documents[idStr]
-		if !exists || doc.WalSeq > existing.WalSeq ||
-			(doc.WalSeq == existing.WalSeq && doc.SubBatchID > existing.SubBatchID) {
-			nt.documents[idStr] = doc
-		}
+	if err := ts.enforceRAMCapLocked(nt); err != nil {
+		return
 	}
 
 	// Update sequence range
@@ -628,47 +606,7 @@ func (ts *TailStore) ScanWithByteLimit(ctx context.Context, namespace string, f 
 	if byteLimitBytes <= 0 {
 		return ts.Scan(ctx, namespace, f)
 	}
-
-	nt := ts.getNamespace(namespace)
-	if nt == nil {
-		return nil, nil
-	}
-
-	nt.mu.RLock()
-	defer nt.mu.RUnlock()
-
-	// Collect allowed WAL seqs from entries within the byte limit
-	allowedSeqs := ts.getSeqsWithinByteLimit(nt, byteLimitBytes)
-
-	var results []*Document
-	for _, doc := range nt.documents {
-		if doc.Deleted {
-			continue
-		}
-
-		// Check if document's WAL entry is within byte limit
-		if !allowedSeqs[doc.WalSeq] {
-			continue
-		}
-
-		if f != nil {
-			filterDoc := buildFilterDoc(doc)
-			if !f.Eval(filterDoc) {
-				continue
-			}
-		}
-
-		results = append(results, doc)
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].WalSeq != results[j].WalSeq {
-			return results[i].WalSeq > results[j].WalSeq
-		}
-		return results[i].SubBatchID > results[j].SubBatchID
-	})
-
-	return results, nil
+	return ts.scanDocuments(ctx, namespace, f, false, byteLimitBytes)
 }
 
 // VectorScanWithByteLimit performs vector scan within a byte limit for eventual consistency.
@@ -676,52 +614,7 @@ func (ts *TailStore) VectorScanWithByteLimit(ctx context.Context, namespace stri
 	if byteLimitBytes <= 0 {
 		return ts.VectorScan(ctx, namespace, queryVector, topK, metric, f)
 	}
-
-	nt := ts.getNamespace(namespace)
-	if nt == nil {
-		return nil, nil
-	}
-
-	nt.mu.RLock()
-	defer nt.mu.RUnlock()
-
-	// Collect allowed WAL seqs from entries within the byte limit
-	allowedSeqs := ts.getSeqsWithinByteLimit(nt, byteLimitBytes)
-
-	var candidates []VectorScanResult
-
-	for _, doc := range nt.documents {
-		if doc.Deleted || doc.Vector == nil {
-			continue
-		}
-
-		// Check if document's WAL entry is within byte limit
-		if !allowedSeqs[doc.WalSeq] {
-			continue
-		}
-
-		if f != nil {
-			filterDoc := buildFilterDoc(doc)
-			if !f.Eval(filterDoc) {
-				continue
-			}
-		}
-
-		dist := computeDistance(queryVector, doc.Vector, metric)
-		candidates = append(candidates, VectorScanResult{
-			Doc:      doc,
-			Distance: dist,
-		})
-	}
-
-	// Sort by distance
-	sortByDistance(candidates)
-
-	if len(candidates) > topK {
-		candidates = candidates[:topK]
-	}
-
-	return candidates, nil
+	return ts.vectorScan(ctx, namespace, queryVector, topK, metric, f, byteLimitBytes)
 }
 
 // buildFilterDoc creates a filter.Document from a tail.Document, including the "id" field.
@@ -751,31 +644,179 @@ func docIDToFilterValue(id document.ID) any {
 	}
 }
 
-// getSeqsWithinByteLimit returns WAL seqs within the byte limit.
-// WAL entries are ordered newest-first (by seq descending) and included until limit is reached.
-func (ts *TailStore) getSeqsWithinByteLimit(nt *namespaceTail, byteLimitBytes int64) map[uint64]bool {
-	// Collect all WAL seqs and sort descending (newest first)
-	seqs := make([]uint64, 0, len(nt.ramEntries))
-	for seq := range nt.ramEntries {
+type entrySnapshot struct {
+	seq      uint64
+	size     int64
+	docs     []*Document
+	fullKey  string
+	inMemory bool
+}
+
+func (ts *TailStore) entriesForScan(namespace string, byteLimitBytes int64) ([]entrySnapshot, error) {
+	nt := ts.getNamespace(namespace)
+	if nt == nil {
+		return nil, nil
+	}
+
+	nt.mu.RLock()
+	defer nt.mu.RUnlock()
+
+	seqs := make([]uint64, 0, len(nt.entries))
+	for seq := range nt.entries {
 		seqs = append(seqs, seq)
 	}
 	sort.Slice(seqs, func(i, j int) bool {
 		return seqs[i] > seqs[j]
 	})
 
-	allowedSeqs := make(map[uint64]bool)
+	entries := make([]entrySnapshot, 0, len(seqs))
 	var accumulatedBytes int64
+	limit := byteLimitBytes > 0
 
 	for _, seq := range seqs {
-		entry := nt.ramEntries[seq]
-		if accumulatedBytes+entry.sizeBytes > byteLimitBytes {
+		entry := nt.entries[seq]
+		if entry == nil {
+			continue
+		}
+		if limit && accumulatedBytes+entry.sizeBytes > byteLimitBytes {
 			break
 		}
 		accumulatedBytes += entry.sizeBytes
-		allowedSeqs[seq] = true
+		snapshot := entrySnapshot{
+			seq:      seq,
+			size:     entry.sizeBytes,
+			docs:     entry.documents,
+			fullKey:  entry.fullKey,
+			inMemory: entry.inRAM,
+		}
+		if !entry.inRAM {
+			snapshot.docs = nil
+		}
+		entries = append(entries, snapshot)
 	}
 
-	return allowedSeqs
+	return entries, nil
+}
+
+func (ts *TailStore) loadEntryDocuments(ctx context.Context, fullKey string) ([]*Document, error) {
+	compressed, err := ts.loadCompressedEntry(ctx, fullKey)
+	if err != nil {
+		return nil, err
+	}
+
+	decoder, err := wal.NewDecoder()
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+
+	decoded, err := decoder.Decode(compressed)
+	if err != nil {
+		return nil, err
+	}
+	return materializeEntry(decoded), nil
+}
+
+func (ts *TailStore) loadCompressedEntry(ctx context.Context, fullKey string) ([]byte, error) {
+	cacheKey := cache.CacheKey{
+		ObjectKey: fullKey,
+		ETag:      "",
+	}
+
+	if ts.diskCache != nil {
+		if reader, err := ts.diskCache.GetReader(cacheKey); err == nil {
+			compressed, err := readAll(reader)
+			reader.Close()
+			if err == nil {
+				return compressed, nil
+			}
+		}
+	}
+
+	reader, _, err := ts.objectStore.Get(ctx, fullKey, nil)
+	if err != nil {
+		if objectstore.IsNotFoundError(err) {
+			return nil, fmt.Errorf("%w: %s", ErrSeqNotFound, fullKey)
+		}
+		return nil, err
+	}
+	compressed, err := readAll(reader)
+	reader.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	if ts.diskCache != nil {
+		ts.diskCache.PutBytes(cacheKey, compressed)
+	}
+
+	return compressed, nil
+}
+
+func (ts *TailStore) enforceRAMCapLocked(nt *namespaceTail) error {
+	if ts.cfg.MaxRAMBytes <= 0 {
+		return nil
+	}
+
+	for nt.ramBytes > ts.cfg.MaxRAMBytes {
+		var oldestSeq uint64
+		found := false
+		for seq, entry := range nt.entries {
+			if entry == nil || !entry.inRAM {
+				continue
+			}
+			if !found || seq < oldestSeq {
+				oldestSeq = seq
+				found = true
+			}
+		}
+
+		if !found {
+			break
+		}
+
+		entry := nt.entries[oldestSeq]
+		if entry == nil || !entry.inRAM {
+			break
+		}
+
+		if err := ts.spillEntryLocked(entry); err != nil {
+			return err
+		}
+		nt.ramBytes -= entry.sizeBytes
+	}
+
+	return nil
+}
+
+func (ts *TailStore) spillEntryLocked(entry *walEntryState) error {
+	if entry == nil || !entry.inRAM {
+		return nil
+	}
+
+	if ts.diskCache != nil && entry.entry != nil {
+		encoder, err := wal.NewEncoder()
+		if err != nil {
+			return err
+		}
+		result, err := encoder.Encode(entry.entry)
+		encoder.Close()
+		if err != nil {
+			return err
+		}
+		cacheKey := cache.CacheKey{
+			ObjectKey: entry.fullKey,
+			ETag:      "",
+		}
+		if _, err := ts.diskCache.PutBytes(cacheKey, result.Data); err != nil {
+			return err
+		}
+	}
+
+	entry.entry = nil
+	entry.documents = nil
+	entry.inRAM = false
+	return nil
 }
 
 func compressedEntrySize(entry *wal.WalEntry) (int64, bool) {
