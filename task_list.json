@@ -3071,7 +3071,7 @@
     "scope": [
       "internal/cache/disk.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "integration-warm-cache-hint",

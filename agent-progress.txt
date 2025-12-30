@@ -1495,3 +1495,12 @@ KEY DEPENDENCIES:
 - Challenges: schema updates through batcher skipped pending rebuilds, blocking 202 gating.
 - Resolution: aggregated DetectSchemaRebuildChanges in batcher and applied AddPendingRebuild after AdvanceWAL.
 - Follow-ups: none.
+[2025-12-30T09:02:03Z] Completed disk-cache-pinning-reload: PASS
+- Added disk cache metadata sidecar to persist ObjectKey/ETag and reload keys for pin checks.
+- Updated eviction/delete/clear paths to remove metadata and reload to read it.
+- Added PinningReload regression test to ensure reloaded pinned entries block eviction.
+- Files changed: internal/cache/disk.go, internal/cache/disk_test.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/cache -run PinningReload -count=1 (pass).
+- Challenges: reload entries lacked ObjectKey for pinning after restart.
+- Resolution: store cache metadata alongside data and hydrate entries on load.
+- Follow-ups: none.
