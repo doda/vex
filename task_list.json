@@ -3136,6 +3136,7 @@
     "scope": [
       "tests/integration/object_store_test.go"
     ],
-    "completed": false
+    "completed": true,
+    "passes": true
   }
 ]

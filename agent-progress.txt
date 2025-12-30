@@ -1537,3 +1537,14 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-30T21:45:00Z] Completed integration-tests-skip-missing-objectstore-creds: PASS
+- Implemented credential gating in integration S3 fixture by skipping when access/secret keys are absent.
+- Updated integration test setup to emit clear skip message referencing ./scripts/setup-garage.sh and creds file.
+- Files changed: tests/integration/object_store_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./tests/integration (without creds; pass with skips).
+- Tests: ./scripts/setup-garage.sh (pass).
+- Tests: /usr/local/go/bin/go test ./tests/integration (with creds; pass).
+- Challenges: creds file existed so skipping required temporarily moving it aside.
+- Resolution: moved /tmp/vex-garage/creds.env to .bak for skip test, then restored.
+- Follow-ups: none.
