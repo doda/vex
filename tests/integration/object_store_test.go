@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -249,6 +250,144 @@ func (f *s3TestFixture) getMetadata(t *testing.T, ns string) map[string]any {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("metadata request returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	return result
+}
+
+func (f *s3TestFixture) listNamespaces(t *testing.T, prefix string, pageSize int) map[string]any {
+	t.Helper()
+
+	values := url.Values{}
+	if prefix != "" {
+		values.Set("prefix", prefix)
+	}
+	if pageSize > 0 {
+		values.Set("page_size", fmt.Sprintf("%d", pageSize))
+	}
+	endpoint := f.endpoint + "/v1/namespaces"
+	if encoded := values.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		t.Fatalf("failed to build list namespaces request: %v", err)
+	}
+	addAuthHeader(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list namespaces request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list namespaces request returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	return result
+}
+
+func (f *s3TestFixture) deleteNamespace(t *testing.T, ns string) map[string]any {
+	t.Helper()
+
+	req, err := http.NewRequest("DELETE", f.endpoint+"/v2/namespaces/"+ns, nil)
+	if err != nil {
+		t.Fatalf("failed to build delete namespace request: %v", err)
+	}
+	addAuthHeader(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete namespace request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete namespace request returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	return result
+}
+
+func (f *s3TestFixture) warmCache(t *testing.T, ns string) []byte {
+	t.Helper()
+
+	req, err := http.NewRequest("GET", f.endpoint+"/v1/namespaces/"+ns+"/hint_cache_warm", nil)
+	if err != nil {
+		t.Fatalf("failed to build warm cache request: %v", err)
+	}
+	addAuthHeader(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("warm cache request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("warm cache request returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return respBody
+}
+
+func (f *s3TestFixture) recall(t *testing.T, ns string, data map[string]any) map[string]any {
+	t.Helper()
+
+	payload := []byte("{}")
+	if data != nil {
+		body, err := json.Marshal(data)
+		if err != nil {
+			t.Fatalf("failed to marshal recall request: %v", err)
+		}
+		payload = body
+	}
+
+	req, err := http.NewRequest("POST", f.endpoint+"/v1/namespaces/"+ns+"/_debug/recall", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("failed to build recall request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addAuthHeader(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("recall request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("recall request returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result map[string]any
@@ -601,4 +740,84 @@ func TestObjectStorePersistence(t *testing.T) {
 	if len(rows) != 2 {
 		t.Errorf("expected 2 rows after restart, got %d", len(rows))
 	}
+}
+
+func TestObjectStoreEndpoints(t *testing.T) {
+	prefix := fmt.Sprintf("objectstore-endpoints-%d", time.Now().UnixNano())
+	nsPrimary := prefix + "-primary"
+	nsSecondary := prefix + "-secondary"
+	fixture := newS3Fixture(t, nsPrimary)
+	defer fixture.close(t)
+
+	fixture.write(t, nsPrimary, map[string]any{
+		"upsert_rows": []map[string]any{
+			{"id": "doc1", "name": "Alpha"},
+		},
+	})
+	fixture.write(t, nsSecondary, map[string]any{
+		"upsert_rows": []map[string]any{
+			{"id": "doc1", "name": "Beta"},
+		},
+	})
+
+	t.Run("list namespaces", func(t *testing.T) {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			result := fixture.listNamespaces(t, prefix, 100)
+			rawNamespaces, ok := result["namespaces"].([]any)
+			if !ok {
+				t.Fatalf("expected namespaces to be an array, got %T", result["namespaces"])
+			}
+
+			found := map[string]bool{}
+			for _, raw := range rawNamespaces {
+				entry, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if id, ok := entry["id"].(string); ok {
+					found[id] = true
+				}
+			}
+
+			if found[nsPrimary] && found[nsSecondary] {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("expected namespaces %q and %q to be listed, got %v", nsPrimary, nsSecondary, rawNamespaces)
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	})
+
+	t.Run("warm cache hint", func(t *testing.T) {
+		body := fixture.warmCache(t, nsPrimary)
+		if len(body) != 0 {
+			t.Fatalf("expected empty warm cache response, got %q", string(body))
+		}
+	})
+
+	t.Run("recall endpoint", func(t *testing.T) {
+		result := fixture.recall(t, nsPrimary, map[string]any{
+			"num":   2,
+			"top_k": 2,
+		})
+
+		if _, ok := result["avg_recall"].(float64); !ok {
+			t.Fatalf("expected avg_recall float64, got %T", result["avg_recall"])
+		}
+		if _, ok := result["avg_ann_count"].(float64); !ok {
+			t.Fatalf("expected avg_ann_count float64, got %T", result["avg_ann_count"])
+		}
+		if _, ok := result["avg_exhaustive_count"].(float64); !ok {
+			t.Fatalf("expected avg_exhaustive_count float64, got %T", result["avg_exhaustive_count"])
+		}
+	})
+
+	t.Run("delete namespace", func(t *testing.T) {
+		result := fixture.deleteNamespace(t, nsPrimary)
+		if result["status"] != "ok" {
+			t.Fatalf("expected status ok, got %v", result["status"])
+		}
+	})
 }
