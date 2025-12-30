@@ -2993,7 +2993,7 @@
       "internal/query",
       "internal/tail"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "indexer-wire-fts-segments",

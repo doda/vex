@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vexsearch/vex/internal/indexer"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/api"
@@ -31,7 +34,12 @@ type s3TestFixture struct {
 	endpoint string
 }
 
-const garageCredsPath = "/tmp/vex-garage/creds.env"
+const (
+	garageCredsPath       = "/tmp/vex-garage/creds.env"
+	eventualTailCapBytes  = 128 * 1024 * 1024
+	payloadSeededBytes    = 12 * 1024 * 1024
+	maxConsistencyEntries = 12
+)
 
 func getenvAny(keys ...string) string {
 	for _, key := range keys {
@@ -399,6 +407,66 @@ func waitForWalEntry(t *testing.T, store objectstore.Store, ns string, seq uint6
 	}
 }
 
+func waitForWalSize(t *testing.T, store objectstore.Store, ns string, seq uint64) int64 {
+	t.Helper()
+	key := fmt.Sprintf("vex/namespaces/%s/%s", ns, wal.KeyForSeq(seq))
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		info, err := store.Head(ctx, key)
+		cancel()
+		if err == nil {
+			return info.Size
+		}
+		if err != nil && !objectstore.IsNotFoundError(err) {
+			t.Fatalf("failed to head WAL entry %d: %v", seq, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for WAL entry %d size: %v", seq, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func indexNamespaceToSeq(t *testing.T, store objectstore.Store, ns string, endSeq uint64) {
+	t.Helper()
+	stateMan := namespace.NewStateManager(store)
+	idx := indexer.New(store, stateMan, nil, nil)
+	processor := indexer.NewL0SegmentProcessor(store, stateMan, nil, idx)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state for indexing: %v", err)
+	}
+	result, err := processor.ProcessWAL(ctx, ns, 0, endSeq, loaded.State, loaded.ETag)
+	if err != nil {
+		t.Fatalf("failed to index WAL range: %v", err)
+	}
+	if result == nil || !result.ManifestWritten {
+		t.Fatalf("expected manifest to be written during indexing")
+	}
+	updated, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to reload state after indexing: %v", err)
+	}
+	if updated.State.Index.IndexedWALSeq < endSeq {
+		t.Fatalf("expected indexed_wal_seq >= %d, got %d", endSeq, updated.State.Index.IndexedWALSeq)
+	}
+}
+
+func seededPayload(t *testing.T, sizeBytes int) string {
+	t.Helper()
+	buf := make([]byte, sizeBytes)
+	rng := rand.New(rand.NewSource(1))
+	if _, err := rng.Read(buf); err != nil {
+		t.Fatalf("failed to generate payload: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf)
+}
+
 func (f *s3TestFixture) query(t *testing.T, ns string, data map[string]any) map[string]any {
 	t.Helper()
 
@@ -638,6 +706,27 @@ func readMaybeGzip(t *testing.T, resp *http.Response) []byte {
 		t.Fatalf("failed to read response body: %v", err)
 	}
 	return data
+}
+
+func extractRowIDs(t *testing.T, result map[string]any) map[string]bool {
+	t.Helper()
+	rows, ok := result["rows"].([]any)
+	if !ok {
+		t.Fatalf("expected rows to be an array, got %T", result["rows"])
+	}
+	ids := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		entry, ok := row.(map[string]any)
+		if !ok {
+			t.Fatalf("expected row to be object, got %T", row)
+		}
+		id, ok := entry["id"].(string)
+		if !ok {
+			t.Fatalf("expected id to be string, got %T", entry["id"])
+		}
+		ids[id] = true
+	}
+	return ids
 }
 
 // TestObjectStoreBasicCRUD tests basic CRUD operations with an S3-compatible store.
@@ -1185,5 +1274,98 @@ func TestObjectStoreWriteBackpressure(t *testing.T) {
 	state := waitForStateHeadSeq(t, fixture.store, ns, 2)
 	if !state.NamespaceFlags.DisableBackpressure {
 		t.Fatalf("expected namespace disable_backpressure flag to be set")
+	}
+}
+
+func TestObjectStoreConsistencyTail(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-consistency-tail-%d", time.Now().UnixNano())
+	fixture := newS3Fixture(t, ns)
+	defer fixture.close(t)
+
+	fixture.write(t, ns, map[string]any{
+		"upsert_rows": []map[string]any{
+			{"id": "base-1", "category": "base"},
+		},
+	})
+	state := waitForStateHeadSeq(t, fixture.store, ns, 1)
+	indexNamespaceToSeq(t, fixture.store, ns, state.WAL.HeadSeq)
+
+	payload := seededPayload(t, payloadSeededBytes)
+
+	var (
+		tailDocs       []string
+		tailSizes      []int64
+		totalTailBytes int64
+		expectedSeq    = state.WAL.HeadSeq
+	)
+
+	for totalTailBytes <= eventualTailCapBytes {
+		if len(tailDocs) >= maxConsistencyEntries {
+			t.Fatalf("tail bytes did not exceed cap after %d entries (total=%d)", len(tailDocs), totalTailBytes)
+		}
+		id := fmt.Sprintf("tail-%02d", len(tailDocs)+1)
+		fixture.write(t, ns, map[string]any{
+			"upsert_rows": []map[string]any{
+				{"id": id, "category": "tail", "payload": payload},
+			},
+		})
+		expectedSeq++
+		state = waitForStateHeadSeq(t, fixture.store, ns, expectedSeq)
+		if state.WAL.HeadSeq != expectedSeq {
+			t.Fatalf("expected wal head_seq %d, got %d", expectedSeq, state.WAL.HeadSeq)
+		}
+		size := waitForWalSize(t, fixture.store, ns, state.WAL.HeadSeq)
+		tailDocs = append(tailDocs, id)
+		tailSizes = append(tailSizes, size)
+		totalTailBytes += size
+	}
+
+	strongResult := fixture.query(t, ns, map[string]any{
+		"rank_by":            []any{"id", "asc"},
+		"limit":              2000,
+		"consistency":        "strong",
+		"exclude_attributes": []any{"payload"},
+	})
+	strongIDs := extractRowIDs(t, strongResult)
+	if !strongIDs["base-1"] {
+		t.Fatalf("expected strong query to include base-1")
+	}
+	for _, id := range tailDocs {
+		if !strongIDs[id] {
+			t.Fatalf("expected strong query to include %s", id)
+		}
+	}
+
+	remaining := int64(eventualTailCapBytes)
+	included := make(map[string]bool, len(tailDocs))
+	for i := len(tailDocs) - 1; i >= 0; i-- {
+		size := tailSizes[i]
+		if size > remaining {
+			break
+		}
+		remaining -= size
+		included[tailDocs[i]] = true
+	}
+	if len(included) == len(tailDocs) {
+		t.Fatalf("expected some tail entries to be excluded by cap (total=%d)", totalTailBytes)
+	}
+
+	eventualResult := fixture.query(t, ns, map[string]any{
+		"rank_by":            []any{"id", "asc"},
+		"limit":              2000,
+		"consistency":        "eventual",
+		"exclude_attributes": []any{"payload"},
+	})
+	eventualIDs := extractRowIDs(t, eventualResult)
+	if !eventualIDs["base-1"] {
+		t.Fatalf("expected eventual query to include base-1")
+	}
+	for _, id := range tailDocs {
+		if included[id] && !eventualIDs[id] {
+			t.Fatalf("expected eventual query to include %s", id)
+		}
+		if !included[id] && eventualIDs[id] {
+			t.Fatalf("expected eventual query to exclude %s", id)
+		}
 	}
 }
