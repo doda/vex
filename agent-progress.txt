@@ -1382,3 +1382,13 @@ KEY DEPENDENCIES:
 - Challenges: list operations can be eventually consistent in S3 listings.
 - Resolution: added bounded retry loop for list namespaces check.
 - Follow-ups: none.
+- Completed integration-wal-cas-idempotency: PASS.
+- Added S3-backed WAL/CAS/idempotency integration test with CAS retry injection and WAL sequencing assertions.
+- Added WAL/state read helpers plus CAS-failing store wrapper for integration validation.
+- Files changed: tests/integration/object_store_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./tests/integration -run WalCAS -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: ensuring deterministic CAS retry coverage without flaking S3 behavior.
+- Resolution: wrapped object store PutIfMatch to inject precondition failures for state.json.
+- Follow-ups: none.

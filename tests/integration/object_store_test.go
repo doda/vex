@@ -11,10 +11,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/api"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -85,7 +89,7 @@ func loadGarageEnvFromFile(t *testing.T) {
 }
 
 // newS3Fixture creates a new test fixture with an S3-compatible object store.
-func newS3Fixture(t *testing.T, namespace string) *s3TestFixture {
+func newS3Store(t *testing.T) objectstore.Store {
 	t.Helper()
 	loadGarageEnvFromFile(t)
 
@@ -126,8 +130,11 @@ func newS3Fixture(t *testing.T, namespace string) *s3TestFixture {
 		t.Fatalf("failed to ensure bucket %q: %v", bucket, err)
 	}
 
-	store := objectstore.NewInstrumentedStore(s3Store)
+	return objectstore.NewInstrumentedStore(s3Store)
+}
 
+func newS3FixtureWithStore(t *testing.T, store objectstore.Store) *s3TestFixture {
+	t.Helper()
 	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 	if err := router.SetStore(store); err != nil {
@@ -145,6 +152,13 @@ func newS3Fixture(t *testing.T, namespace string) *s3TestFixture {
 	}
 }
 
+// newS3Fixture creates a new test fixture with an S3-compatible object store.
+func newS3Fixture(t *testing.T, namespace string) *s3TestFixture {
+	t.Helper()
+	store := newS3Store(t)
+	return newS3FixtureWithStore(t, store)
+}
+
 func (f *s3TestFixture) close(t *testing.T) {
 	t.Helper()
 	if f.router != nil {
@@ -157,7 +171,7 @@ func (f *s3TestFixture) close(t *testing.T) {
 	}
 }
 
-func (f *s3TestFixture) write(t *testing.T, ns string, data map[string]any) map[string]any {
+func (f *s3TestFixture) writeRaw(t *testing.T, ns string, data map[string]any) (int, []byte) {
 	t.Helper()
 
 	body, err := json.Marshal(data)
@@ -182,8 +196,16 @@ func (f *s3TestFixture) write(t *testing.T, ns string, data map[string]any) map[
 		t.Fatalf("failed to read response body: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("write request returned status %d: %s", resp.StatusCode, string(respBody))
+	return resp.StatusCode, respBody
+}
+
+func (f *s3TestFixture) write(t *testing.T, ns string, data map[string]any) map[string]any {
+	t.Helper()
+
+	status, respBody := f.writeRaw(t, ns, data)
+
+	if status != http.StatusOK {
+		t.Fatalf("write request returned status %d: %s", status, string(respBody))
 	}
 
 	var result map[string]any
@@ -191,6 +213,121 @@ func (f *s3TestFixture) write(t *testing.T, ns string, data map[string]any) map[
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 	return result
+}
+
+type stateCASFailingStore struct {
+	objectstore.Store
+	stateKey       string
+	mu             sync.Mutex
+	failsRemaining int
+	failCount      int
+}
+
+func (s *stateCASFailingStore) PutIfMatch(ctx context.Context, key string, body io.Reader, size int64, etag string, opts *objectstore.PutOptions) (*objectstore.ObjectInfo, error) {
+	s.mu.Lock()
+	if key == s.stateKey && s.failsRemaining > 0 {
+		s.failsRemaining--
+		s.failCount++
+		s.mu.Unlock()
+		return nil, objectstore.ErrPrecondition
+	}
+	s.mu.Unlock()
+	return s.Store.PutIfMatch(ctx, key, body, size, etag, opts)
+}
+
+func (s *stateCASFailingStore) FailCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failCount
+}
+
+func readState(ctx context.Context, store objectstore.Store, ns string) (*namespace.State, error) {
+	key := fmt.Sprintf("vex/namespaces/%s/meta/state.json", ns)
+	reader, _, err := store.Get(ctx, key, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	var state namespace.State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+func waitForStateHeadSeq(t *testing.T, store objectstore.Store, ns string, want uint64) *namespace.State {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		state, err := readState(ctx, store, ns)
+		cancel()
+		if err == nil && state.WAL.HeadSeq >= want {
+			return state
+		}
+		if err != nil && !objectstore.IsNotFoundError(err) {
+			t.Fatalf("failed to read state.json: %v", err)
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("timed out waiting for state.json: %v", err)
+			}
+			t.Fatalf("timed out waiting for wal head_seq %d (current %d)", want, state.WAL.HeadSeq)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func readWalEntry(ctx context.Context, store objectstore.Store, ns string, seq uint64) (*wal.WalEntry, error) {
+	key := fmt.Sprintf("vex/namespaces/%s/%s", ns, wal.KeyForSeq(seq))
+	reader, _, err := store.Get(ctx, key, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	decoder, err := wal.NewDecoder()
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+
+	entry, err := decoder.Decode(data)
+	if err != nil {
+		return nil, err
+	}
+	return entry, nil
+}
+
+func waitForWalEntry(t *testing.T, store objectstore.Store, ns string, seq uint64) *wal.WalEntry {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		entry, err := readWalEntry(ctx, store, ns, seq)
+		cancel()
+		if err == nil {
+			return entry
+		}
+		if err != nil && !objectstore.IsNotFoundError(err) {
+			t.Fatalf("failed to read WAL entry %d: %v", seq, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for WAL entry %d: %v", seq, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func (f *s3TestFixture) query(t *testing.T, ns string, data map[string]any) map[string]any {
@@ -820,4 +957,115 @@ func TestObjectStoreEndpoints(t *testing.T) {
 			t.Fatalf("expected status ok, got %v", result["status"])
 		}
 	})
+}
+
+func TestObjectStoreWalCASIdempotency(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-walcas-%d", time.Now().UnixNano())
+	store := newS3Store(t)
+	stateKey := fmt.Sprintf("vex/namespaces/%s/meta/state.json", ns)
+	casStore := &stateCASFailingStore{
+		Store:          store,
+		stateKey:       stateKey,
+		failsRemaining: 2,
+	}
+	fixture := newS3FixtureWithStore(t, casStore)
+	defer fixture.close(t)
+
+	firstReq := map[string]any{
+		"request_id": "req-1",
+		"upsert_rows": []map[string]any{
+			{"id": "doc-1", "name": "alpha"},
+		},
+	}
+	status, body := fixture.writeRaw(t, ns, firstReq)
+	if status != http.StatusOK {
+		t.Fatalf("first write returned status %d: %s", status, string(body))
+	}
+	var firstResp map[string]any
+	if err := json.Unmarshal(body, &firstResp); err != nil {
+		t.Fatalf("failed to unmarshal first response: %v", err)
+	}
+
+	dupReq := map[string]any{
+		"request_id": "req-1",
+		"upsert_rows": []map[string]any{
+			{"id": "doc-2", "name": "beta"},
+		},
+	}
+	status, body = fixture.writeRaw(t, ns, dupReq)
+	if status != http.StatusOK {
+		t.Fatalf("duplicate write returned status %d: %s", status, string(body))
+	}
+	var dupResp map[string]any
+	if err := json.Unmarshal(body, &dupResp); err != nil {
+		t.Fatalf("failed to unmarshal duplicate response: %v", err)
+	}
+	if !reflect.DeepEqual(firstResp, dupResp) {
+		t.Fatalf("expected duplicate response to match original: %+v != %+v", firstResp, dupResp)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	result := fixture.query(t, ns, map[string]any{
+		"rank_by": []any{"id", "asc"},
+		"limit":   1,
+		"filters": []any{"id", "Eq", "doc-2"},
+	})
+	rows, ok := result["rows"].([]any)
+	if !ok {
+		t.Fatalf("expected rows to be an array, got %T", result["rows"])
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected duplicate request_id to be ignored, got %d rows for doc-2", len(rows))
+	}
+
+	time.Sleep(1200 * time.Millisecond)
+
+	secondReq := map[string]any{
+		"request_id": "req-2",
+		"upsert_rows": []map[string]any{
+			{"id": "doc-3", "name": "gamma"},
+		},
+	}
+	status, body = fixture.writeRaw(t, ns, secondReq)
+	if status != http.StatusOK {
+		t.Fatalf("second write returned status %d: %s", status, string(body))
+	}
+
+	if casStore.FailCount() == 0 {
+		t.Fatalf("expected CAS retry failures to be injected")
+	}
+
+	state := waitForStateHeadSeq(t, casStore, ns, 2)
+	if state.WAL.HeadSeq != 2 {
+		t.Fatalf("expected wal head_seq 2, got %d", state.WAL.HeadSeq)
+	}
+	if state.WAL.HeadKey != wal.KeyForSeq(2) {
+		t.Fatalf("expected wal head_key %q, got %q", wal.KeyForSeq(2), state.WAL.HeadKey)
+	}
+
+	entry1 := waitForWalEntry(t, casStore, ns, 1)
+	entry2 := waitForWalEntry(t, casStore, ns, 2)
+
+	if entry1.Seq != 1 {
+		t.Fatalf("expected wal seq 1, got %d", entry1.Seq)
+	}
+	if entry2.Seq != 2 {
+		t.Fatalf("expected wal seq 2, got %d", entry2.Seq)
+	}
+	if len(entry1.SubBatches) != 1 {
+		t.Fatalf("expected 1 sub-batch in wal seq 1, got %d", len(entry1.SubBatches))
+	}
+	if entry1.SubBatches[0].RequestId != "req-1" {
+		t.Fatalf("expected wal seq 1 request_id req-1, got %q", entry1.SubBatches[0].RequestId)
+	}
+	if len(entry2.SubBatches) != 1 {
+		t.Fatalf("expected 1 sub-batch in wal seq 2, got %d", len(entry2.SubBatches))
+	}
+	if entry2.SubBatches[0].RequestId != "req-2" {
+		t.Fatalf("expected wal seq 2 request_id req-2, got %q", entry2.SubBatches[0].RequestId)
+	}
+	if entry1.CommittedUnixMs > entry2.CommittedUnixMs {
+		t.Fatalf("expected wal commit order to increase, got %d then %d", entry1.CommittedUnixMs, entry2.CommittedUnixMs)
+	}
 }

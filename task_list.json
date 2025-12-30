@@ -2901,7 +2901,7 @@
       "internal/wal",
       "internal/write"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "integration-write-backpressure-http",
