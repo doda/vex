@@ -1515,3 +1515,16 @@ KEY DEPENDENCIES:
 - Challenges: ensuring pinning was observable during async warm.
 - Resolution: blocked manifest fetch to keep pin active while asserting.
 - Follow-ups: none.
+[2025-12-30T21:05:00Z] Completed catalog-cleanup-on-delete: PASS
+- Implemented catalog entry deletion on namespace delete and GC cleanup to keep list results accurate.
+- Added catalog cleanup tests covering delete and GC list exclusion behavior.
+- Files changed: internal/namespace/manager.go.
+- Files changed: internal/gc/gc.go.
+- Files changed: internal/namespace/state_test.go.
+- Files changed: internal/gc/gc_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/namespace ./internal/gc -run CatalogCleanup (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).

@@ -292,6 +292,10 @@ func (c *Collector) CollectNamespace(ctx context.Context, ns string) (*Result, e
 	result.MetaObjectsDeleted = metaDeleted
 	result.Errors = append(result.Errors, metaErrs...)
 
+	if err := c.deleteCatalogEntry(ctx, ns); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("failed to delete catalog entry: %w", err))
+	}
+
 	result.TotalDeleted = len(walDeleted) + len(indexDeleted) + len(metaDeleted)
 	result.TombstonePreserved = c.config.PreserveTombstone
 	result.Duration = time.Since(start)
@@ -376,6 +380,17 @@ func (c *Collector) deleteMetaObjects(ctx context.Context, ns string) ([]string,
 	}
 
 	return deleted, errs
+}
+
+func (c *Collector) deleteCatalogEntry(ctx context.Context, ns string) error {
+	key := namespace.CatalogKey(ns)
+	if err := c.store.Delete(ctx, key); err != nil {
+		if objectstore.IsNotFoundError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // CleanupResult contains the result of a full GC pass.

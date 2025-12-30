@@ -727,6 +727,43 @@ func TestDeleteNamespace(t *testing.T) {
 	})
 }
 
+func TestCatalogCleanupOnDelete(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	mgr := NewStateManager(store)
+
+	_, err := mgr.Create(ctx, "catalog-cleanup-delete")
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	catalogKey := CatalogKey("catalog-cleanup-delete")
+	if _, err := store.Head(ctx, catalogKey); err != nil {
+		t.Fatalf("expected catalog entry to exist: %v", err)
+	}
+
+	if err := mgr.DeleteNamespace(ctx, "catalog-cleanup-delete"); err != nil {
+		t.Fatalf("failed to delete namespace: %v", err)
+	}
+
+	if _, err := store.Head(ctx, catalogKey); err == nil {
+		t.Fatal("expected catalog entry to be deleted")
+	} else if !objectstore.IsNotFoundError(err) {
+		t.Fatalf("unexpected error checking catalog entry: %v", err)
+	}
+
+	result, err := store.List(ctx, &objectstore.ListOptions{
+		Prefix:  "catalog/namespaces/",
+		MaxKeys: 10,
+	})
+	if err != nil {
+		t.Fatalf("failed to list catalog entries: %v", err)
+	}
+	if len(result.Objects) != 0 {
+		t.Fatalf("expected catalog list to be empty, got %d entries", len(result.Objects))
+	}
+}
+
 func TestLoadOrCreate(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
