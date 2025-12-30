@@ -1409,3 +1409,12 @@ KEY DEPENDENCIES:
 - Challenges: coordinating deterministic batch order with concurrent writes.
 - Resolution: wait for batch queue length between submissions and force timer flush.
 - Follow-ups: none.
+[2025-12-30T07:52:52Z] Completed bm25-tail-dedup-id-normalization: PASS
+- Implemented typed ID key normalization for indexed BM25 docs so tail updates/deletes shadow correctly.
+- Added BM25 dedup regression test mixing typed ID keys with u64 tail deletes.
+- Key files changed: internal/document/id.go; internal/query/handler.go; internal/query/bm25_index_scan_test.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/query -run BM25.*Dedup (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: BM25 dedup failed when indexed IDs used typed key prefixes.
+- Resolution: parse typed ID keys (u64/uuid/str) before normal ID parsing.
+- Follow-ups: none.

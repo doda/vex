@@ -480,3 +480,73 @@ func TestBM25IndexScanDeduplication(t *testing.T) {
 		}
 	})
 }
+
+func TestBM25IndexScanDeduplicationNormalizesIDTypes(t *testing.T) {
+	ctx := context.Background()
+
+	indexedDocs := []index.IndexedDocument{
+		{
+			ID:        "u64:42",
+			NumericID: 42,
+			WALSeq:    5,
+			Deleted:   false,
+			Attributes: map[string]any{
+				"title": "Indexed document about cats",
+			},
+		},
+	}
+
+	mockStore := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(mockStore)
+	manifestKey := setupIndexedDocsInStore(t, ctx, mockStore, "test-ns", indexedDocs)
+
+	ftsConfig := map[string]any{
+		"tokenizer":        "word_v3",
+		"case_sensitive":   false,
+		"remove_stopwords": true,
+	}
+	ftsJSON, _ := json.Marshal(ftsConfig)
+
+	loadedState := &namespace.LoadedState{
+		State: &namespace.State{
+			Schema: &namespace.Schema{
+				Attributes: map[string]namespace.AttributeSchema{
+					"title": {
+						Type:           "string",
+						FullTextSearch: ftsJSON,
+					},
+				},
+			},
+			Index: namespace.IndexState{
+				ManifestKey:   manifestKey,
+				ManifestSeq:   1,
+				IndexedWALSeq: 5,
+			},
+		},
+	}
+
+	tailDocs := []*tail.Document{
+		{
+			ID:      document.NewU64ID(42),
+			WalSeq:  10,
+			Deleted: true,
+		},
+	}
+	mockTail := &mockTailStoreForBM25Index{docs: tailDocs}
+	handler := NewHandler(mockStore, stateMan, mockTail)
+
+	parsed := &ParsedRankBy{
+		Type:      RankByBM25,
+		Field:     "title",
+		QueryText: "cats",
+	}
+
+	rows, err := handler.executeBM25Query(ctx, "test-ns", loadedState, parsed, nil, &QueryRequest{Limit: 10}, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(rows) != 0 {
+		t.Fatalf("expected 0 results after tail delete, got %d", len(rows))
+	}
+}
