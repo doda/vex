@@ -2,6 +2,7 @@
 package document
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -175,6 +176,43 @@ func ParseID(v any) (ID, error) {
 			Message: fmt.Sprintf("unsupported ID type: %T", v),
 		}
 	}
+}
+
+// ParseIDKey parses a document ID encoded with a type prefix (u64:, uuid:, str:).
+// This format is used internally to preserve ID types in serialized artifacts.
+func ParseIDKey(s string) (ID, error) {
+	if strings.HasPrefix(s, "u64:") {
+		rest := strings.TrimPrefix(s, "u64:")
+		if rest == "" {
+			return ID{}, &ValidationError{Field: "id", Message: "empty u64 ID"}
+		}
+		u, err := strconv.ParseUint(rest, 10, 64)
+		if err != nil {
+			return ID{}, &ValidationError{Field: "id", Message: fmt.Sprintf("invalid u64 ID: %v", err)}
+		}
+		return NewU64ID(u), nil
+	}
+
+	if strings.HasPrefix(s, "uuid:") {
+		rest := strings.TrimPrefix(s, "uuid:")
+		if len(rest) == 0 {
+			return ID{}, &ValidationError{Field: "id", Message: "empty uuid ID"}
+		}
+		decoded, err := hex.DecodeString(rest)
+		if err != nil || len(decoded) != 16 {
+			return ID{}, &ValidationError{Field: "id", Message: "invalid uuid ID"}
+		}
+		var u uuid.UUID
+		copy(u[:], decoded)
+		return NewUUIDID(u), nil
+	}
+
+	if strings.HasPrefix(s, "str:") {
+		rest := strings.TrimPrefix(s, "str:")
+		return NewStringID(rest)
+	}
+
+	return ID{}, &ValidationError{Field: "id", Message: "unsupported ID key format"}
 }
 
 // parseStringID parses a string value and normalizes it to the appropriate ID type.

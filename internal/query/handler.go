@@ -1496,7 +1496,11 @@ func (h *Handler) buildFTSConfigsFromSchema(loaded *namespace.LoadedState) map[s
 
 func indexedDocumentID(idoc index.IndexedDocument) (document.ID, bool) {
 	if idoc.ID != "" {
-		docID, err := document.ParseID(idoc.ID)
+		docID, err := document.ParseIDKey(idoc.ID)
+		if err == nil {
+			return docID, true
+		}
+		docID, err = document.ParseID(idoc.ID)
 		if err == nil {
 			return docID, true
 		}

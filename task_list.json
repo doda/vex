@@ -2947,7 +2947,7 @@
     "scope": [
       "internal/query"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "strong-query-backpressure-regression",
