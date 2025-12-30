@@ -3024,7 +3024,7 @@
       "internal/indexer",
       "internal/index"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "indexer-filter-index-nonvector",
