@@ -1428,3 +1428,13 @@ KEY DEPENDENCIES:
 - Tests run: /usr/local/go/bin/go test ./internal/query -run StrongBackpressure -count=1 (pass).
 - Tests run: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
+[2025-12-30T08:05:04Z] Completed tail-prune-indexed-entries: PASS
+- Added prune logic in TailStore refresh to drop entries at/below indexed_wal_seq and adjust tail bytes/guardrails.
+- Added unit test covering refresh then indexed_wal_seq advance pruning behavior.
+- Files changed: internal/tail/store.go.
+- Files changed: internal/tail/store_test.go.
+- Files changed: task_list.json.
+- Verification: /usr/local/go/bin/go test ./internal/tail -run PruneIndexed -count=1 (pass).
+- Verification: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

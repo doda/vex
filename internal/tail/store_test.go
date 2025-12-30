@@ -270,6 +270,61 @@ func TestTailStore_RefreshFromObjectStorage(t *testing.T) {
 	}
 }
 
+func TestTailStore_PruneIndexedEntries(t *testing.T) {
+	store := newMockStore()
+	ts := New(DefaultConfig(), store, nil, nil)
+	defer ts.Close()
+
+	_, data1 := createTestWALEntry("test-ns", 1, []testDoc{
+		{id: 1, attrs: map[string]any{"category": "A"}},
+	})
+	_, data2 := createTestWALEntry("test-ns", 2, []testDoc{
+		{id: 2, attrs: map[string]any{"category": "B"}},
+	})
+	_, data3 := createTestWALEntry("test-ns", 3, []testDoc{
+		{id: 3, attrs: map[string]any{"category": "C"}},
+	})
+
+	store.objects["vex/namespaces/test-ns/"+wal.KeyForSeq(1)] = data1
+	store.objects["vex/namespaces/test-ns/"+wal.KeyForSeq(2)] = data2
+	store.objects["vex/namespaces/test-ns/"+wal.KeyForSeq(3)] = data3
+
+	ctx := context.Background()
+	if err := ts.Refresh(ctx, "test-ns", 0, 3); err != nil {
+		t.Fatalf("Refresh failed: %v", err)
+	}
+
+	nt := ts.getNamespace("test-ns")
+	if nt == nil {
+		t.Fatal("namespace not found")
+	}
+	if len(nt.entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(nt.entries))
+	}
+
+	if err := ts.Refresh(ctx, "test-ns", 2, 3); err != nil {
+		t.Fatalf("Refresh prune failed: %v", err)
+	}
+
+	if len(nt.entries) != 1 {
+		t.Fatalf("expected 1 entry after prune, got %d", len(nt.entries))
+	}
+	if _, ok := nt.entries[3]; !ok {
+		t.Fatal("expected seq 3 to remain after prune")
+	}
+
+	docs, err := ts.Scan(ctx, "test-ns", nil)
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc after prune, got %d", len(docs))
+	}
+	if docs[0].ID.U64() != 3 {
+		t.Fatalf("expected doc id=3 after prune, got %d", docs[0].ID.U64())
+	}
+}
+
 func TestTailStore_RefreshMissingWALEntry(t *testing.T) {
 	store := newMockStore()
 	ts := New(DefaultConfig(), store, nil, nil)
