@@ -574,9 +574,9 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 
 	var filterKeys []string
 	var filterBytes int64
-	if schemaDef != nil && len(vectorDocs) > 0 {
+	if schemaDef != nil && len(docs) > 0 {
 		filterBuilder := filter.NewIndexBuilder(ns, schemaDef)
-		for _, doc := range vectorDocs {
+		for _, doc := range docs {
 			if doc.deleted {
 				continue
 			}
