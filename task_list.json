@@ -10,7 +10,7 @@
       "Verify basic package structure exists (cmd/, pkg/, internal/)",
       "Confirm MinIO can be started locally for testing"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "object-store-abstraction",
@@ -32,7 +32,7 @@
       "Verify strong read-after-write semantics work",
       "Test checksum/integrity verification with SHA-256"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "api-scaffolding",
@@ -54,7 +54,7 @@
       "Verify gzip response compression when Accept-Encoding: gzip is sent",
       "Test error responses match format: {\"status\":\"error\",\"error\":\"...\"}"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "namespace-state-management",
@@ -76,7 +76,7 @@
       "Test schema type immutability enforcement",
       "Verify pending_rebuilds tracking for index build status"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "namespace-name-validation",
@@ -94,7 +94,7 @@
       "Test empty names are rejected",
       "Test names with invalid characters are rejected"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "document-id-validation",
@@ -113,7 +113,7 @@
       "Test string IDs over 64 bytes are rejected with 400",
       "Test ID normalization to typed representation"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "attribute-name-validation",
@@ -131,7 +131,7 @@
       "Test attribute names starting with $ are rejected with 400",
       "Test 'vector' is a valid special attribute name"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "schema-type-system",
@@ -154,7 +154,7 @@
       "Test array variants of all types are supported",
       "Verify changing attribute type returns 400"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "schema-field-options",
@@ -174,7 +174,7 @@
       "Test vector object with type and ann fields",
       "Verify filterable and full_text_search can be updated online"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "vector-config",
@@ -195,7 +195,7 @@
       "Test vectors can be encoded as float array",
       "Test vectors can be encoded as base64"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "wal-entry-format",
@@ -217,7 +217,7 @@
       "Verify invalid datetime format returns 400",
       "Verify non-UTF-8 strings return 400"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-api-basic",
@@ -239,7 +239,7 @@
       "Test deletes removes documents by ID",
       "Verify response includes rows_affected, rows_upserted, rows_patched, rows_deleted"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-upsert-rows",
@@ -258,7 +258,7 @@
       "Verify duplicate IDs use last-write-wins (later in array wins)",
       "Test schema is inferred from first write"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-upsert-columns",
@@ -275,7 +275,7 @@
       "Verify ids array and attribute arrays are properly parsed",
       "Test duplicate IDs in columnar format return 400"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-patch-rows",
@@ -293,7 +293,7 @@
       "Test vector attribute cannot be patched (returns 400)",
       "Verify duplicate IDs use last-write-wins"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-patch-columns",
@@ -310,7 +310,7 @@
       "Verify vector attribute cannot be patched in columns",
       "Test duplicate IDs in columnar patch return 400"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-deletes",
@@ -326,7 +326,7 @@
       "Test deletes array removes documents by ID",
       "Verify deleting non-existent ID succeeds silently"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-delete-by-filter",
@@ -347,7 +347,7 @@
       "Test allow_partial=true succeeds and sets rows_remaining=true",
       "Verify two-phase with re-evaluation (Read Committed semantics)"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-patch-by-filter",
@@ -369,7 +369,7 @@
       "Verify two-phase with re-evaluation (Read Committed semantics)",
       "Test vector attribute cannot be patched via filter"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-copy-from-namespace",
@@ -388,7 +388,7 @@
       "Test can be combined with other write operations",
       "Verify source namespace read at consistent snapshot"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-schema-updates",
@@ -407,7 +407,7 @@
       "Test changing attribute type is rejected with 400",
       "Verify filterable and full_text_search can be updated"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-conditional-upsert",
@@ -428,7 +428,7 @@
       "Test $ref_new references inside conditions",
       "Verify conditions are atomic with writing"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-conditional-patch",
@@ -446,7 +446,7 @@
       "Verify doc missing = skip (no doc created)",
       "Test $ref_new references inside conditions"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-conditional-delete",
@@ -464,7 +464,7 @@
       "Verify doc missing = skip",
       "Test $ref_new attributes are supplied as null for delete_condition"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-request-ordering",
@@ -486,7 +486,7 @@
       "Test delete_by_filter can be 'resurrected' by later upsert in same request",
       "Verify all operations are atomic (no partial visibility)"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-batching",
@@ -504,7 +504,7 @@
       "Verify batch window or size threshold triggers commit",
       "Test commit latency up to 1 second for window alignment"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-idempotency",
@@ -521,7 +521,7 @@
       "Verify duplicate request_id returns original response",
       "Test de-duplication works within bounded time window"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-backpressure",
@@ -539,7 +539,7 @@
       "Verify disable_backpressure=true allows writes above threshold",
       "Test bytes_unindexed_est is tracked in state"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "write-max-batch-size",
@@ -555,7 +555,7 @@
       "Test requests under 256MB are accepted",
       "Verify requests over 256MB return 413"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "wal-commit-protocol",
@@ -575,7 +575,7 @@
       "Test CAS retry loop on ETag mismatch",
       "Verify WAL key not re-uploaded on state retry"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "tail-materialization",
@@ -593,7 +593,7 @@
       "Test NVMe tier for spilled tail blocks",
       "Verify tail supports vector scan and filter evaluation"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-api-basic",
@@ -615,7 +615,7 @@
       "Verify limit/top_k controls result count (max 10,000)",
       "Test response includes rows array with id and $dist"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-vector-ann",
@@ -637,7 +637,7 @@
       "Verify cosine_distance metric works correctly",
       "Verify euclidean_squared metric works correctly"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-order-by-attribute",
@@ -655,7 +655,7 @@
       "Verify $dist is omitted for order-by queries",
       "Test 'per' diversification option"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-consistency-strong",
@@ -674,7 +674,7 @@
       "Verify cache is refreshed for strong queries",
       "Test strong query fails if snapshot cannot be refreshed"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-consistency-eventual",
@@ -693,7 +693,7 @@
       "Test eventual searches only up to 128 MiB of tail",
       "Verify 128 MiB window uses newest WAL entries first"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-disable-backpressure-error",
@@ -710,7 +710,7 @@
       "Test strong query returns 503 when disable_backpressure=true and unindexed > 2GB",
       "Verify eventual queries continue to work in same scenario"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-evaluation",
@@ -728,7 +728,7 @@
       "Test Not operator [\"Not\", f]",
       "Verify boolean operators can be nested"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-eq-noteq",
@@ -746,7 +746,7 @@
       "Test [\"attr\", \"NotEq\", value] excludes exact value",
       "Test [\"attr\", \"NotEq\", null] matches attribute present"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-in-notin",
@@ -762,7 +762,7 @@
       "Test In operator matches any value in set",
       "Test NotIn operator excludes all values in set"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-comparisons",
@@ -782,7 +782,7 @@
       "Verify strings use lexicographic comparison",
       "Verify datetimes compare as numeric milliseconds"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-array-ops",
@@ -804,7 +804,7 @@
       "Test AnyGt operator",
       "Test AnyGte operator"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-glob",
@@ -823,7 +823,7 @@
       "Test NotIGlob for case-insensitive exclusion",
       "Verify prefix globs compile to range queries"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-regex",
@@ -841,7 +841,7 @@
       "Verify regex: true must be set in schema",
       "Test regex without schema option returns error"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-fulltext-tokens",
@@ -858,7 +858,7 @@
       "Test ContainsAllTokens regardless of adjacency",
       "Test last_as_prefix: true option for prefix matching"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-with-filters",
@@ -876,7 +876,7 @@
       "Verify filters applied before ranking",
       "Test combining vector search with filters"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-aggregations",
@@ -892,7 +892,7 @@
       "Test aggregate_by returns aggregations object",
       "Verify aggregations compute correctly over result set"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-group-by",
@@ -908,7 +908,7 @@
       "Test group_by returns aggregation_groups object",
       "Verify groups are computed correctly"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-multi-query",
@@ -926,7 +926,7 @@
       "Test response includes results array in same order",
       "Verify max 16 subqueries per request"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-response-format",
@@ -943,7 +943,7 @@
       "Test billing object is present (can be zeros)",
       "Test performance object with cache metrics and timing"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-concurrency-limit",
@@ -959,7 +959,7 @@
       "Test queries queue when concurrency exceeds 16",
       "Verify queued queries eventually execute"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "indexer-process",
@@ -978,7 +978,7 @@
       "Verify indexer processes WAL range (indexed_wal_seq+1 .. head_seq]",
       "Test indexer runs asynchronously after WAL commit"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "index-manifest-format",
@@ -996,7 +996,7 @@
       "Verify segments array lists all segment details",
       "Test stats includes approx_row_count and approx_logical_bytes"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "index-segment-format",
@@ -1013,7 +1013,7 @@
       "Verify each segment covers WAL sequence interval (start_wal_seq, end_wal_seq)",
       "Test segment includes docs_key, vectors_key, filter_keys"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "index-lsm-model",
@@ -1030,7 +1030,7 @@
       "Verify periodic compaction merges segments into L1/L2",
       "Test query reads across all segments + tail"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "index-publish-protocol",
@@ -1049,7 +1049,7 @@
       "Verify state.json CAS update after manifest upload",
       "Test indexed_wal_seq advances only on successful publish"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "index-recovery",
@@ -1065,7 +1065,7 @@
       "Test indexer crash after segment upload but before manifest is safe",
       "Verify orphan objects are unreachable and can be GCed"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "vector-ivf-index",
@@ -1084,7 +1084,7 @@
       "Test vectors.cluster_offsets.bin maps cluster to offset/length",
       "Verify cold query flow: load centroids, find nearest clusters, fetch cluster data"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "vector-query-ann-path",
@@ -1104,7 +1104,7 @@
       "Test multi-range GET for cluster data (object store optimization)",
       "Verify exact distances computed for final top_k"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "vector-recall-aware-filtering",
@@ -1123,7 +1123,7 @@
       "Test candidate oversampling for ANN with filters",
       "Verify adaptive probe/candidate budget increase"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "filter-index-bitmaps",
@@ -1141,7 +1141,7 @@
       "Verify range queries with numeric/datetime fields",
       "Test inverted mapping for array elements"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "query-deduplication",
@@ -1159,7 +1159,7 @@
       "Test newest segments/tail processed first",
       "Verify tombstones (deletes) exclude docs from results"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "bm25-schema-config",
@@ -1177,7 +1177,7 @@
       "Test stemming, remove_stopwords, ascii_folding options",
       "Verify BM25 params k1, b configuration"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "bm25-indexing",
@@ -1195,7 +1195,7 @@
       "Verify BM25 index segments are created",
       "Test FTS index referenced in segment fts_keys"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "bm25-query",
@@ -1214,7 +1214,7 @@
       "Verify $dist contains BM25 score",
       "Test documents with score zero excluded"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "bm25-operators",
@@ -1232,7 +1232,7 @@
       "Test Product operator applies weight/boost",
       "Verify filters in rank_by yield score 1 or 0"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "bm25-prefix-query",
@@ -1248,7 +1248,7 @@
       "Test last_as_prefix: true for typeahead",
       "Verify prefix matches score 1.0"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "schema-index-rebuild",
@@ -1267,7 +1267,7 @@
       "Test FTS parameter changes rebuild in background",
       "Verify queries use old settings until new ready"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "nvme-cache",
@@ -1285,7 +1285,7 @@
       "Test LRU eviction by bytes with access-time tracking",
       "Verify pinned set for warming namespaces not evictable"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "ram-cache",
@@ -1303,7 +1303,7 @@
       "Test shard-aware LRU eviction",
       "Verify per-namespace budget caps for multi-tenancy"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "cache-correctness-invariant",
@@ -1320,7 +1320,7 @@
       "Test missing cached object is fetched from object storage",
       "Verify cold path always works"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "routing-rendezvous-hashing",
@@ -1337,7 +1337,7 @@
       "Verify requests route to home node when possible",
       "Test any node can serve any namespace (fallback)"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "routing-proxy",
@@ -1355,7 +1355,7 @@
       "Test fallback to local serve if proxy fails",
       "Verify writes also proxy to home node"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "membership-static",
@@ -1371,7 +1371,7 @@
       "Test static node list in config",
       "Verify membership used for routing calculations"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "membership-gossip",
@@ -1387,7 +1387,7 @@
       "Test gossip-based membership discovery (optional)",
       "Verify dynamic membership updates routing"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "metadata-endpoint",
@@ -1408,7 +1408,7 @@
       "Verify index.status (updating or up-to-date)",
       "Test unindexed_bytes shown when updating"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "warm-cache-endpoint",
@@ -1427,7 +1427,7 @@
       "Test cache warm task is enqueued",
       "Verify prefetch: centroids, cluster offsets, filter bitmaps, doc column headers"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "list-namespaces-endpoint",
@@ -1447,7 +1447,7 @@
       "Verify page_size parameter (default 100, max 1000)",
       "Test response includes namespaces array and next_cursor"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "delete-namespace-endpoint",
@@ -1466,7 +1466,7 @@
       "Verify subsequent reads/writes return 404 'namespace deleted'",
       "Test deletion is irreversible"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "delete-namespace-gc",
@@ -1483,7 +1483,7 @@
       "Verify WAL and index objects cleaned up",
       "Test tombstone preserved for fast rejection"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "recall-debug-endpoint",
@@ -1500,7 +1500,7 @@
       "Verify ANN and exhaustive top_k compared",
       "Test avg_recall, avg_ann_count, avg_exhaustive_count returned"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "debug-state-endpoint",
@@ -1516,7 +1516,7 @@
       "Test endpoint returns namespace state",
       "Verify gated behind admin auth"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "debug-cache-endpoint",
@@ -1533,7 +1533,7 @@
       "Test endpoint returns cache status for namespace",
       "Verify gated behind admin auth"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "debug-wal-endpoint",
@@ -1549,7 +1549,7 @@
       "Test endpoint returns WAL entries from from_seq",
       "Verify gated behind admin auth"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "export-via-pagination",
@@ -1566,7 +1566,7 @@
       "Verify filter [\"id\", \"Gt\", last_id] for next page",
       "Test continue until fewer than limit results"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "http-status-codes",
@@ -1589,7 +1589,7 @@
       "Test 500 for internal server error",
       "Test 503 for object store failures/strong query with disable_backpressure"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "error-response-format",
@@ -1605,7 +1605,7 @@
       "Verify all errors return {\"status\":\"error\",\"error\":\"...\"}",
       "Test error messages are descriptive"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "failure-object-store-unavailable",
@@ -1622,7 +1622,7 @@
       "Verify strong queries fail when snapshot cannot be refreshed",
       "Test eventual queries may serve from cache if not too stale"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "failure-partial-wal-commit",
@@ -1640,7 +1640,7 @@
       "Test repair task advances state head_seq safely",
       "Verify staleness bounded to target 60s"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "failure-node-churn",
@@ -1657,7 +1657,7 @@
       "Verify strong consistency maintained after routing change",
       "Test eventual may be briefly stale until refresh"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "limits-enforcement",
@@ -1679,7 +1679,7 @@
       "Test max 64 byte IDs",
       "Verify max 128 char attribute names"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "logging-structured",
@@ -1697,7 +1697,7 @@
       "Test cache temperature logged",
       "Verify timings (server_total_ms, query_execution_ms) logged"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "metrics-prometheus",
@@ -1717,7 +1717,7 @@
       "Test global object store ops and latency",
       "Verify WAL commit latency metric"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "format-versioning",
@@ -1735,7 +1735,7 @@
       "Test format_version in index manifests",
       "Verify format_version in state.json"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "upgrade-strategy",
@@ -1752,7 +1752,7 @@
       "Verify indexer can be configured to write new or old format",
       "Test GC of old format segments after retention window"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "gc-orphan-objects",
@@ -1769,7 +1769,7 @@
       "Verify minimum retention time (24h) before deletion",
       "Test gc/orphan_scan_marker.json tracking"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-unit-schema",
@@ -1786,7 +1786,7 @@
       "Verify type checking rejects invalid types",
       "Test deterministic schema inference"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-unit-filter",
@@ -1803,7 +1803,7 @@
       "Verify null semantics (Eq null matches missing)",
       "Test nested boolean operators"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-unit-rankby",
@@ -1820,7 +1820,7 @@
       "Verify filter boost yields 1 or 0",
       "Test BM25 score computation"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-unit-vector-encoding",
@@ -1836,7 +1836,7 @@
       "Test base64 float32 little-endian roundtrip",
       "Verify float array encoding/decoding"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-golden-api",
@@ -1856,7 +1856,7 @@
       "Test limit and aggregation responses",
       "Test multi-query response layout"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-simulation-deterministic",
@@ -1878,7 +1878,7 @@
       "Verify monotonic WAL seq invariant",
       "Test snapshot correctness for strong reads"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-fault-injection",
@@ -1898,7 +1898,7 @@
       "Test eventual queries degrade gracefully",
       "Verify background repair restores state"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-compat-suite",
@@ -1917,7 +1917,7 @@
       "Test response field presence/shape",
       "Verify Eq null matches missing semantics"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-compat-harness-turbopuffer",
@@ -1936,7 +1936,7 @@
       "Verify rows_remaining behavior",
       "Allow recall tolerance for ANN comparisons"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "single-binary-subcommands",
@@ -1954,7 +1954,7 @@
       "Test 'vex serve' or default starts all-in-one mode",
       "Verify configuration loading for each mode"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "local-dev-minio",
@@ -1972,7 +1972,7 @@
       "Test Vex connects to local MinIO",
       "Verify all operations work with MinIO backend"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "config-management",
@@ -1991,7 +1991,7 @@
       "Verify cache size budget config",
       "Test membership/routing config"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "compat-mode-flag",
@@ -2007,7 +2007,7 @@
       "Test compat_mode=turbopuffer rejects dot_product metric",
       "Verify Vex-only extensions disabled in compat mode"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "guardrails-per-namespace",
@@ -2025,7 +2025,7 @@
       "Test tail materialization memory caps per namespace",
       "Verify concurrent cold cache fills limited"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "request-timeout",
@@ -2041,7 +2041,7 @@
       "Test query timeout enforcement",
       "Verify write timeout handling"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "cache-temperature-metrics",
@@ -2058,7 +2058,7 @@
       "Test hot/warm/cold classification based on hit ratio",
       "Verify metrics exposed for observability"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "vector-incremental-updates",
@@ -2076,7 +2076,7 @@
       "Verify indexer folds tail vectors into IVF segments",
       "Test L0 segments built quickly from WAL"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "segment-compaction",
@@ -2093,7 +2093,7 @@
       "Verify optional reclustering during compaction",
       "Test compaction runs in background"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "fix-routing-proxy-write-query",
@@ -2103,7 +2103,7 @@
       "Send a write to a non-home node and verify it proxies to the home node",
       "Simulate proxy failure and verify the request is handled locally without error"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "pkg/api/router.go",
       "internal/routing"
@@ -2117,7 +2117,7 @@
       "Index data, run a filtered vector query, and verify results include indexed docs",
       "Verify tail overlay still merges and dedups correctly"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/query/handler.go"
     ]
@@ -2130,7 +2130,7 @@
       "Index data, run rank_by order-by query, and confirm results include indexed docs",
       "Verify $dist is omitted and ordering is correct across segments and tail"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/query/handler.go"
     ]
@@ -2143,7 +2143,7 @@
       "Index data with FTS, run a BM25 query, and confirm indexed docs are returned",
       "Verify tail overlay still applies with correct scoring"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/query/handler.go",
       "internal/fts"
@@ -2157,7 +2157,7 @@
       "Set namespace state to disable_backpressure with unindexed_bytes > 2GB and run a strong query to verify 503",
       "Verify eventual queries still return results in the same state"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "pkg/api/router.go",
       "internal/query/handler.go"
@@ -2171,7 +2171,7 @@
       "Create namespaces and ensure catalog objects exist",
       "Call list endpoint with prefix/pagination and verify results come from catalog entries"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "pkg/api/router.go"
     ]
@@ -2184,7 +2184,7 @@
       "Execute delete_by_filter and patch_by_filter writes and inspect WAL entry for required metadata",
       "Replay WAL and verify deterministic application"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/write/handler.go",
       "internal/wal"
@@ -2198,7 +2198,7 @@
       "Send a request containing both filter ops and verify WAL encodes both",
       "Replay WAL and confirm ordering is preserved"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/wal/entry.proto",
       "internal/wal/encoder.go"
@@ -2212,7 +2212,7 @@
       "Run identical writes twice and confirm WAL bytes are identical",
       "Verify same-ID mutations preserve phase ordering"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/wal/encoder.go",
       "internal/write/handler.go"
@@ -2226,7 +2226,7 @@
       "Commit a write and verify bytes_unindexed_est increases by logical payload size",
       "Confirm backpressure triggers at the expected logical threshold"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/wal/committer.go",
       "internal/namespace/manager.go"
@@ -2240,7 +2240,7 @@
       "Commit a WAL entry and verify key format is wal/00000000000000000001.wal.zst",
       "Confirm listing order remains correct with zero padding"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/wal/encoder.go"
     ]
@@ -2253,7 +2253,7 @@
       "Add unit test for delete_by_filter WAL metadata",
       "Add unit test for patch_by_filter WAL metadata"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/write",
       "internal/wal"
@@ -2267,7 +2267,7 @@
       "Disable tail store and issue delete_by_filter to verify a 5xx/400 error",
       "Verify normal execution still succeeds when tail is available"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/write/handler.go"
     ]
@@ -2280,7 +2280,7 @@
       "Disable tail/snapshot and send conditional upsert/patch/delete and verify error",
       "Enable snapshot and verify conditions apply correctly"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/write/handler.go"
     ]
@@ -2293,7 +2293,7 @@
       "Set bytes_unindexed_est near 2GB and send a write that crosses the threshold to verify 429",
       "Verify smaller writes below threshold succeed"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/write/handler.go"
     ]
@@ -2306,7 +2306,7 @@
       "Write documents without explicit schema and verify schema is inferred and persisted",
       "Replay WAL and verify schema matches original inference"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/write/handler.go",
       "internal/schema"
@@ -2320,7 +2320,7 @@
       "Patch a missing ID and verify counts remain unchanged",
       "Patch an existing ID and verify counts increment correctly"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/write/handler.go",
       "internal/write/handler_test.go"
@@ -2334,7 +2334,7 @@
       "Generate concurrent writes and verify only one WAL entry per second is committed",
       "Confirm batching still respects size limits without exceeding rate"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/write/batcher.go"
     ]
@@ -2347,7 +2347,7 @@
       "Run eventual BM25 query with tail larger than 128MiB and verify cap is enforced",
       "Run eventual composite rank_by query and verify the same cap behavior"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/query/handler.go"
     ]
@@ -2360,7 +2360,7 @@
       "Configure pending_rebuilds and run multi-query to verify 202 response",
       "Verify single-query behavior remains unchanged"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/query/handler.go"
     ]
@@ -2373,7 +2373,7 @@
       "Simulate missing WAL object for a strong query and verify failure response",
       "Verify eventual queries still degrade gracefully where allowed"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/tail/store.go"
     ]
@@ -2386,7 +2386,7 @@
       "Add WAL entries with known compressed sizes and verify tail cap calculation uses compressed bytes",
       "Confirm tail selection order remains newest-first"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/tail/store.go"
     ]
@@ -2399,7 +2399,7 @@
       "Add BM25 tail-cap test",
       "Add composite rank_by tail-cap test"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/query"
     ]
@@ -2412,7 +2412,7 @@
       "Index f16 vectors and verify IVF segment sizes and reads are correct",
       "Run vector query against f16 index and verify distances are correct"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/vector/ivf.go",
       "internal/index/reader.go"
@@ -2426,7 +2426,7 @@
       "Submit a vector query with incorrect dims and verify HTTP 400",
       "Submit correct dims and verify normal results"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/index/reader.go",
       "internal/query/handler.go"
@@ -2440,7 +2440,7 @@
       "Simulate a missing WAL object and verify indexed_wal_seq does not advance past it",
       "Verify segment end_wal_seq matches the last processed WAL"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/indexer/indexer.go",
       "internal/indexer/l0_builder.go"
@@ -2454,7 +2454,7 @@
       "Write UUID/string IDs with vectors and verify they appear in indexed segments",
       "Query those IDs and verify results include them"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/indexer/l0_builder.go"
     ]
@@ -2467,7 +2467,7 @@
       "Delete a doc that exists in older segments and verify it is excluded after indexing",
       "Inspect segment metadata to confirm tombstone persistence"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/indexer/l0_builder.go"
     ]
@@ -2480,7 +2480,7 @@
       "Attempt concurrent manifest writes and verify conflicts are detected",
       "Confirm published manifest references only fully uploaded objects"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/indexer/l0_builder.go",
       "internal/index"
@@ -2494,7 +2494,7 @@
       "Patch and delete docs then rebuild FTS segment and verify search results reflect changes",
       "Verify tombstones are applied during segment build"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/fts/segment.go"
     ]
@@ -2507,7 +2507,7 @@
       "Add test for UUID ID vector indexing",
       "Add test for string ID vector indexing"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/indexer"
     ]
@@ -2520,7 +2520,7 @@
       "Start server and verify caches are constructed and injected into query/tail handlers",
       "Call warm-cache endpoint and confirm prefetch tasks run"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "cmd/vex/serve/serve.go",
       "pkg/api/router.go"
@@ -2533,7 +2533,7 @@
     "steps": [
       "Call warm-cache endpoint and verify empty response body with 200 status"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "pkg/api/router.go"
     ]
@@ -2546,7 +2546,7 @@
       "Set per-namespace cap in config and verify enforcement under load",
       "Verify default cap is applied when config is unset"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/cache/memory.go",
       "internal/config/config.go"
@@ -2560,7 +2560,7 @@
       "Configure listen addr as :8080 and membership addr as localhost:8080 and verify local node is recognized as home",
       "Confirm proxying only happens when node is not home"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/config/config.go",
       "internal/routing/rendezvous.go"
@@ -2574,7 +2574,7 @@
       "Enable guardrails config and verify caps are applied at runtime",
       "Simulate concurrent cold fills and verify guardrails limit concurrency"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/guardrails",
       "cmd/vex/serve/serve.go"
@@ -2588,7 +2588,7 @@
       "Run a query and verify logs include cache_temperature and query_execution_ms fields",
       "Verify server_total_ms remains intact"
     ],
-    "passes": true,
+    "completed": true,
     "scope": [
       "internal/logging/middleware.go"
     ]
@@ -2601,7 +2601,7 @@
       "Start `vex query` and verify it loads object store config and can read/write namespace state.json",
       "Run a write+query roundtrip via the query-only server and confirm data persists in object storage"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "cmd/vex/query"
@@ -2615,7 +2615,7 @@
       "Start server with empty AuthToken and confirm requests without Authorization header are rejected",
       "Start server with AuthToken set and confirm only matching Bearer token is accepted"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "pkg/api/router.go"
@@ -2629,7 +2629,7 @@
       "Proxy a gzip-capable request and verify Content-Encoding is set only once with correct body",
       "Proxy a non-gzip request and confirm the body is uncompressed and headers are consistent"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "pkg/api/router.go",
@@ -2645,7 +2645,7 @@
       "Run conditional writes against indexed docs and verify conditions are evaluated correctly",
       "Run copy_from_namespace and verify all indexed docs are copied"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/write"
@@ -2659,7 +2659,7 @@
       "Simulate concurrent writers hitting the same seq and verify state.json only advances to the winning WAL object",
       "Verify a PutIfAbsent conflict does not update state.json with a mismatched wal key"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/write",
@@ -2675,7 +2675,7 @@
       "Test conditional upsert/patch/delete against indexed docs",
       "Test copy_from_namespace over indexed source data"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/write"
@@ -2689,7 +2689,7 @@
       "Index data into multiple segments and run filtered queries that match only later segments",
       "Verify results include matches from all segments and tail"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/query/handler.go"
@@ -2703,7 +2703,7 @@
       "Write documents without vectors, run indexing, and confirm they appear in indexed doc storage",
       "Advance WAL tail past indexed_wal_seq and verify the docs are still returned by queries"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/indexer/l0_builder.go"
@@ -2717,7 +2717,7 @@
       "Write docs, apply patch_rows/patch_by_filter, run indexing, and verify indexed results reflect patched fields",
       "Confirm patched docs stay updated after tail advances"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/indexer/l0_builder.go"
@@ -2731,7 +2731,7 @@
       "Enable filterable attributes, run indexing, and verify filter artifacts are present in segment storage",
       "Run filtered queries and confirm they use the published filter artifacts"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/indexer/l0_builder.go",
@@ -2746,7 +2746,7 @@
       "Create a namespace with euclidean_squared, run indexing, and verify IVF config stores/uses that metric",
       "Run vector queries and verify distances match euclidean_squared expectations"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/indexer/l0_builder.go"
@@ -2760,7 +2760,7 @@
       "Run compaction and verify a new manifest is written and state.json is updated",
       "Verify queries read compacted segments and old segments are eligible for GC after retention"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/index/compactor.go",
@@ -2776,7 +2776,7 @@
       "Test indexing after patch mutations",
       "Test filter artifact creation for filterable attributes"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/indexer",
@@ -2791,7 +2791,7 @@
       "Configure a low RAM cap, ingest WAL tail, and verify spill files are created on NVMe",
       "Verify RAM usage stays within cap while strong queries still access full tail via spill"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/tail/store.go"
@@ -2805,7 +2805,7 @@
       "Enable guardrails with low per-namespace cap and verify strong queries still include all committed WAL entries",
       "Verify tail data beyond caps is served via spill/object store rather than dropped"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/tail/store.go"
@@ -2819,7 +2819,7 @@
       "Record cache hits/misses for multiple namespaces and verify metrics include namespace labels",
       "Confirm metrics still aggregate correctly by cache_type"
     ],
-    "passes": true,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/metrics/metrics.go"
@@ -2833,7 +2833,7 @@
       "Run a query that sets cache_temperature and query_execution_ms and verify logs contain updated values",
       "Confirm server_total_ms remains accurate"
     ],
-    "passes": false,
+    "completed": false,
     "depends_on": [],
     "scope": [
       "internal/logging/middleware.go"
