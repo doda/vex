@@ -2962,7 +2962,7 @@
       "internal/query",
       "pkg/api"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "tail-prune-indexed-entries",

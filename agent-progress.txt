@@ -1418,3 +1418,13 @@ KEY DEPENDENCIES:
 - Challenges: BM25 dedup failed when indexed IDs used typed key prefixes.
 - Resolution: parse typed ID keys (u64/uuid/str) before normal ID parsing.
 - Follow-ups: none.
+[2025-12-30T07:58:53Z] Completed strong-query-backpressure-regression: PASS
+- Added strong-query backpressure guard in query handler and multi-query path based on namespace_flags and wal.bytes_unindexed_est.
+- Added regression test covering strong backpressure in query handler.
+- Files changed: internal/query/handler.go.
+- Files changed: internal/query/backpressure_test.go.
+- Files changed: pkg/api/router.go.
+- Files changed: task_list.json.
+- Tests run: /usr/local/go/bin/go test ./internal/query -run StrongBackpressure -count=1 (pass).
+- Tests run: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.

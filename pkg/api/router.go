@@ -902,6 +902,10 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrServiceUnavailable("failed to refresh snapshot for strong consistency query"))
 				return
 			}
+			if errors.Is(err, query.ErrStrongQueryBackpressure) {
+				r.writeAPIError(w, ErrStrongQueryBackpressure())
+				return
+			}
 			if errors.Is(err, query.ErrInvalidAggregation) {
 				r.writeAPIError(w, ErrBadRequest(err.Error()))
 				return
@@ -1089,6 +1093,10 @@ func (r *Router) handleMultiQuery(w http.ResponseWriter, req *http.Request, ns s
 			}
 			if errors.Is(err, query.ErrSnapshotRefreshFailed) {
 				r.writeAPIError(w, ErrServiceUnavailable("failed to refresh snapshot for strong consistency query"))
+				return
+			}
+			if errors.Is(err, query.ErrStrongQueryBackpressure) {
+				r.writeAPIError(w, ErrStrongQueryBackpressure())
 				return
 			}
 			if errors.Is(err, query.ErrInvalidAggregation) {
