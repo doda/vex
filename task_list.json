@@ -3121,7 +3121,8 @@
       "tests/integration",
       "pkg/api"
     ],
-    "completed": false
+    "completed": true,
+    "passes": true
   },
   {
     "id": "integration-tests-skip-missing-objectstore-creds",
