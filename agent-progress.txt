@@ -1438,3 +1438,19 @@ KEY DEPENDENCIES:
 - Verification: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-30T17:30:00Z] Completed integration-consistency-tail: PASS
+- Added integration test covering strong vs eventual consistency with indexed base doc plus tail entries capped at 128MiB.
+- Implemented helpers to index WAL to manifest and compute WAL object sizes for tail cap expectations.
+- Key files changed: tests/integration/object_store_test.go, task_list.json.
+- Verification: /usr/local/go/bin/go test ./tests/integration -run ConsistencyTail -count=1 (pass).
+- Verification: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenge: avoid huge query responses when tail payloads exceed 128MiB total.
+- Resolution: excluded payload attribute from query responses while still using it to inflate WAL size.
+- Challenge: ensure per-entry WAL sizing and deterministic cap expectations.
+- Resolution: waited for head_seq per write and used object store Head sizes to compute expected tail inclusion.
+[2025-12-30T08:20:22.497Z] Auto-commit note (working)
+- Task: indexer-wire-fts-segments
+- Outcome: ERROR
+- Codex working session error: Failed to parse Codex output for CODEX_WORKING_RESULT
+- Auto-commit created by harness for uncommitted changes.
+- Next session: review the "Auto-commit uncommitted changes (working)" commit before resuming.
