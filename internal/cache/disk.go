@@ -3,6 +3,7 @@ package cache
 import (
 	"container/list"
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -26,6 +27,8 @@ type CacheKey struct {
 	ETag      string
 }
 
+const metadataSuffix = ".meta"
+
 // cacheKeyToPath converts a CacheKey to a deterministic file path.
 func cacheKeyToPath(key CacheKey) string {
 	h := sha256.New()
@@ -33,6 +36,42 @@ func cacheKeyToPath(key CacheKey) string {
 	h.Write([]byte("|"))
 	h.Write([]byte(key.ETag))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+type cacheMetadata struct {
+	ObjectKey string `json:"object_key"`
+	ETag      string `json:"etag"`
+}
+
+func metadataPath(rootPath, hash string) string {
+	return filepath.Join(rootPath, hash+metadataSuffix)
+}
+
+func writeMetadata(path string, key CacheKey) error {
+	metadata := cacheMetadata{
+		ObjectKey: key.ObjectKey,
+		ETag:      key.ETag,
+	}
+	payload, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, payload, 0644)
+}
+
+func readMetadata(path string) (CacheKey, bool, error) {
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return CacheKey{}, false, nil
+		}
+		return CacheKey{}, false, err
+	}
+	var metadata cacheMetadata
+	if err := json.Unmarshal(payload, &metadata); err != nil {
+		return CacheKey{}, false, err
+	}
+	return CacheKey{ObjectKey: metadata.ObjectKey, ETag: metadata.ETag}, true, nil
 }
 
 // entry represents a cached object with LRU metadata.
@@ -129,6 +168,9 @@ func (dc *DiskCache) loadExisting() error {
 		if e.IsDir() {
 			continue
 		}
+		if filepath.Ext(e.Name()) == metadataSuffix {
+			continue
+		}
 		info, err := e.Info()
 		if err != nil {
 			continue
@@ -137,9 +179,13 @@ func (dc *DiskCache) loadExisting() error {
 		hash := e.Name()
 		path := filepath.Join(dc.rootPath, hash)
 		accessTime := info.ModTime()
+		key, ok, err := readMetadata(metadataPath(dc.rootPath, hash))
+		if err != nil || !ok {
+			key = CacheKey{}
+		}
 
 		ent := &entry{
-			key:        CacheKey{}, // Unknown on reload
+			key:        key,
 			hash:       hash,       // Store hash for proper eviction
 			path:       path,
 			size:       info.Size(),
@@ -261,6 +307,14 @@ func (dc *DiskCache) Put(key CacheKey, data io.Reader, size int64) (string, erro
 	ent.element = dc.lruList.PushFront(ent)
 	dc.entries[hash] = ent
 	dc.usedBytes += written
+	if err := writeMetadata(metadataPath(dc.rootPath, hash), key); err != nil {
+		os.Remove(path)
+		os.Remove(metadataPath(dc.rootPath, hash))
+		dc.lruList.Remove(ent.element)
+		delete(dc.entries, hash)
+		dc.usedBytes -= written
+		return "", err
+	}
 
 	return path, nil
 }
@@ -302,6 +356,14 @@ func (dc *DiskCache) PutBytes(key CacheKey, data []byte) (string, error) {
 	ent.element = dc.lruList.PushFront(ent)
 	dc.entries[hash] = ent
 	dc.usedBytes += size
+	if err := writeMetadata(metadataPath(dc.rootPath, hash), key); err != nil {
+		os.Remove(path)
+		os.Remove(metadataPath(dc.rootPath, hash))
+		dc.lruList.Remove(ent.element)
+		delete(dc.entries, hash)
+		dc.usedBytes -= size
+		return "", err
+	}
 
 	return path, nil
 }
@@ -336,6 +398,7 @@ func (dc *DiskCache) evictLocked(needed int64) error {
 
 		// Evict this entry using the stored hash
 		os.Remove(ent.path)
+		os.Remove(metadataPath(dc.rootPath, ent.hash))
 		dc.lruList.Remove(elem)
 		delete(dc.entries, ent.hash)
 		dc.usedBytes -= ent.size
@@ -392,6 +455,7 @@ func (dc *DiskCache) Delete(key CacheKey) error {
 	}
 
 	os.Remove(ent.path)
+	os.Remove(metadataPath(dc.rootPath, ent.hash))
 	dc.lruList.Remove(ent.element)
 	delete(dc.entries, hash)
 	dc.usedBytes -= ent.size
@@ -406,6 +470,7 @@ func (dc *DiskCache) Clear() error {
 
 	for _, ent := range dc.entries {
 		os.Remove(ent.path)
+		os.Remove(metadataPath(dc.rootPath, ent.hash))
 	}
 
 	dc.entries = make(map[string]*entry)

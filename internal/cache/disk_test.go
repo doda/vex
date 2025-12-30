@@ -756,6 +756,54 @@ func TestDiskCache_AllPinnedTerminates(t *testing.T) {
 	}
 }
 
+func TestDiskCache_PinningReload(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	dc1, err := NewDiskCache(DiskCacheConfig{
+		RootPath: tmpDir,
+		MaxBytes: 250, // Can hold 2 entries of 100 bytes
+	})
+	if err != nil {
+		t.Fatalf("NewDiskCache failed: %v", err)
+	}
+
+	data := make([]byte, 100)
+	key1 := CacheKey{ObjectKey: "warm-ns/obj1", ETag: "e1"}
+	key2 := CacheKey{ObjectKey: "warm-ns/obj2", ETag: "e2"}
+
+	if _, err := dc1.PutBytes(key1, data); err != nil {
+		t.Fatalf("PutBytes key1 failed: %v", err)
+	}
+	if _, err := dc1.PutBytes(key2, data); err != nil {
+		t.Fatalf("PutBytes key2 failed: %v", err)
+	}
+
+	dc2, err := NewDiskCache(DiskCacheConfig{
+		RootPath: tmpDir,
+		MaxBytes: 250,
+	})
+	if err != nil {
+		t.Fatalf("NewDiskCache (reload) failed: %v", err)
+	}
+
+	dc2.Pin("warm-ns/")
+
+	key3 := CacheKey{ObjectKey: "other/obj3", ETag: "e3"}
+	if _, err := dc2.PutBytes(key3, data); err != ErrCacheFull {
+		t.Fatalf("expected ErrCacheFull, got %v", err)
+	}
+
+	if !dc2.Contains(key1) {
+		t.Error("key1 should still be cached (pinned after reload)")
+	}
+	if !dc2.Contains(key2) {
+		t.Error("key2 should still be cached (pinned after reload)")
+	}
+	if dc2.Contains(key3) {
+		t.Error("key3 should not be cached when eviction fails")
+	}
+}
+
 // TestDiskCache_MultiplePinnedEviction tests eviction when multiple entries are
 // pinned but some are evictable.
 func TestDiskCache_MultiplePinnedEviction(t *testing.T) {
