@@ -438,12 +438,30 @@ func (w *namespaceWatcher) markPendingRebuildsReady(ctx context.Context, loaded 
 		return
 	}
 
+	manifestSeq := loaded.State.Index.ManifestSeq
+	if manifestSeq == 0 || loaded.State.Index.ManifestKey == "" {
+		return
+	}
+
+	manifest, err := index.LoadManifest(ctx, w.indexer.store, w.namespace, manifestSeq)
+	if err != nil {
+		return
+	}
+
 	currentETag := loaded.ETag
-	version := int(loaded.State.Index.ManifestSeq)
+	version := int(manifestSeq)
 
 	for _, pr := range pendingRebuilds {
 		if pr.Ready {
 			continue // Already ready
+		}
+
+		ready, err := w.rebuildArtifactsReady(ctx, manifest, pr.Kind, pr.Attribute)
+		if err != nil {
+			return
+		}
+		if !ready {
+			continue
 		}
 
 		// Mark this rebuild as ready
@@ -461,6 +479,59 @@ func (w *namespaceWatcher) markPendingRebuildsReady(ctx context.Context, loaded 
 		}
 		currentETag = updated.ETag
 	}
+}
+
+func (w *namespaceWatcher) rebuildArtifactsReady(ctx context.Context, manifest *index.Manifest, kind, attribute string) (bool, error) {
+	if manifest == nil {
+		return false, nil
+	}
+
+	var keys []string
+	for _, seg := range manifest.Segments {
+		if seg.Stats.RowCount == 0 {
+			continue
+		}
+		key := rebuildArtifactKey(seg, kind, attribute)
+		if key == "" {
+			return false, nil
+		}
+		keys = append(keys, key)
+	}
+
+	if len(keys) == 0 {
+		return true, nil
+	}
+
+	for _, key := range keys {
+		if _, err := w.indexer.store.Head(ctx, key); err != nil {
+			if objectstore.IsNotFoundError(err) {
+				return false, nil
+			}
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
+func rebuildArtifactKey(seg index.Segment, kind, attribute string) string {
+	switch kind {
+	case "filter":
+		suffix := "/filters/" + attribute + ".bitmap"
+		for _, key := range seg.FilterKeys {
+			if strings.HasSuffix(key, suffix) {
+				return key
+			}
+		}
+	case "fts":
+		suffix := "/fts/" + attribute + ".idx"
+		for _, key := range seg.FTSKeys {
+			if strings.HasSuffix(key, suffix) {
+				return key
+			}
+		}
+	}
+	return ""
 }
 
 // ProcessWALRange reads WAL entries in the range (startSeq, endSeq] and returns total bytes

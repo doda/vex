@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -11,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/query"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -696,4 +700,126 @@ func TestDefaultProcessorReadsWAL(t *testing.T) {
 	}
 
 	indexer.Stop()
+}
+
+func TestRebuildReadyGate(t *testing.T) {
+	store := newMockStore()
+	stateManager := namespace.NewStateManager(store)
+	ctx := context.Background()
+
+	ns := "rebuild-ready-test"
+	loaded, err := stateManager.Create(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to create state: %v", err)
+	}
+
+	segmentID := "seg_rebuild"
+	docsKey := index.SegmentKey(ns, segmentID) + "/docs.json"
+	_, err = store.Put(ctx, docsKey, bytes.NewReader([]byte("docs")), int64(len("docs")), nil)
+	if err != nil {
+		t.Fatalf("failed to write docs: %v", err)
+	}
+
+	manifest := index.NewManifest(ns)
+	manifest.AddSegment(index.Segment{
+		ID:          segmentID,
+		Level:       index.L0,
+		StartWALSeq:  1,
+		EndWALSeq:    1,
+		DocsKey:      docsKey,
+		Stats:        index.SegmentStats{RowCount: 1, LogicalBytes: 10},
+		CreatedAt:    time.Now().UTC(),
+	})
+	manifest.UpdateIndexedWALSeq()
+
+	manifestSeq := uint64(1)
+	manifestKey := index.ManifestKey(ns, manifestSeq)
+	manifestData, err := manifest.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal manifest: %v", err)
+	}
+	if _, err := store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil); err != nil {
+		t.Fatalf("failed to write manifest: %v", err)
+	}
+
+	loaded, err = stateManager.Update(ctx, ns, loaded.ETag, func(state *namespace.State) error {
+		state.WAL.HeadSeq = 1
+		state.Index.IndexedWALSeq = 1
+		state.Index.ManifestSeq = manifestSeq
+		state.Index.ManifestKey = manifestKey
+		state.Index.Status = "up-to-date"
+		state.WAL.Status = "up-to-date"
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to update state: %v", err)
+	}
+
+	loaded, err = stateManager.AddPendingRebuild(ctx, ns, loaded.ETag, "filter", "category")
+	if err != nil {
+		t.Fatalf("failed to add pending rebuild: %v", err)
+	}
+
+	idx := New(store, stateManager, DefaultConfig(), nil)
+	watcher := newNamespaceWatcher(idx, ns)
+	watcher.markPendingRebuildsReady(ctx, loaded)
+
+	loaded, err = stateManager.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to reload state: %v", err)
+	}
+	if len(loaded.State.Index.PendingRebuilds) != 1 {
+		t.Fatalf("expected 1 pending rebuild, got %d", len(loaded.State.Index.PendingRebuilds))
+	}
+	if loaded.State.Index.PendingRebuilds[0].Ready {
+		t.Fatalf("expected pending rebuild to remain not ready")
+	}
+
+	f, err := filter.Parse([]any{"category", "Eq", "books"})
+	if err != nil {
+		t.Fatalf("failed to parse filter: %v", err)
+	}
+	if err := query.CheckPendingRebuilds(loaded.State, f, nil); !errors.Is(err, query.ErrIndexRebuilding) {
+		t.Fatalf("expected ErrIndexRebuilding before artifacts, got %v", err)
+	}
+
+	filterKey := index.SegmentKey(ns, segmentID) + "/filters/category.bitmap"
+	if _, err := store.Put(ctx, filterKey, bytes.NewReader([]byte("filter")), int64(len("filter")), nil); err != nil {
+		t.Fatalf("failed to write filter data: %v", err)
+	}
+
+	manifestSeq = 2
+	manifestKey = index.ManifestKey(ns, manifestSeq)
+	manifest.GeneratedAt = time.Now().UTC()
+	manifest.Segments[0].FilterKeys = []string{filterKey}
+	manifestData, err = manifest.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal updated manifest: %v", err)
+	}
+	if _, err := store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil); err != nil {
+		t.Fatalf("failed to write updated manifest: %v", err)
+	}
+
+	loaded, err = stateManager.UpdateIndexManifest(ctx, ns, loaded.ETag, manifestKey, manifestSeq, manifest.IndexedWALSeq)
+	if err != nil {
+		t.Fatalf("failed to update manifest pointer: %v", err)
+	}
+
+	watcher.markPendingRebuildsReady(ctx, loaded)
+
+	loaded, err = stateManager.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to reload state: %v", err)
+	}
+	pr := loaded.State.Index.PendingRebuilds[0]
+	if !pr.Ready {
+		t.Fatalf("expected pending rebuild to be ready after artifacts")
+	}
+	if pr.Version != int(manifestSeq) {
+		t.Fatalf("expected rebuild version %d, got %d", manifestSeq, pr.Version)
+	}
+
+	if err := query.CheckPendingRebuilds(loaded.State, f, nil); err != nil {
+		t.Fatalf("expected rebuild to clear after artifacts, got %v", err)
+	}
 }
