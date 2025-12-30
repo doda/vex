@@ -24,3 +24,6 @@ coverage.html
 
 # Node
 node_modules/
+
+# Looper
+.looper-init.log
