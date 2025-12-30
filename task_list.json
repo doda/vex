@@ -2854,7 +2854,7 @@
       "tests/golden",
       "tests/integration"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "integration-gzip-coverage",

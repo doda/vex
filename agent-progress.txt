@@ -1355,3 +1355,13 @@ KEY DEPENDENCIES:
 - Verification: ./vex serve with filesystem store + curl write/query; inspected /tmp/vex-logging.log for updated metrics (pass).
 - Challenges: none.
 [2025-12-30T06:59:28.348Z] Audit (codex): FAIL, 7 area(s), 19 new, lens=integration-testing.
+[2025-12-30T07:10:07Z] Completed tests-add-auth-headers: PASS
+- Added test auth helpers loading VEX_TEST_AUTH_TOKEN/VEX_AUTH_TOKEN with default fallback and set AuthToken in compat/golden/integration configs.
+- Attached Authorization: Bearer headers to compat/golden/integration HTTP requests to exercise auth middleware.
+- Updated integration fixture requests to use http.NewRequest with auth header.
+- Files changed: tests/compat/auth_helpers_test.go; tests/compat/compat_test.go; tests/golden/auth_helpers_test.go; tests/golden/golden_test.go; tests/integration/auth_helpers_test.go; tests/integration/object_store_test.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./tests/... (fail: missing Garage creds).
+- Tests: ./scripts/setup-garage.sh (pass).
+- Tests: source /tmp/vex-garage/creds.env && /usr/local/go/bin/go test ./tests/... (pass).
+- Challenges: go binary not on PATH; integration tests needed Garage credentials.
+- Resolution: used /usr/local/go/bin/go; ran ./scripts/setup-garage.sh and sourced creds.

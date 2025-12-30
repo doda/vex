@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/write"
 	"github.com/vexsearch/vex/pkg/api"
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -28,7 +27,7 @@ type goldenTestFixture struct {
 func newGoldenFixture(t *testing.T) *goldenTestFixture {
 	t.Helper()
 
-	cfg := &config.Config{}
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	store := objectstore.NewMemoryStore()
@@ -120,6 +119,7 @@ func (f *goldenTestFixture) executeQuery(t *testing.T, namespace string, body ma
 
 	req := httptest.NewRequest("POST", "/v2/namespaces/"+namespace+"/query", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
+	addAuthHeader(req)
 	rec := httptest.NewRecorder()
 
 	f.router.ServeHTTP(rec, req)
