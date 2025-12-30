@@ -3089,7 +3089,7 @@
       "internal/cache",
       "pkg/api"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "catalog-cleanup-on-delete",

@@ -1504,3 +1504,14 @@ KEY DEPENDENCIES:
 - Challenges: reload entries lacked ObjectKey for pinning after restart.
 - Resolution: store cache metadata alongside data and hydrate entries on load.
 - Follow-ups: none.
+[2025-12-30T09:11:14Z] Completed integration-warm-cache-hint: PASS
+- Added S3-backed warm-cache integration test that verifies pinning and cache prefetch for IVF/filter/docs objects.
+- Implemented blocking Get store wrapper to observe pinning during manifest fetch.
+- Added manifest reader helper for integration tests.
+- Files changed: tests/integration/object_store_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./tests/integration -run WarmCache -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: ensuring pinning was observable during async warm.
+- Resolution: blocked manifest fetch to keep pin active while asserting.
+- Follow-ups: none.
