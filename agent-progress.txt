@@ -1365,3 +1365,10 @@ KEY DEPENDENCIES:
 - Tests: source /tmp/vex-garage/creds.env && /usr/local/go/bin/go test ./tests/... (pass).
 - Challenges: go binary not on PATH; integration tests needed Garage credentials.
 - Resolution: used /usr/local/go/bin/go; ran ./scripts/setup-garage.sh and sourced creds.
+[2025-12-30T14:05:00Z] Completed integration-gzip-coverage: PASS
+- Added gzip request/response helpers and a new integration test covering write/query/metadata gzip headers.
+- Key files changed: tests/integration/object_store_test.go; task_list.json.
+- Verification: /usr/local/go/bin/go test ./tests/integration -run Gzip (pass).
+- Challenges: none.
+- Resolution: none needed.
+- Follow-ups: none.

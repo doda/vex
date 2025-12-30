@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -257,6 +258,43 @@ func (f *s3TestFixture) getMetadata(t *testing.T, ns string) map[string]any {
 	return result
 }
 
+func gzipPayload(t *testing.T, payload []byte) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(payload); err != nil {
+		t.Fatalf("failed to gzip payload: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+	return &buf
+}
+
+func readMaybeGzip(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
+
+	if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer gz.Close()
+		data, err := io.ReadAll(gz)
+		if err != nil {
+			t.Fatalf("failed to read gzip body: %v", err)
+		}
+		return data
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+	return data
+}
+
 // TestObjectStoreBasicCRUD tests basic CRUD operations with an S3-compatible store.
 func TestObjectStoreBasicCRUD(t *testing.T) {
 	ns := fmt.Sprintf("objectstore-test-%d", time.Now().UnixNano())
@@ -388,6 +426,135 @@ func TestObjectStoreBasicCRUD(t *testing.T) {
 
 		if metadata["created_at"] == nil {
 			t.Error("expected created_at to be set")
+		}
+	})
+}
+
+func TestObjectStoreGzip(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-gzip-%d", time.Now().UnixNano())
+	fixture := newS3Fixture(t, ns)
+	defer fixture.close(t)
+
+	t.Run("gzip write", func(t *testing.T) {
+		payload, err := json.Marshal(map[string]any{
+			"upsert_rows": []map[string]any{
+				{"id": "doc1", "name": "Zed", "age": 42},
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to marshal write payload: %v", err)
+		}
+
+		req, err := http.NewRequest("POST", fixture.endpoint+"/v2/namespaces/"+ns, gzipPayload(t, payload))
+		if err != nil {
+			t.Fatalf("failed to build gzip write request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+		addAuthHeader(req)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("gzip write request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body := readMaybeGzip(t, resp)
+			t.Fatalf("gzip write returned status %d: %s", resp.StatusCode, string(body))
+		}
+		if resp.Header.Get("Content-Encoding") != "gzip" {
+			t.Fatalf("expected gzip write response, got Content-Encoding=%q", resp.Header.Get("Content-Encoding"))
+		}
+
+		body := readMaybeGzip(t, resp)
+		var result map[string]any
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Fatalf("failed to unmarshal gzip write response: %v", err)
+		}
+		if result["rows_upserted"].(float64) != 1 {
+			t.Fatalf("expected 1 row upserted, got %v", result["rows_upserted"])
+		}
+	})
+
+	time.Sleep(2 * time.Second)
+
+	t.Run("gzip query", func(t *testing.T) {
+		payload, err := json.Marshal(map[string]any{
+			"rank_by": []any{"id", "asc"},
+			"limit":   10,
+		})
+		if err != nil {
+			t.Fatalf("failed to marshal query payload: %v", err)
+		}
+
+		req, err := http.NewRequest("POST", fixture.endpoint+"/v2/namespaces/"+ns+"/query", gzipPayload(t, payload))
+		if err != nil {
+			t.Fatalf("failed to build gzip query request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+		addAuthHeader(req)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("gzip query request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body := readMaybeGzip(t, resp)
+			t.Fatalf("gzip query returned status %d: %s", resp.StatusCode, string(body))
+		}
+		if resp.Header.Get("Content-Encoding") != "gzip" {
+			t.Fatalf("expected gzip query response, got Content-Encoding=%q", resp.Header.Get("Content-Encoding"))
+		}
+
+		body := readMaybeGzip(t, resp)
+		var result map[string]any
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Fatalf("failed to unmarshal gzip query response: %v", err)
+		}
+		rows, ok := result["rows"].([]any)
+		if !ok {
+			t.Fatalf("expected rows to be an array, got %T", result["rows"])
+		}
+		if len(rows) != 1 {
+			t.Fatalf("expected 1 row, got %d", len(rows))
+		}
+	})
+
+	t.Run("gzip metadata", func(t *testing.T) {
+		req, err := http.NewRequest("GET", fixture.endpoint+"/v1/namespaces/"+ns+"/metadata", nil)
+		if err != nil {
+			t.Fatalf("failed to build gzip metadata request: %v", err)
+		}
+		req.Header.Set("Accept-Encoding", "gzip")
+		addAuthHeader(req)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("gzip metadata request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body := readMaybeGzip(t, resp)
+			t.Fatalf("gzip metadata returned status %d: %s", resp.StatusCode, string(body))
+		}
+		if resp.Header.Get("Content-Encoding") != "gzip" {
+			t.Fatalf("expected gzip metadata response, got Content-Encoding=%q", resp.Header.Get("Content-Encoding"))
+		}
+
+		body := readMaybeGzip(t, resp)
+		var result map[string]any
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Fatalf("failed to unmarshal gzip metadata response: %v", err)
+		}
+		if result["namespace"] != ns {
+			t.Fatalf("expected namespace %s, got %v", ns, result["namespace"])
 		}
 	})
 }
