@@ -42,6 +42,9 @@ func Middleware(logger *Logger) func(http.Handler) http.Handler {
 			if namespace != "" {
 				ctx = ContextWithNamespace(ctx, namespace)
 			}
+			if RequestMetricsFromContext(ctx) == nil {
+				ctx = ContextWithRequestMetrics(ctx, &RequestMetrics{})
+			}
 
 			// Wrap response writer to capture status
 			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
@@ -49,8 +52,8 @@ func Middleware(logger *Logger) func(http.Handler) http.Handler {
 			// Set request ID in response header
 			w.Header().Set("X-Request-ID", requestID)
 
-			// Serve the request
-			next.ServeHTTP(rw, r.WithContext(ctx))
+			req := r.WithContext(ctx)
+			next.ServeHTTP(rw, req)
 
 			// Log completion
 			elapsed := float64(time.Since(start).Microseconds()) / 1000.0
@@ -61,7 +64,7 @@ func Middleware(logger *Logger) func(http.Handler) http.Handler {
 				Endpoint:      endpoint,
 				ServerTotalMs: elapsed,
 			}
-			if metrics := RequestMetricsFromContext(ctx); metrics != nil {
+			if metrics := RequestMetricsFromContext(req.Context()); metrics != nil {
 				if metrics.CacheTemp != "" {
 					info.CacheTemp = metrics.CacheTemp
 				}
@@ -102,6 +105,9 @@ func MiddlewareFunc(logger *Logger, next http.HandlerFunc) http.HandlerFunc {
 		if namespace != "" {
 			ctx = ContextWithNamespace(ctx, namespace)
 		}
+		if RequestMetricsFromContext(ctx) == nil {
+			ctx = ContextWithRequestMetrics(ctx, &RequestMetrics{})
+		}
 
 		// Wrap response writer to capture status
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
@@ -109,8 +115,8 @@ func MiddlewareFunc(logger *Logger, next http.HandlerFunc) http.HandlerFunc {
 		// Set request ID in response header
 		w.Header().Set("X-Request-ID", requestID)
 
-		// Serve the request
-		next(rw, r.WithContext(ctx))
+		req := r.WithContext(ctx)
+		next(rw, req)
 
 		// Log completion
 		elapsed := float64(time.Since(start).Microseconds()) / 1000.0
@@ -121,7 +127,7 @@ func MiddlewareFunc(logger *Logger, next http.HandlerFunc) http.HandlerFunc {
 			Endpoint:      endpoint,
 			ServerTotalMs: elapsed,
 		}
-		if metrics := RequestMetricsFromContext(ctx); metrics != nil {
+		if metrics := RequestMetricsFromContext(req.Context()); metrics != nil {
 			if metrics.CacheTemp != "" {
 				info.CacheTemp = metrics.CacheTemp
 			}

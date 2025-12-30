@@ -2833,7 +2833,7 @@
       "Run a query that sets cache_temperature and query_execution_ms and verify logs contain updated values",
       "Confirm server_total_ms remains accurate"
     ],
-    "completed": false,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/logging/middleware.go"
