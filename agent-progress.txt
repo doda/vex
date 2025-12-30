@@ -1401,3 +1401,11 @@ KEY DEPENDENCIES:
 - Challenges: avoid writing multi-GB payloads in integration tests.
 - Resolution: update state.json via object store CAS to simulate unindexed byte threshold.
 - Follow-ups: none.
+[2025-12-30T16:55:00Z] Completed wal-sub-batch-ordering-test: PASS
+- Added WAL sub-batch ordering/content assertions for batched write requests.
+- Ensured sub-batch order matches request order and mutation contents match expected IDs/types.
+- Key files changed: internal/write/batcher_test.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/write -run BatcherSubBatch -count=1 (pass).
+- Challenges: coordinating deterministic batch order with concurrent writes.
+- Resolution: wait for batch queue length between submissions and force timer flush.
+- Follow-ups: none.

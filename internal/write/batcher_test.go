@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
@@ -500,7 +501,7 @@ func TestBatcherSubBatchesPreserved(t *testing.T) {
 	stateMan := namespace.NewStateManager(store)
 
 	cfg := BatcherConfig{
-		BatchWindow:  100 * time.Millisecond,
+		BatchWindow:  5 * time.Second,
 		MaxBatchSize: 100 * 1024 * 1024,
 	}
 
@@ -511,29 +512,63 @@ func TestBatcherSubBatchesPreserved(t *testing.T) {
 	defer batcher.Close()
 
 	ns := "subbatch-test"
-	numWrites := 5
-
-	var wg sync.WaitGroup
-	for i := 0; i < numWrites; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			req := &WriteRequest{
-				RequestID: "subbatch-" + string(rune('a'+idx)),
+	requests := []struct {
+		id  string
+		req *WriteRequest
+	}{
+		{
+			id: "subbatch-1",
+			req: &WriteRequest{
+				RequestID: "subbatch-1",
 				UpsertRows: []map[string]any{
-					{"id": uint64(idx + 1), "index": idx},
+					{"id": uint64(20), "name": "bravo"},
+					{"id": uint64(10), "name": "alpha"},
 				},
-			}
-			_, err := batcher.Submit(context.Background(), ns, req)
-			if err != nil {
-				t.Errorf("write %d failed: %v", idx, err)
-			}
-		}(i)
+			},
+		},
+		{
+			id: "subbatch-2",
+			req: &WriteRequest{
+				RequestID: "subbatch-2",
+				PatchRows: []map[string]any{
+					{"id": uint64(10), "tag": "patched"},
+				},
+			},
+		},
+		{
+			id: "subbatch-3",
+			req: &WriteRequest{
+				RequestID: "subbatch-3",
+				Deletes:   []any{uint64(20)},
+			},
+		},
 	}
 
+	results := make([]*WriteResponse, len(requests))
+	errs := make([]error, len(requests))
+	var wg sync.WaitGroup
+
+	for i, item := range requests {
+		wg.Add(1)
+		go func(idx int, req *WriteRequest) {
+			defer wg.Done()
+			results[idx], errs[idx] = batcher.Submit(context.Background(), ns, req)
+		}(i, item.req)
+		waitForBatchSize(t, batcher, ns, i+1)
+	}
+
+	batcher.timerFlush(ns)
 	wg.Wait()
 
-	// Verify single WAL entry with batched writes
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("write %d failed: %v", i, err)
+		}
+		if results[i] == nil {
+			t.Fatalf("write %d returned nil response", i)
+		}
+	}
+
 	state, err := stateMan.Load(context.Background(), ns)
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
@@ -542,9 +577,71 @@ func TestBatcherSubBatchesPreserved(t *testing.T) {
 		t.Errorf("expected HeadSeq=1, got %d", state.State.WAL.HeadSeq)
 	}
 
-	// Read the WAL entry and verify it has multiple sub-batches
-	// (Note: actual verification would require reading and decoding the WAL entry)
-	// For now, we verify the aggregate stats are correct
+	committer, err := wal.NewCommitter(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create committer: %v", err)
+	}
+	defer committer.Close()
+
+	entry, err := committer.ReadWAL(context.Background(), ns, 1)
+	if err != nil {
+		t.Fatalf("failed to read WAL entry: %v", err)
+	}
+	if len(entry.SubBatches) != len(requests) {
+		t.Fatalf("expected %d sub-batches, got %d", len(requests), len(entry.SubBatches))
+	}
+
+	for i, subBatch := range entry.SubBatches {
+		if subBatch.RequestId != requests[i].id {
+			t.Errorf("sub-batch %d request_id=%q, want %q", i, subBatch.RequestId, requests[i].id)
+		}
+	}
+
+	first := entry.SubBatches[0]
+	if len(first.Mutations) != 2 {
+		t.Fatalf("expected 2 mutations in first sub-batch, got %d", len(first.Mutations))
+	}
+	if first.Mutations[0].Type != wal.MutationType_MUTATION_TYPE_UPSERT ||
+		first.Mutations[1].Type != wal.MutationType_MUTATION_TYPE_UPSERT {
+		t.Fatalf("expected upsert mutations in first sub-batch")
+	}
+	if got := first.Mutations[0].GetId().GetU64(); got != 10 {
+		t.Fatalf("expected first mutation id=10, got %d", got)
+	}
+	if got := first.Mutations[1].GetId().GetU64(); got != 20 {
+		t.Fatalf("expected second mutation id=20, got %d", got)
+	}
+	if got := first.Mutations[0].Attributes["name"].GetStringVal(); got != "alpha" {
+		t.Fatalf("expected id=10 name=alpha, got %q", got)
+	}
+	if got := first.Mutations[1].Attributes["name"].GetStringVal(); got != "bravo" {
+		t.Fatalf("expected id=20 name=bravo, got %q", got)
+	}
+
+	second := entry.SubBatches[1]
+	if len(second.Mutations) != 1 {
+		t.Fatalf("expected 1 mutation in second sub-batch, got %d", len(second.Mutations))
+	}
+	if second.Mutations[0].Type != wal.MutationType_MUTATION_TYPE_PATCH {
+		t.Fatalf("expected patch mutation in second sub-batch")
+	}
+	if got := second.Mutations[0].GetId().GetU64(); got != 10 {
+		t.Fatalf("expected patch mutation id=10, got %d", got)
+	}
+	if got := second.Mutations[0].Attributes["tag"].GetStringVal(); got != "patched" {
+		t.Fatalf("expected patch tag=patched, got %q", got)
+	}
+
+	third := entry.SubBatches[2]
+	if len(third.Mutations) != 1 {
+		t.Fatalf("expected 1 mutation in third sub-batch, got %d", len(third.Mutations))
+	}
+	if third.Mutations[0].Type != wal.MutationType_MUTATION_TYPE_DELETE {
+		t.Fatalf("expected delete mutation in third sub-batch")
+	}
+	if got := third.Mutations[0].GetId().GetU64(); got != 20 {
+		t.Fatalf("expected delete mutation id=20, got %d", got)
+	}
 }
 
 // TestBatcherContextCancellation verifies context cancellation is handled properly.
@@ -578,6 +675,27 @@ func TestBatcherContextCancellation(t *testing.T) {
 	if err != context.DeadlineExceeded {
 		t.Errorf("expected context.DeadlineExceeded, got %v", err)
 	}
+}
+
+func waitForBatchSize(t *testing.T, batcher *Batcher, ns string, size int) {
+	t.Helper()
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		batcher.mu.Lock()
+		batch := batcher.batches[ns]
+		count := 0
+		if batch != nil {
+			count = len(batch.writes)
+		}
+		batcher.mu.Unlock()
+		if count >= size {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for batch size %d", size)
 }
 
 // TestBatcherSizeThresholdTimerRace verifies no race between size-threshold and timer flush.
