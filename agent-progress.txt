@@ -1372,3 +1372,13 @@ KEY DEPENDENCIES:
 - Challenges: none.
 - Resolution: none needed.
 - Follow-ups: none.
+
+[2025-12-30T07:19:54Z] Completed integration-required-endpoints: PASS
+- Added object-store integration coverage for list namespaces, warm-cache hint, recall, and delete endpoints with retry for list consistency.
+- Added fixture helpers for list/delete/warm/recall HTTP calls.
+- Key files changed: tests/integration/object_store_test.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./tests/integration -run Endpoints (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: list operations can be eventually consistent in S3 listings.
+- Resolution: added bounded retry loop for list namespaces check.
+- Follow-ups: none.
