@@ -1392,3 +1392,12 @@ KEY DEPENDENCIES:
 - Challenges: ensuring deterministic CAS retry coverage without flaking S3 behavior.
 - Resolution: wrapped object store PutIfMatch to inject precondition failures for state.json.
 - Follow-ups: none.
+[2025-12-30T15:20:00Z] Completed integration-write-backpressure-http: PASS
+- Added S3-backed integration test to set bytes_unindexed_est above 2GiB and verify 429 + disable_backpressure override.
+- Added helpers to read/update state.json with CAS for integration scenarios.
+- Files changed: tests/integration/object_store_test.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./tests/integration -run Backpressure -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: avoid writing multi-GB payloads in integration tests.
+- Resolution: update state.json via object store CAS to simulate unindexed byte threshold.
+- Follow-ups: none.

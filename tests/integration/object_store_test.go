@@ -261,6 +261,75 @@ func readState(ctx context.Context, store objectstore.Store, ns string) (*namesp
 	return &state, nil
 }
 
+func readStateWithInfo(ctx context.Context, store objectstore.Store, ns string) (*namespace.State, *objectstore.ObjectInfo, error) {
+	key := fmt.Sprintf("vex/namespaces/%s/meta/state.json", ns)
+	reader, info, err := store.Get(ctx, key, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var state namespace.State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, nil, err
+	}
+
+	if info == nil {
+		info, err = store.Head(ctx, key)
+		if err != nil {
+			return &state, nil, err
+		}
+	}
+
+	return &state, info, nil
+}
+
+func updateState(t *testing.T, store objectstore.Store, ns string, mutate func(*namespace.State)) *namespace.State {
+	t.Helper()
+
+	stateKey := fmt.Sprintf("vex/namespaces/%s/meta/state.json", ns)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		state, info, err := readStateWithInfo(ctx, store, ns)
+		cancel()
+		if err != nil {
+			if objectstore.IsNotFoundError(err) && time.Now().Before(deadline) {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			t.Fatalf("failed to read state.json: %v", err)
+		}
+
+		mutate(state)
+		state.UpdatedAt = time.Now().UTC()
+
+		data, err := json.Marshal(state)
+		if err != nil {
+			t.Fatalf("failed to marshal state.json: %v", err)
+		}
+
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		_, err = store.PutIfMatch(ctx, stateKey, bytes.NewReader(data), int64(len(data)), info.ETag, &objectstore.PutOptions{
+			ContentType: "application/json",
+		})
+		cancel()
+		if err == nil {
+			return state
+		}
+		if objectstore.IsPreconditionError(err) && time.Now().Before(deadline) {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		t.Fatalf("failed to update state.json: %v", err)
+	}
+}
+
 func waitForStateHeadSeq(t *testing.T, store objectstore.Store, ns string, want uint64) *namespace.State {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -1067,5 +1136,54 @@ func TestObjectStoreWalCASIdempotency(t *testing.T) {
 	}
 	if entry1.CommittedUnixMs > entry2.CommittedUnixMs {
 		t.Fatalf("expected wal commit order to increase, got %d then %d", entry1.CommittedUnixMs, entry2.CommittedUnixMs)
+	}
+}
+
+func TestObjectStoreWriteBackpressure(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-backpressure-%d", time.Now().UnixNano())
+	fixture := newS3Fixture(t, ns)
+	defer fixture.close(t)
+
+	fixture.write(t, ns, map[string]any{
+		"upsert_rows": []map[string]any{
+			{"id": "seed", "name": "seed"},
+		},
+	})
+
+	updateState(t, fixture.store, ns, func(state *namespace.State) {
+		state.WAL.BytesUnindexedEst = int64(api.MaxUnindexedBytes) + 1
+		state.WAL.Status = "updating"
+		state.NamespaceFlags.DisableBackpressure = false
+	})
+
+	status, body := fixture.writeRaw(t, ns, map[string]any{
+		"upsert_rows": []map[string]any{
+			{"id": "doc-1", "name": "alpha"},
+		},
+	})
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for backpressure, got %d: %s", status, string(body))
+	}
+	var errResp map[string]any
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		t.Fatalf("failed to unmarshal backpressure response: %v", err)
+	}
+	if msg, ok := errResp["error"].(string); !ok || !strings.Contains(msg, "backpressure") {
+		t.Fatalf("expected backpressure error message, got %v", errResp["error"])
+	}
+
+	status, body = fixture.writeRaw(t, ns, map[string]any{
+		"disable_backpressure": true,
+		"upsert_rows": []map[string]any{
+			{"id": "doc-2", "name": "beta"},
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("expected 200 with disable_backpressure, got %d: %s", status, string(body))
+	}
+
+	state := waitForStateHeadSeq(t, fixture.store, ns, 2)
+	if !state.NamespaceFlags.DisableBackpressure {
+		t.Fatalf("expected namespace disable_backpressure flag to be set")
 	}
 }
