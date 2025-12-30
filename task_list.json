@@ -3057,7 +3057,7 @@
       "internal/query",
       "internal/indexer"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "disk-cache-pinning-reload",
