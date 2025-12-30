@@ -16,13 +16,6 @@
     "id": "object-store-abstraction",
     "category": "infrastructure",
     "description": "Implement ObjectStore interface with S3-compatible and filesystem backends",
-    "depends_on": [
-      "project-setup"
-    ],
-    "scope": [
-      "pkg/objectstore/",
-      "internal/storage/"
-    ],
     "steps": [
       "Verify ObjectStore interface exists with Get, Head, PutIfAbsent, PutIfMatch, List, Delete methods",
       "Test S3-compatible backend connects to MinIO and performs basic CRUD",
@@ -32,20 +25,19 @@
       "Verify strong read-after-write semantics work",
       "Test checksum/integrity verification with SHA-256"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "project-setup"
+    ],
+    "scope": [
+      "pkg/objectstore/",
+      "internal/storage/"
+    ]
   },
   {
     "id": "api-scaffolding",
     "category": "api",
     "description": "Create HTTP API scaffolding with router, auth middleware, and compression support",
-    "depends_on": [
-      "project-setup"
-    ],
-    "scope": [
-      "cmd/vex/",
-      "pkg/api/",
-      "internal/http/"
-    ],
     "steps": [
       "Start server on configurable port",
       "Verify Authorization: Bearer token auth works",
@@ -54,19 +46,20 @@
       "Verify gzip response compression when Accept-Encoding: gzip is sent",
       "Test error responses match format: {\"status\":\"error\",\"error\":\"...\"}"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "project-setup"
+    ],
+    "scope": [
+      "cmd/vex/",
+      "pkg/api/",
+      "internal/http/"
+    ]
   },
   {
     "id": "namespace-state-management",
     "category": "functional",
     "description": "Implement namespace state.json management with ETag-based CAS",
-    "depends_on": [
-      "object-store-abstraction"
-    ],
-    "scope": [
-      "internal/namespace/",
-      "pkg/state/"
-    ],
     "steps": [
       "Verify state.json schema matches spec (format_version, schema, wal, index, etc.)",
       "Test CAS loop correctly handles ETag mismatches with retry",
@@ -76,36 +69,37 @@
       "Test schema type immutability enforcement",
       "Verify pending_rebuilds tracking for index build status"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "object-store-abstraction"
+    ],
+    "scope": [
+      "internal/namespace/",
+      "pkg/state/"
+    ]
   },
   {
     "id": "namespace-name-validation",
     "category": "functional",
     "description": "Validate namespace names match pattern [A-Za-z0-9-_.]{1,128}",
-    "depends_on": [
-      "api-scaffolding"
-    ],
-    "scope": [
-      "internal/namespace/"
-    ],
     "steps": [
       "Test valid namespace names are accepted (letters, numbers, dash, underscore, dot)",
       "Test names longer than 128 chars are rejected with 400",
       "Test empty names are rejected",
       "Test names with invalid characters are rejected"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "api-scaffolding"
+    ],
+    "scope": [
+      "internal/namespace/"
+    ]
   },
   {
     "id": "document-id-validation",
     "category": "functional",
     "description": "Validate document IDs (u64, UUID, or strings up to 64 bytes)",
-    "depends_on": [
-      "api-scaffolding"
-    ],
-    "scope": [
-      "internal/document/"
-    ],
     "steps": [
       "Test u64 IDs are accepted",
       "Test UUID IDs are accepted",
@@ -113,36 +107,36 @@
       "Test string IDs over 64 bytes are rejected with 400",
       "Test ID normalization to typed representation"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "api-scaffolding"
+    ],
+    "scope": [
+      "internal/document/"
+    ]
   },
   {
     "id": "attribute-name-validation",
     "category": "functional",
     "description": "Validate attribute names (up to 128 chars, no $ prefix)",
-    "depends_on": [
-      "api-scaffolding"
-    ],
-    "scope": [
-      "internal/schema/"
-    ],
     "steps": [
       "Test attribute names up to 128 chars are accepted",
       "Test attribute names over 128 chars are rejected with 400",
       "Test attribute names starting with $ are rejected with 400",
       "Test 'vector' is a valid special attribute name"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "api-scaffolding"
+    ],
+    "scope": [
+      "internal/schema/"
+    ]
   },
   {
     "id": "schema-type-system",
     "category": "functional",
     "description": "Implement schema type system with all supported types",
-    "depends_on": [
-      "namespace-state-management"
-    ],
-    "scope": [
-      "internal/schema/"
-    ],
     "steps": [
       "Test string type is supported",
       "Test int (i64) type is supported",
@@ -154,18 +148,18 @@
       "Test array variants of all types are supported",
       "Verify changing attribute type returns 400"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "namespace-state-management"
+    ],
+    "scope": [
+      "internal/schema/"
+    ]
   },
   {
     "id": "schema-field-options",
     "category": "functional",
     "description": "Implement schema field options (filterable, regex, full_text_search, vector)",
-    "depends_on": [
-      "schema-type-system"
-    ],
-    "scope": [
-      "internal/schema/"
-    ],
     "steps": [
       "Test filterable option (default true, false when regex/fts enabled)",
       "Test regex option (default false)",
@@ -174,18 +168,18 @@
       "Test vector object with type and ann fields",
       "Verify filterable and full_text_search can be updated online"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "schema-type-system"
+    ],
+    "scope": [
+      "internal/schema/"
+    ]
   },
   {
     "id": "vector-config",
     "category": "functional",
     "description": "Implement vector configuration with dimensions, dtype, and distance metric",
-    "depends_on": [
-      "schema-type-system"
-    ],
-    "scope": [
-      "internal/vector/"
-    ],
     "steps": [
       "Test vector type supports f16 and f32 dtypes",
       "Test cosine_distance metric is supported (default)",
@@ -195,18 +189,18 @@
       "Test vectors can be encoded as float array",
       "Test vectors can be encoded as base64"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "schema-type-system"
+    ],
+    "scope": [
+      "internal/vector/"
+    ]
   },
   {
     "id": "wal-entry-format",
     "category": "functional",
     "description": "Implement WAL entry format with protobuf encoding and zstd compression",
-    "depends_on": [
-      "object-store-abstraction"
-    ],
-    "scope": [
-      "internal/wal/"
-    ],
     "steps": [
       "Verify WAL entries stored as .wal.zst compressed blobs",
       "Test protobuf encoding with WalEntry schema",
@@ -217,12 +211,26 @@
       "Verify invalid datetime format returns 400",
       "Verify non-UTF-8 strings return 400"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "object-store-abstraction"
+    ],
+    "scope": [
+      "internal/wal/"
+    ]
   },
   {
     "id": "write-api-basic",
     "category": "api",
     "description": "Implement basic write endpoint POST /v2/namespaces/:namespace",
+    "steps": [
+      "Test namespace is implicitly created on first write",
+      "Verify write returns only after WAL is committed to object storage",
+      "Test upsert_rows creates/updates documents",
+      "Test deletes removes documents by ID",
+      "Verify response includes rows_affected, rows_upserted, rows_patched, rows_deleted"
+    ],
+    "completed": true,
     "depends_on": [
       "wal-entry-format",
       "api-scaffolding",
@@ -231,26 +239,12 @@
     "scope": [
       "pkg/api/write.go",
       "internal/write/"
-    ],
-    "steps": [
-      "Test namespace is implicitly created on first write",
-      "Verify write returns only after WAL is committed to object storage",
-      "Test upsert_rows creates/updates documents",
-      "Test deletes removes documents by ID",
-      "Verify response includes rows_affected, rows_upserted, rows_patched, rows_deleted"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "write-upsert-rows",
     "category": "functional",
     "description": "Implement upsert_rows with row-oriented document format",
-    "depends_on": [
-      "write-api-basic"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Test upsert_rows accepts array of document objects",
       "Verify documents include id and arbitrary attributes",
@@ -258,87 +252,86 @@
       "Verify duplicate IDs use last-write-wins (later in array wins)",
       "Test schema is inferred from first write"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "write-api-basic"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-upsert-columns",
     "category": "functional",
     "description": "Implement upsert_columns with column-oriented document format",
-    "depends_on": [
-      "write-api-basic"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Test upsert_columns accepts columnar format",
       "Verify ids array and attribute arrays are properly parsed",
       "Test duplicate IDs in columnar format return 400"
     ],
-    "completed": true
-  },
-  {
-    "id": "write-patch-rows",
-    "category": "functional",
-    "description": "Implement patch_rows for partial document updates",
+    "completed": true,
     "depends_on": [
       "write-api-basic"
     ],
     "scope": [
       "internal/write/"
-    ],
+    ]
+  },
+  {
+    "id": "write-patch-rows",
+    "category": "functional",
+    "description": "Implement patch_rows for partial document updates",
     "steps": [
       "Test patch_rows updates only specified attributes",
       "Verify patch to missing ID is silently ignored (no doc created)",
       "Test vector attribute cannot be patched (returns 400)",
       "Verify duplicate IDs use last-write-wins"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "write-api-basic"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-patch-columns",
     "category": "functional",
     "description": "Implement patch_columns for columnar partial updates",
-    "depends_on": [
-      "write-api-basic"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Test patch_columns works with columnar format",
       "Verify vector attribute cannot be patched in columns",
       "Test duplicate IDs in columnar patch return 400"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "write-api-basic"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-deletes",
     "category": "functional",
     "description": "Implement deletes for removing documents by ID",
+    "steps": [
+      "Test deletes array removes documents by ID",
+      "Verify deleting non-existent ID succeeds silently"
+    ],
+    "completed": true,
     "depends_on": [
       "write-api-basic"
     ],
     "scope": [
       "internal/write/"
-    ],
-    "steps": [
-      "Test deletes array removes documents by ID",
-      "Verify deleting non-existent ID succeeds silently"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "write-delete-by-filter",
     "category": "functional",
     "description": "Implement delete_by_filter with two-phase execution",
-    "depends_on": [
-      "filter-evaluation",
-      "write-api-basic"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Test delete_by_filter removes documents matching filter",
       "Verify delete_by_filter runs BEFORE all other operations",
@@ -347,19 +340,19 @@
       "Test allow_partial=true succeeds and sets rows_remaining=true",
       "Verify two-phase with re-evaluation (Read Committed semantics)"
     ],
-    "completed": true
-  },
-  {
-    "id": "write-patch-by-filter",
-    "category": "functional",
-    "description": "Implement patch_by_filter with two-phase execution",
+    "completed": true,
     "depends_on": [
       "filter-evaluation",
       "write-api-basic"
     ],
     "scope": [
       "internal/write/"
-    ],
+    ]
+  },
+  {
+    "id": "write-patch-by-filter",
+    "category": "functional",
+    "description": "Implement patch_by_filter with two-phase execution",
     "steps": [
       "Test patch_by_filter updates documents matching filter",
       "Verify patch_by_filter runs AFTER delete_by_filter, BEFORE other ops",
@@ -369,57 +362,57 @@
       "Verify two-phase with re-evaluation (Read Committed semantics)",
       "Test vector attribute cannot be patched via filter"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "filter-evaluation",
+      "write-api-basic"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-copy-from-namespace",
     "category": "functional",
     "description": "Implement copy_from_namespace for server-side bulk copy",
-    "depends_on": [
-      "write-api-basic",
-      "query-api-basic"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Test copy_from_namespace bulk upserts from source namespace",
       "Verify runs AFTER patch_by_filter, BEFORE explicit upserts",
       "Test can be combined with other write operations",
       "Verify source namespace read at consistent snapshot"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "write-api-basic",
+      "query-api-basic"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-schema-updates",
     "category": "functional",
     "description": "Implement schema object in write requests for explicit schema changes",
-    "depends_on": [
-      "write-api-basic",
-      "schema-type-system"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Test schema can be specified in write request",
       "Verify schema changes are applied atomically with write",
       "Test changing attribute type is rejected with 400",
       "Verify filterable and full_text_search can be updated"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "write-api-basic",
+      "schema-type-system"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-conditional-upsert",
     "category": "functional",
     "description": "Implement conditional upsert with upsert_condition",
-    "depends_on": [
-      "write-api-basic",
-      "filter-evaluation"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Test upsert_condition evaluates against current doc value",
       "Verify doc exists + condition met = apply upsert",
@@ -428,48 +421,61 @@
       "Test $ref_new references inside conditions",
       "Verify conditions are atomic with writing"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "write-api-basic",
+      "filter-evaluation"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-conditional-patch",
     "category": "functional",
     "description": "Implement conditional patch with patch_condition",
-    "depends_on": [
-      "write-api-basic",
-      "filter-evaluation"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Test patch_condition evaluates against current doc value",
       "Verify doc missing = skip (no doc created)",
       "Test $ref_new references inside conditions"
     ],
-    "completed": true
-  },
-  {
-    "id": "write-conditional-delete",
-    "category": "functional",
-    "description": "Implement conditional delete with delete_condition",
+    "completed": true,
     "depends_on": [
       "write-api-basic",
       "filter-evaluation"
     ],
     "scope": [
       "internal/write/"
-    ],
+    ]
+  },
+  {
+    "id": "write-conditional-delete",
+    "category": "functional",
+    "description": "Implement conditional delete with delete_condition",
     "steps": [
       "Test delete_condition evaluates against current doc value",
       "Verify doc missing = skip",
       "Test $ref_new attributes are supplied as null for delete_condition"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "write-api-basic",
+      "filter-evaluation"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-request-ordering",
     "category": "functional",
     "description": "Implement canonical write operation ordering within single request",
+    "steps": [
+      "Verify order: delete_by_filter -> patch_by_filter -> copy_from_namespace -> upserts -> patches -> deletes",
+      "Test delete_by_filter can be 'resurrected' by later upsert in same request",
+      "Verify all operations are atomic (no partial visibility)"
+    ],
+    "completed": true,
     "depends_on": [
       "write-delete-by-filter",
       "write-patch-by-filter",
@@ -480,94 +486,81 @@
     ],
     "scope": [
       "internal/write/"
-    ],
-    "steps": [
-      "Verify order: delete_by_filter -> patch_by_filter -> copy_from_namespace -> upserts -> patches -> deletes",
-      "Test delete_by_filter can be 'resurrected' by later upsert in same request",
-      "Verify all operations are atomic (no partial visibility)"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "write-batching",
     "category": "functional",
     "description": "Implement write batching at 1 WAL entry per second per namespace",
-    "depends_on": [
-      "write-api-basic"
-    ],
-    "scope": [
-      "internal/write/"
-    ],
     "steps": [
       "Verify at most 1 WAL entry committed per second per namespace",
       "Test concurrent writes batch into same WAL entry",
       "Verify batch window or size threshold triggers commit",
       "Test commit latency up to 1 second for window alignment"
     ],
-    "completed": true
-  },
-  {
-    "id": "write-idempotency",
-    "category": "functional",
-    "description": "Implement request idempotency with request_id",
+    "completed": true,
     "depends_on": [
       "write-api-basic"
     ],
     "scope": [
       "internal/write/"
-    ],
+    ]
+  },
+  {
+    "id": "write-idempotency",
+    "category": "functional",
+    "description": "Implement request idempotency with request_id",
     "steps": [
       "Test request_id is assigned or provided for each write",
       "Verify duplicate request_id returns original response",
       "Test de-duplication works within bounded time window"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "write-api-basic"
+    ],
+    "scope": [
+      "internal/write/"
+    ]
   },
   {
     "id": "write-backpressure",
     "category": "functional",
     "description": "Implement write backpressure at 2GB unindexed threshold",
+    "steps": [
+      "Test writes return 429 when unindexed data > 2GB",
+      "Verify disable_backpressure=true allows writes above threshold",
+      "Test bytes_unindexed_est is tracked in state"
+    ],
+    "completed": true,
     "depends_on": [
       "write-api-basic",
       "namespace-state-management"
     ],
     "scope": [
       "internal/write/"
-    ],
-    "steps": [
-      "Test writes return 429 when unindexed data > 2GB",
-      "Verify disable_backpressure=true allows writes above threshold",
-      "Test bytes_unindexed_est is tracked in state"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "write-max-batch-size",
     "category": "functional",
     "description": "Enforce 256MB max upsert batch request size",
+    "steps": [
+      "Test requests under 256MB are accepted",
+      "Verify requests over 256MB return 413"
+    ],
+    "completed": true,
     "depends_on": [
       "write-api-basic"
     ],
     "scope": [
       "internal/write/"
-    ],
-    "steps": [
-      "Test requests under 256MB are accepted",
-      "Verify requests over 256MB return 413"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-commit-protocol",
     "category": "functional",
     "description": "Implement WAL commit protocol with object storage durability",
-    "depends_on": [
-      "wal-entry-format",
-      "namespace-state-management"
-    ],
-    "scope": [
-      "internal/wal/"
-    ],
     "steps": [
       "Verify WAL entry PUT uses If-None-Match: * for idempotency",
       "Test state.json update uses If-Match for CAS",
@@ -575,38 +568,37 @@
       "Test CAS retry loop on ETag mismatch",
       "Verify WAL key not re-uploaded on state retry"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "wal-entry-format",
+      "namespace-state-management"
+    ],
+    "scope": [
+      "internal/wal/"
+    ]
   },
   {
     "id": "tail-materialization",
     "category": "functional",
     "description": "Implement tail materialization for unindexed WAL overlay",
-    "depends_on": [
-      "wal-commit-protocol"
-    ],
-    "scope": [
-      "internal/tail/"
-    ],
     "steps": [
       "Test query node reads WAL tail from object storage",
       "Verify in-memory (RAM) tier for recent sub-batches",
       "Test NVMe tier for spilled tail blocks",
       "Verify tail supports vector scan and filter evaluation"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "wal-commit-protocol"
+    ],
+    "scope": [
+      "internal/tail/"
+    ]
   },
   {
     "id": "query-api-basic",
     "category": "api",
     "description": "Implement basic query endpoint POST /v2/namespaces/:namespace/query",
-    "depends_on": [
-      "api-scaffolding",
-      "tail-materialization"
-    ],
-    "scope": [
-      "pkg/api/query.go",
-      "internal/query/"
-    ],
     "steps": [
       "Test query endpoint accepts POST with JSON body",
       "Verify rank_by field is required (unless aggregate_by)",
@@ -615,20 +607,20 @@
       "Verify limit/top_k controls result count (max 10,000)",
       "Test response includes rows array with id and $dist"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "api-scaffolding",
+      "tail-materialization"
+    ],
+    "scope": [
+      "pkg/api/query.go",
+      "internal/query/"
+    ]
   },
   {
     "id": "query-vector-ann",
     "category": "functional",
     "description": "Implement vector ANN search with rank_by [\"vector\", \"ANN\", <vector>]",
-    "depends_on": [
-      "query-api-basic",
-      "vector-config"
-    ],
-    "scope": [
-      "internal/query/",
-      "internal/vector/"
-    ],
     "steps": [
       "Test exact exhaustive vector search works (before ANN index)",
       "Verify $dist contains distance from query vector",
@@ -637,143 +629,145 @@
       "Verify cosine_distance metric works correctly",
       "Verify euclidean_squared metric works correctly"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "query-api-basic",
+      "vector-config"
+    ],
+    "scope": [
+      "internal/query/",
+      "internal/vector/"
+    ]
   },
   {
     "id": "query-order-by-attribute",
     "category": "functional",
     "description": "Implement order-by attribute queries with rank_by [\"attr\", \"asc|desc\"]",
-    "depends_on": [
-      "query-api-basic"
-    ],
-    "scope": [
-      "internal/query/"
-    ],
     "steps": [
       "Test rank_by [\"id\", \"asc\"] orders by id ascending",
       "Test rank_by [\"timestamp\", \"desc\"] orders by timestamp descending",
       "Verify $dist is omitted for order-by queries",
       "Test 'per' diversification option"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "query-api-basic"
+    ],
+    "scope": [
+      "internal/query/"
+    ]
   },
   {
     "id": "query-consistency-strong",
     "category": "functional",
     "description": "Implement strong consistency mode (default)",
-    "depends_on": [
-      "query-api-basic",
-      "tail-materialization"
-    ],
-    "scope": [
-      "internal/query/"
-    ],
     "steps": [
       "Verify strong is default consistency mode",
       "Test strong queries include ALL committed WAL entries at query start",
       "Verify cache is refreshed for strong queries",
       "Test strong query fails if snapshot cannot be refreshed"
     ],
-    "completed": true
-  },
-  {
-    "id": "query-consistency-eventual",
-    "category": "functional",
-    "description": "Implement eventual consistency mode",
+    "completed": true,
     "depends_on": [
       "query-api-basic",
       "tail-materialization"
     ],
     "scope": [
       "internal/query/"
-    ],
+    ]
+  },
+  {
+    "id": "query-consistency-eventual",
+    "category": "functional",
+    "description": "Implement eventual consistency mode",
     "steps": [
       "Test eventual consistency can be requested",
       "Verify eventual may be stale up to 60 seconds",
       "Test eventual searches only up to 128 MiB of tail",
       "Verify 128 MiB window uses newest WAL entries first"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "query-api-basic",
+      "tail-materialization"
+    ],
+    "scope": [
+      "internal/query/"
+    ]
   },
   {
     "id": "query-disable-backpressure-error",
     "category": "functional",
     "description": "Implement strong query error when disable_backpressure and unindexed > 2GB",
+    "steps": [
+      "Test strong query returns 503 when disable_backpressure=true and unindexed > 2GB",
+      "Verify eventual queries continue to work in same scenario"
+    ],
+    "completed": true,
     "depends_on": [
       "query-consistency-strong",
       "write-backpressure"
     ],
     "scope": [
       "internal/query/"
-    ],
-    "steps": [
-      "Test strong query returns 503 when disable_backpressure=true and unindexed > 2GB",
-      "Verify eventual queries continue to work in same scenario"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "filter-evaluation",
     "category": "functional",
     "description": "Implement filter AST parsing and evaluation",
-    "depends_on": [
-      "schema-type-system"
-    ],
-    "scope": [
-      "internal/filter/"
-    ],
     "steps": [
       "Test And operator [\"And\", [f1, f2, ...]]",
       "Test Or operator [\"Or\", [f1, f2, ...]]",
       "Test Not operator [\"Not\", f]",
       "Verify boolean operators can be nested"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "schema-type-system"
+    ],
+    "scope": [
+      "internal/filter/"
+    ]
   },
   {
     "id": "filter-eq-noteq",
     "category": "functional",
     "description": "Implement Eq and NotEq filter operators",
-    "depends_on": [
-      "filter-evaluation"
-    ],
-    "scope": [
-      "internal/filter/"
-    ],
     "steps": [
       "Test [\"attr\", \"Eq\", value] matches exact value",
       "Test [\"attr\", \"Eq\", null] matches missing attribute",
       "Test [\"attr\", \"NotEq\", value] excludes exact value",
       "Test [\"attr\", \"NotEq\", null] matches attribute present"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "filter-evaluation"
+    ],
+    "scope": [
+      "internal/filter/"
+    ]
   },
   {
     "id": "filter-in-notin",
     "category": "functional",
     "description": "Implement In and NotIn filter operators",
+    "steps": [
+      "Test In operator matches any value in set",
+      "Test NotIn operator excludes all values in set"
+    ],
+    "completed": true,
     "depends_on": [
       "filter-evaluation"
     ],
     "scope": [
       "internal/filter/"
-    ],
-    "steps": [
-      "Test In operator matches any value in set",
-      "Test NotIn operator excludes all values in set"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "filter-comparisons",
     "category": "functional",
     "description": "Implement Lt, Lte, Gt, Gte filter operators",
-    "depends_on": [
-      "filter-evaluation"
-    ],
-    "scope": [
-      "internal/filter/"
-    ],
     "steps": [
       "Test Lt operator for numeric comparison",
       "Test Lte operator for numeric comparison",
@@ -782,18 +776,18 @@
       "Verify strings use lexicographic comparison",
       "Verify datetimes compare as numeric milliseconds"
     ],
-    "completed": true
-  },
-  {
-    "id": "filter-array-ops",
-    "category": "functional",
-    "description": "Implement array filter operators",
+    "completed": true,
     "depends_on": [
       "filter-evaluation"
     ],
     "scope": [
       "internal/filter/"
-    ],
+    ]
+  },
+  {
+    "id": "filter-array-ops",
+    "category": "functional",
+    "description": "Implement array filter operators",
     "steps": [
       "Test Contains operator",
       "Test NotContains operator",
@@ -804,18 +798,18 @@
       "Test AnyGt operator",
       "Test AnyGte operator"
     ],
-    "completed": true
-  },
-  {
-    "id": "filter-glob",
-    "category": "functional",
-    "description": "Implement Glob, NotGlob, IGlob, NotIGlob filter operators",
+    "completed": true,
     "depends_on": [
       "filter-evaluation"
     ],
     "scope": [
       "internal/filter/"
-    ],
+    ]
+  },
+  {
+    "id": "filter-glob",
+    "category": "functional",
+    "description": "Implement Glob, NotGlob, IGlob, NotIGlob filter operators",
     "steps": [
       "Test Glob with Unix-style glob patterns",
       "Test NotGlob excludes matching patterns",
@@ -823,148 +817,160 @@
       "Test NotIGlob for case-insensitive exclusion",
       "Verify prefix globs compile to range queries"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "filter-evaluation"
+    ],
+    "scope": [
+      "internal/filter/"
+    ]
   },
   {
     "id": "filter-regex",
     "category": "functional",
     "description": "Implement Regex filter operator (requires regex: true in schema)",
+    "steps": [
+      "Test Regex matches string patterns",
+      "Verify regex: true must be set in schema",
+      "Test regex without schema option returns error"
+    ],
+    "completed": true,
     "depends_on": [
       "filter-evaluation",
       "schema-field-options"
     ],
     "scope": [
       "internal/filter/"
-    ],
-    "steps": [
-      "Test Regex matches string patterns",
-      "Verify regex: true must be set in schema",
-      "Test regex without schema option returns error"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "filter-fulltext-tokens",
     "category": "functional",
     "description": "Implement ContainsTokenSequence and ContainsAllTokens filters",
-    "depends_on": [
-      "filter-evaluation"
-    ],
-    "scope": [
-      "internal/filter/"
-    ],
     "steps": [
       "Test ContainsTokenSequence for adjacent ordered tokens",
       "Test ContainsAllTokens regardless of adjacency",
       "Test last_as_prefix: true option for prefix matching"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "filter-evaluation"
+    ],
+    "scope": [
+      "internal/filter/"
+    ]
   },
   {
     "id": "query-with-filters",
     "category": "functional",
     "description": "Integrate filters into query execution",
+    "steps": [
+      "Test query with filters field restricts results",
+      "Verify filters applied before ranking",
+      "Test combining vector search with filters"
+    ],
+    "completed": true,
     "depends_on": [
       "query-api-basic",
       "filter-evaluation"
     ],
     "scope": [
       "internal/query/"
-    ],
-    "steps": [
-      "Test query with filters field restricts results",
-      "Verify filters applied before ranking",
-      "Test combining vector search with filters"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "query-aggregations",
     "category": "functional",
     "description": "Implement aggregations in queries",
+    "steps": [
+      "Test aggregate_by returns aggregations object",
+      "Verify aggregations compute correctly over result set"
+    ],
+    "completed": true,
     "depends_on": [
       "query-api-basic"
     ],
     "scope": [
       "internal/query/"
-    ],
-    "steps": [
-      "Test aggregate_by returns aggregations object",
-      "Verify aggregations compute correctly over result set"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "query-group-by",
     "category": "functional",
     "description": "Implement grouped aggregations with group_by",
+    "steps": [
+      "Test group_by returns aggregation_groups object",
+      "Verify groups are computed correctly"
+    ],
+    "completed": true,
     "depends_on": [
       "query-aggregations"
     ],
     "scope": [
       "internal/query/"
-    ],
-    "steps": [
-      "Test group_by returns aggregation_groups object",
-      "Verify groups are computed correctly"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "query-multi-query",
     "category": "functional",
     "description": "Implement multi-query with snapshot isolation",
-    "depends_on": [
-      "query-api-basic"
-    ],
-    "scope": [
-      "internal/query/"
-    ],
     "steps": [
       "Test queries array executes multiple subqueries",
       "Verify all subqueries use same consistent snapshot",
       "Test response includes results array in same order",
       "Verify max 16 subqueries per request"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "query-api-basic"
+    ],
+    "scope": [
+      "internal/query/"
+    ]
   },
   {
     "id": "query-response-format",
     "category": "functional",
     "description": "Implement complete query response format",
-    "depends_on": [
-      "query-api-basic"
-    ],
-    "scope": [
-      "internal/query/"
-    ],
     "steps": [
       "Verify rows array format with id, $dist, attributes",
       "Test billing object is present (can be zeros)",
       "Test performance object with cache metrics and timing"
     ],
-    "completed": true
-  },
-  {
-    "id": "query-concurrency-limit",
-    "category": "functional",
-    "description": "Enforce query concurrency limit per namespace (default 16)",
+    "completed": true,
     "depends_on": [
       "query-api-basic"
     ],
     "scope": [
       "internal/query/"
-    ],
+    ]
+  },
+  {
+    "id": "query-concurrency-limit",
+    "category": "functional",
+    "description": "Enforce query concurrency limit per namespace (default 16)",
     "steps": [
       "Test queries queue when concurrency exceeds 16",
       "Verify queued queries eventually execute"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "query-api-basic"
+    ],
+    "scope": [
+      "internal/query/"
+    ]
   },
   {
     "id": "indexer-process",
     "category": "functional",
     "description": "Implement indexer process that watches WAL and builds indexes",
+    "steps": [
+      "Test indexer watches namespace state for WAL changes",
+      "Verify indexer processes WAL range (indexed_wal_seq+1 .. head_seq]",
+      "Test indexer runs asynchronously after WAL commit"
+    ],
+    "completed": true,
     "depends_on": [
       "wal-commit-protocol",
       "namespace-state-management"
@@ -972,124 +978,125 @@
     "scope": [
       "cmd/vex-indexer/",
       "internal/indexer/"
-    ],
-    "steps": [
-      "Test indexer watches namespace state for WAL changes",
-      "Verify indexer processes WAL range (indexed_wal_seq+1 .. head_seq]",
-      "Test indexer runs asynchronously after WAL commit"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "index-manifest-format",
     "category": "functional",
     "description": "Implement index manifest format",
-    "depends_on": [
-      "indexer-process"
-    ],
-    "scope": [
-      "internal/index/"
-    ],
     "steps": [
       "Verify manifest includes format_version, namespace, generated_at",
       "Test indexed_wal_seq tracks what WAL range is indexed",
       "Verify segments array lists all segment details",
       "Test stats includes approx_row_count and approx_logical_bytes"
     ],
-    "completed": true
-  },
-  {
-    "id": "index-segment-format",
-    "category": "functional",
-    "description": "Implement immutable index segment format",
+    "completed": true,
     "depends_on": [
       "indexer-process"
     ],
     "scope": [
       "internal/index/"
-    ],
+    ]
+  },
+  {
+    "id": "index-segment-format",
+    "category": "functional",
+    "description": "Implement immutable index segment format",
     "steps": [
       "Test segments are immutable once written",
       "Verify each segment covers WAL sequence interval (start_wal_seq, end_wal_seq)",
       "Test segment includes docs_key, vectors_key, filter_keys"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "indexer-process"
+    ],
+    "scope": [
+      "internal/index/"
+    ]
   },
   {
     "id": "index-lsm-model",
     "category": "functional",
     "description": "Implement LSM-like incremental indexing model",
-    "depends_on": [
-      "index-segment-format"
-    ],
-    "scope": [
-      "internal/index/"
-    ],
     "steps": [
       "Test L0 segments built frequently from WAL batches",
       "Verify periodic compaction merges segments into L1/L2",
       "Test query reads across all segments + tail"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "index-segment-format"
+    ],
+    "scope": [
+      "internal/index/"
+    ]
   },
   {
     "id": "index-publish-protocol",
     "category": "functional",
     "description": "Implement atomic index publishing protocol",
-    "depends_on": [
-      "indexer-process",
-      "index-manifest-format"
-    ],
-    "scope": [
-      "internal/index/"
-    ],
     "steps": [
       "Verify all segment objects uploaded before manifest",
       "Test manifest never references missing objects",
       "Verify state.json CAS update after manifest upload",
       "Test indexed_wal_seq advances only on successful publish"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "indexer-process",
+      "index-manifest-format"
+    ],
+    "scope": [
+      "internal/index/"
+    ]
   },
   {
     "id": "index-recovery",
     "category": "functional",
     "description": "Implement partial index build recovery",
+    "steps": [
+      "Test indexer crash after segment upload but before manifest is safe",
+      "Verify orphan objects are unreachable and can be GCed"
+    ],
+    "completed": true,
     "depends_on": [
       "index-publish-protocol"
     ],
     "scope": [
       "internal/index/"
-    ],
-    "steps": [
-      "Test indexer crash after segment upload but before manifest is safe",
-      "Verify orphan objects are unreachable and can be GCed"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "vector-ivf-index",
     "category": "functional",
     "description": "Implement IVF (centroid clusters) ANN index",
-    "depends_on": [
-      "indexer-process",
-      "query-vector-ann"
-    ],
-    "scope": [
-      "internal/vector/"
-    ],
     "steps": [
       "Test vectors.centroids.bin is created (small, cacheable)",
       "Verify vectors.clusters.pack contains packed cluster data",
       "Test vectors.cluster_offsets.bin maps cluster to offset/length",
       "Verify cold query flow: load centroids, find nearest clusters, fetch cluster data"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "indexer-process",
+      "query-vector-ann"
+    ],
+    "scope": [
+      "internal/vector/"
+    ]
   },
   {
     "id": "vector-query-ann-path",
     "category": "functional",
     "description": "Implement ANN query path with index",
+    "steps": [
+      "Test ANN search uses index when available",
+      "Verify nprobe centroids are searched",
+      "Test multi-range GET for cluster data (object store optimization)",
+      "Verify exact distances computed for final top_k"
+    ],
+    "completed": true,
     "depends_on": [
       "vector-ivf-index",
       "query-vector-ann"
@@ -1097,110 +1104,109 @@
     "scope": [
       "internal/query/",
       "internal/vector/"
-    ],
-    "steps": [
-      "Test ANN search uses index when available",
-      "Verify nprobe centroids are searched",
-      "Test multi-range GET for cluster data (object store optimization)",
-      "Verify exact distances computed for final top_k"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "vector-recall-aware-filtering",
     "category": "functional",
     "description": "Implement recall-aware filtering for ANN + filters",
-    "depends_on": [
-      "vector-query-ann-path",
-      "query-with-filters"
-    ],
-    "scope": [
-      "internal/query/"
-    ],
     "steps": [
       "Test filter selectivity estimation",
       "Verify exact search fallback when filter is very selective",
       "Test candidate oversampling for ANN with filters",
       "Verify adaptive probe/candidate budget increase"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "vector-query-ann-path",
+      "query-with-filters"
+    ],
+    "scope": [
+      "internal/query/"
+    ]
   },
   {
     "id": "filter-index-bitmaps",
     "category": "functional",
     "description": "Implement roaring bitmap indexes for filterable attributes",
+    "steps": [
+      "Test value -> bitmap mapping for scalar attributes",
+      "Verify range queries with numeric/datetime fields",
+      "Test inverted mapping for array elements"
+    ],
+    "completed": true,
     "depends_on": [
       "indexer-process",
       "filter-evaluation"
     ],
     "scope": [
       "internal/filter/"
-    ],
-    "steps": [
-      "Test value -> bitmap mapping for scalar attributes",
-      "Verify range queries with numeric/datetime fields",
-      "Test inverted mapping for array elements"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "query-deduplication",
     "category": "functional",
     "description": "Implement deduplication (last-write-wins) across segments",
+    "steps": [
+      "Verify highest WAL seq version is authoritative",
+      "Test newest segments/tail processed first",
+      "Verify tombstones (deletes) exclude docs from results"
+    ],
+    "completed": true,
     "depends_on": [
       "query-api-basic",
       "index-lsm-model"
     ],
     "scope": [
       "internal/query/"
-    ],
-    "steps": [
-      "Verify highest WAL seq version is authoritative",
-      "Test newest segments/tail processed first",
-      "Verify tombstones (deletes) exclude docs from results"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "bm25-schema-config",
     "category": "functional",
     "description": "Implement full-text search schema configuration",
-    "depends_on": [
-      "schema-field-options"
-    ],
-    "scope": [
-      "internal/fts/"
-    ],
     "steps": [
       "Test full_text_search: true enables FTS",
       "Verify full_text_search object options: tokenizer, case_sensitive, language",
       "Test stemming, remove_stopwords, ascii_folding options",
       "Verify BM25 params k1, b configuration"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "schema-field-options"
+    ],
+    "scope": [
+      "internal/fts/"
+    ]
   },
   {
     "id": "bm25-indexing",
     "category": "functional",
     "description": "Implement BM25 index building",
+    "steps": [
+      "Test tokenization with word_v3 default tokenizer",
+      "Verify BM25 index segments are created",
+      "Test FTS index referenced in segment fts_keys"
+    ],
+    "completed": true,
     "depends_on": [
       "indexer-process",
       "bm25-schema-config"
     ],
     "scope": [
       "internal/fts/"
-    ],
-    "steps": [
-      "Test tokenization with word_v3 default tokenizer",
-      "Verify BM25 index segments are created",
-      "Test FTS index referenced in segment fts_keys"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "bm25-query",
     "category": "functional",
     "description": "Implement BM25 ranking queries",
+    "steps": [
+      "Test rank_by [\"field\", \"BM25\", \"query\"] syntax",
+      "Verify $dist contains BM25 score",
+      "Test documents with score zero excluded"
+    ],
+    "completed": true,
     "depends_on": [
       "bm25-indexing",
       "query-api-basic"
@@ -1208,197 +1214,185 @@
     "scope": [
       "internal/query/",
       "internal/fts/"
-    ],
-    "steps": [
-      "Test rank_by [\"field\", \"BM25\", \"query\"] syntax",
-      "Verify $dist contains BM25 score",
-      "Test documents with score zero excluded"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "bm25-operators",
     "category": "functional",
     "description": "Implement BM25 compositional operators",
-    "depends_on": [
-      "bm25-query"
-    ],
-    "scope": [
-      "internal/query/"
-    ],
     "steps": [
       "Test Sum operator combines clause scores",
       "Test Max operator takes maximum score",
       "Test Product operator applies weight/boost",
       "Verify filters in rank_by yield score 1 or 0"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "bm25-query"
+    ],
+    "scope": [
+      "internal/query/"
+    ]
   },
   {
     "id": "bm25-prefix-query",
     "category": "functional",
     "description": "Implement BM25 prefix matching with last_as_prefix",
+    "steps": [
+      "Test last_as_prefix: true for typeahead",
+      "Verify prefix matches score 1.0"
+    ],
+    "completed": true,
     "depends_on": [
       "bm25-query"
     ],
     "scope": [
       "internal/fts/"
-    ],
-    "steps": [
-      "Test last_as_prefix: true for typeahead",
-      "Verify prefix matches score 1.0"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "schema-index-rebuild",
     "category": "functional",
     "description": "Implement schema index rebuild with HTTP 202 gating",
-    "depends_on": [
-      "indexer-process",
-      "schema-field-options"
-    ],
-    "scope": [
-      "internal/index/"
-    ],
     "steps": [
       "Test enabling filterable triggers index rebuild",
       "Verify query returns 202 until new index ready",
       "Test FTS parameter changes rebuild in background",
       "Verify queries use old settings until new ready"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "indexer-process",
+      "schema-field-options"
+    ],
+    "scope": [
+      "internal/index/"
+    ]
   },
   {
     "id": "nvme-cache",
     "category": "functional",
     "description": "Implement NVMe SSD cache for index objects",
-    "depends_on": [
-      "object-store-abstraction"
-    ],
-    "scope": [
-      "internal/cache/"
-    ],
     "steps": [
       "Test content-addressable cache keyed by (object_key, etag)",
       "Verify configurable size budget (default 95% of disk)",
       "Test LRU eviction by bytes with access-time tracking",
       "Verify pinned set for warming namespaces not evictable"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "object-store-abstraction"
+    ],
+    "scope": [
+      "internal/cache/"
+    ]
   },
   {
     "id": "ram-cache",
     "category": "functional",
     "description": "Implement RAM cache for hot index structures",
-    "depends_on": [
-      "nvme-cache"
-    ],
-    "scope": [
-      "internal/cache/"
-    ],
     "steps": [
       "Test ANN centroids cached in RAM",
       "Verify posting dictionaries and bitmap shards cached",
       "Test shard-aware LRU eviction",
       "Verify per-namespace budget caps for multi-tenancy"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "nvme-cache"
+    ],
+    "scope": [
+      "internal/cache/"
+    ]
   },
   {
     "id": "cache-correctness-invariant",
     "category": "functional",
     "description": "Verify cache eviction never affects correctness",
+    "steps": [
+      "Test missing cached object is fetched from object storage",
+      "Verify cold path always works"
+    ],
+    "completed": true,
     "depends_on": [
       "nvme-cache",
       "ram-cache"
     ],
     "scope": [
       "internal/cache/"
-    ],
-    "steps": [
-      "Test missing cached object is fetched from object storage",
-      "Verify cold path always works"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "routing-rendezvous-hashing",
     "category": "functional",
     "description": "Implement rendezvous hashing for cache-locality routing",
-    "depends_on": [
-      "api-scaffolding"
-    ],
-    "scope": [
-      "internal/routing/"
-    ],
     "steps": [
       "Test home_node(namespace) computed consistently",
       "Verify requests route to home node when possible",
       "Test any node can serve any namespace (fallback)"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "api-scaffolding"
+    ],
+    "scope": [
+      "internal/routing/"
+    ]
   },
   {
     "id": "routing-proxy",
     "category": "functional",
     "description": "Implement request proxy to home node with fallback",
-    "depends_on": [
-      "routing-rendezvous-hashing"
-    ],
-    "scope": [
-      "internal/routing/"
-    ],
     "steps": [
       "Test requests proxy to home node",
       "Verify bounded timeout on proxy",
       "Test fallback to local serve if proxy fails",
       "Verify writes also proxy to home node"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "routing-rendezvous-hashing"
+    ],
+    "scope": [
+      "internal/routing/"
+    ]
   },
   {
     "id": "membership-static",
     "category": "functional",
     "description": "Implement static cluster membership from config",
+    "steps": [
+      "Test static node list in config",
+      "Verify membership used for routing calculations"
+    ],
+    "completed": true,
     "depends_on": [
       "routing-rendezvous-hashing"
     ],
     "scope": [
       "internal/membership/"
-    ],
-    "steps": [
-      "Test static node list in config",
-      "Verify membership used for routing calculations"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "membership-gossip",
     "category": "functional",
     "description": "Implement optional gossip membership for dynamic clusters",
+    "steps": [
+      "Test gossip-based membership discovery (optional)",
+      "Verify dynamic membership updates routing"
+    ],
+    "completed": true,
     "depends_on": [
       "membership-static"
     ],
     "scope": [
       "internal/membership/"
-    ],
-    "steps": [
-      "Test gossip-based membership discovery (optional)",
-      "Verify dynamic membership updates routing"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "metadata-endpoint",
     "category": "api",
     "description": "Implement GET /v1/namespaces/:namespace/metadata endpoint",
-    "depends_on": [
-      "namespace-state-management"
-    ],
-    "scope": [
-      "pkg/api/metadata.go"
-    ],
     "steps": [
       "Test endpoint returns namespace metadata",
       "Verify schema field is included",
@@ -1408,38 +1402,37 @@
       "Verify index.status (updating or up-to-date)",
       "Test unindexed_bytes shown when updating"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "namespace-state-management"
+    ],
+    "scope": [
+      "pkg/api/metadata.go"
+    ]
   },
   {
     "id": "warm-cache-endpoint",
     "category": "api",
     "description": "Implement GET /v1/namespaces/:namespace/hint_cache_warm endpoint",
-    "depends_on": [
-      "routing-proxy",
-      "nvme-cache"
-    ],
-    "scope": [
-      "pkg/api/warm.go"
-    ],
     "steps": [
       "Test endpoint returns 200 immediately",
       "Verify request routes to home node",
       "Test cache warm task is enqueued",
       "Verify prefetch: centroids, cluster offsets, filter bitmaps, doc column headers"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "routing-proxy",
+      "nvme-cache"
+    ],
+    "scope": [
+      "pkg/api/warm.go"
+    ]
   },
   {
     "id": "list-namespaces-endpoint",
     "category": "api",
     "description": "Implement GET /v1/namespaces endpoint with pagination",
-    "depends_on": [
-      "namespace-state-management",
-      "object-store-abstraction"
-    ],
-    "scope": [
-      "pkg/api/namespaces.go"
-    ],
     "steps": [
       "Test endpoint lists namespaces",
       "Verify cursor parameter for pagination",
@@ -1447,18 +1440,19 @@
       "Verify page_size parameter (default 100, max 1000)",
       "Test response includes namespaces array and next_cursor"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "namespace-state-management",
+      "object-store-abstraction"
+    ],
+    "scope": [
+      "pkg/api/namespaces.go"
+    ]
   },
   {
     "id": "delete-namespace-endpoint",
     "category": "api",
     "description": "Implement DELETE /v2/namespaces/:namespace endpoint",
-    "depends_on": [
-      "namespace-state-management"
-    ],
-    "scope": [
-      "pkg/api/delete.go"
-    ],
     "steps": [
       "Test endpoint returns 200 on success",
       "Verify tombstone.json written with deletion timestamp",
@@ -1466,118 +1460,118 @@
       "Verify subsequent reads/writes return 404 'namespace deleted'",
       "Test deletion is irreversible"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "namespace-state-management"
+    ],
+    "scope": [
+      "pkg/api/delete.go"
+    ]
   },
   {
     "id": "delete-namespace-gc",
     "category": "functional",
     "description": "Implement background GC for deleted namespaces",
-    "depends_on": [
-      "delete-namespace-endpoint"
-    ],
-    "scope": [
-      "internal/gc/"
-    ],
     "steps": [
       "Test background GC deletes namespace objects",
       "Verify WAL and index objects cleaned up",
       "Test tombstone preserved for fast rejection"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "delete-namespace-endpoint"
+    ],
+    "scope": [
+      "internal/gc/"
+    ]
   },
   {
     "id": "recall-debug-endpoint",
     "category": "api",
     "description": "Implement POST /v1/namespaces/:namespace/_debug/recall endpoint",
-    "depends_on": [
-      "vector-query-ann-path"
-    ],
-    "scope": [
-      "pkg/api/recall.go"
-    ],
     "steps": [
       "Test endpoint samples num vectors",
       "Verify ANN and exhaustive top_k compared",
       "Test avg_recall, avg_ann_count, avg_exhaustive_count returned"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "vector-query-ann-path"
+    ],
+    "scope": [
+      "pkg/api/recall.go"
+    ]
   },
   {
     "id": "debug-state-endpoint",
     "category": "api",
     "description": "Implement GET /_debug/state/:namespace endpoint",
+    "steps": [
+      "Test endpoint returns namespace state",
+      "Verify gated behind admin auth"
+    ],
+    "completed": true,
     "depends_on": [
       "namespace-state-management"
     ],
     "scope": [
       "pkg/api/debug.go"
-    ],
-    "steps": [
-      "Test endpoint returns namespace state",
-      "Verify gated behind admin auth"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "debug-cache-endpoint",
     "category": "api",
     "description": "Implement GET /_debug/cache/:namespace endpoint",
+    "steps": [
+      "Test endpoint returns cache status for namespace",
+      "Verify gated behind admin auth"
+    ],
+    "completed": true,
     "depends_on": [
       "nvme-cache",
       "ram-cache"
     ],
     "scope": [
       "pkg/api/debug.go"
-    ],
-    "steps": [
-      "Test endpoint returns cache status for namespace",
-      "Verify gated behind admin auth"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "debug-wal-endpoint",
     "category": "api",
     "description": "Implement GET /_debug/wal/:namespace endpoint",
+    "steps": [
+      "Test endpoint returns WAL entries from from_seq",
+      "Verify gated behind admin auth"
+    ],
+    "completed": true,
     "depends_on": [
       "wal-commit-protocol"
     ],
     "scope": [
       "pkg/api/debug.go"
-    ],
-    "steps": [
-      "Test endpoint returns WAL entries from from_seq",
-      "Verify gated behind admin auth"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "export-via-pagination",
     "category": "functional",
     "description": "Implement export via paginated query by id",
-    "depends_on": [
-      "query-order-by-attribute"
-    ],
-    "scope": [
-      "internal/query/"
-    ],
     "steps": [
       "Test query with rank_by [\"id\", \"asc\"] and limit",
       "Verify filter [\"id\", \"Gt\", last_id] for next page",
       "Test continue until fewer than limit results"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "query-order-by-attribute"
+    ],
+    "scope": [
+      "internal/query/"
+    ]
   },
   {
     "id": "http-status-codes",
     "category": "api",
     "description": "Implement all required HTTP status codes",
-    "depends_on": [
-      "api-scaffolding"
-    ],
-    "scope": [
-      "pkg/api/"
-    ],
     "steps": [
       "Test 200 for success",
       "Test 202 for query depending on building index",
@@ -1589,86 +1583,86 @@
       "Test 500 for internal server error",
       "Test 503 for object store failures/strong query with disable_backpressure"
     ],
-    "completed": true
-  },
-  {
-    "id": "error-response-format",
-    "category": "api",
-    "description": "Implement error response format for all endpoints",
+    "completed": true,
     "depends_on": [
       "api-scaffolding"
     ],
     "scope": [
       "pkg/api/"
-    ],
+    ]
+  },
+  {
+    "id": "error-response-format",
+    "category": "api",
+    "description": "Implement error response format for all endpoints",
     "steps": [
       "Verify all errors return {\"status\":\"error\",\"error\":\"...\"}",
       "Test error messages are descriptive"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "api-scaffolding"
+    ],
+    "scope": [
+      "pkg/api/"
+    ]
   },
   {
     "id": "failure-object-store-unavailable",
     "category": "functional",
     "description": "Handle object storage unavailable failures",
-    "depends_on": [
-      "object-store-abstraction"
-    ],
-    "scope": [
-      "internal/"
-    ],
     "steps": [
       "Test writes fail with 503 when object store unavailable",
       "Verify strong queries fail when snapshot cannot be refreshed",
       "Test eventual queries may serve from cache if not too stale"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "object-store-abstraction"
+    ],
+    "scope": [
+      "internal/"
+    ]
   },
   {
     "id": "failure-partial-wal-commit",
     "category": "functional",
     "description": "Handle partial WAL commit (WAL uploaded but state update failed)",
-    "depends_on": [
-      "wal-commit-protocol"
-    ],
-    "scope": [
-      "internal/wal/"
-    ],
     "steps": [
       "Test writer retries state CAS after WAL upload",
       "Verify repair task can detect highest contiguous WAL seq",
       "Test repair task advances state head_seq safely",
       "Verify staleness bounded to target 60s"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "wal-commit-protocol"
+    ],
+    "scope": [
+      "internal/wal/"
+    ]
   },
   {
     "id": "failure-node-churn",
     "category": "functional",
     "description": "Handle node churn and routing changes",
-    "depends_on": [
-      "routing-proxy"
-    ],
-    "scope": [
-      "internal/routing/"
-    ],
     "steps": [
       "Test requests can be served by any node",
       "Verify strong consistency maintained after routing change",
       "Test eventual may be briefly stale until refresh"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "routing-proxy"
+    ],
+    "scope": [
+      "internal/routing/"
+    ]
   },
   {
     "id": "limits-enforcement",
     "category": "functional",
     "description": "Enforce all documented limits",
-    "depends_on": [
-      "api-scaffolding"
-    ],
-    "scope": [
-      "internal/"
-    ],
     "steps": [
       "Test max upsert batch 256MB",
       "Verify max 1 batch/s per namespace",
@@ -1679,36 +1673,36 @@
       "Test max 64 byte IDs",
       "Verify max 128 char attribute names"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "api-scaffolding"
+    ],
+    "scope": [
+      "internal/"
+    ]
   },
   {
     "id": "logging-structured",
     "category": "infrastructure",
     "description": "Implement structured JSON logging",
-    "depends_on": [
-      "api-scaffolding"
-    ],
-    "scope": [
-      "internal/logging/"
-    ],
     "steps": [
       "Test logs are structured JSON",
       "Verify request_id, namespace, endpoint logged",
       "Test cache temperature logged",
       "Verify timings (server_total_ms, query_execution_ms) logged"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "api-scaffolding"
+    ],
+    "scope": [
+      "internal/logging/"
+    ]
   },
   {
     "id": "metrics-prometheus",
     "category": "infrastructure",
     "description": "Implement Prometheus metrics",
-    "depends_on": [
-      "project-setup"
-    ],
-    "scope": [
-      "internal/metrics/"
-    ],
     "steps": [
       "Test per-namespace query concurrency metric",
       "Verify tail bytes / unindexed bytes metric",
@@ -1717,138 +1711,137 @@
       "Test global object store ops and latency",
       "Verify WAL commit latency metric"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "project-setup"
+    ],
+    "scope": [
+      "internal/metrics/"
+    ]
   },
   {
     "id": "format-versioning",
     "category": "infrastructure",
     "description": "Implement format versioning for all on-disk/on-object formats",
+    "steps": [
+      "Verify format_version in WAL entries",
+      "Test format_version in index manifests",
+      "Verify format_version in state.json"
+    ],
+    "completed": true,
     "depends_on": [
       "wal-entry-format",
       "index-manifest-format"
     ],
     "scope": [
       "internal/"
-    ],
-    "steps": [
-      "Verify format_version in WAL entries",
-      "Test format_version in index manifests",
-      "Verify format_version in state.json"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "upgrade-strategy",
     "category": "infrastructure",
     "description": "Implement safe upgrade strategy (N-1 version compatibility)",
-    "depends_on": [
-      "format-versioning"
-    ],
-    "scope": [
-      "internal/"
-    ],
     "steps": [
       "Test query nodes can read N-1 format versions",
       "Verify indexer can be configured to write new or old format",
       "Test GC of old format segments after retention window"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "format-versioning"
+    ],
+    "scope": [
+      "internal/"
+    ]
   },
   {
     "id": "gc-orphan-objects",
     "category": "functional",
     "description": "Implement GC for orphan objects",
-    "depends_on": [
-      "index-publish-protocol"
-    ],
-    "scope": [
-      "internal/gc/"
-    ],
     "steps": [
       "Test orphan objects (not referenced by manifest) are GCed",
       "Verify minimum retention time (24h) before deletion",
       "Test gc/orphan_scan_marker.json tracking"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "index-publish-protocol"
+    ],
+    "scope": [
+      "internal/gc/"
+    ]
   },
   {
     "id": "test-unit-schema",
     "category": "testing",
     "description": "Implement unit tests for schema inference and type checking",
-    "depends_on": [
-      "schema-type-system"
-    ],
-    "scope": [
-      "internal/schema/"
-    ],
     "steps": [
       "Test schema inference for all supported types",
       "Verify type checking rejects invalid types",
       "Test deterministic schema inference"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "schema-type-system"
+    ],
+    "scope": [
+      "internal/schema/"
+    ]
   },
   {
     "id": "test-unit-filter",
     "category": "testing",
     "description": "Implement unit tests for filter AST evaluation",
-    "depends_on": [
-      "filter-evaluation"
-    ],
-    "scope": [
-      "internal/filter/"
-    ],
     "steps": [
       "Test all filter operators",
       "Verify null semantics (Eq null matches missing)",
       "Test nested boolean operators"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "filter-evaluation"
+    ],
+    "scope": [
+      "internal/filter/"
+    ]
   },
   {
     "id": "test-unit-rankby",
     "category": "testing",
     "description": "Implement unit tests for rank_by expression evaluation",
-    "depends_on": [
-      "bm25-operators"
-    ],
-    "scope": [
-      "internal/query/"
-    ],
     "steps": [
       "Test Sum/Max/Product operators",
       "Verify filter boost yields 1 or 0",
       "Test BM25 score computation"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "bm25-operators"
+    ],
+    "scope": [
+      "internal/query/"
+    ]
   },
   {
     "id": "test-unit-vector-encoding",
     "category": "testing",
     "description": "Implement unit tests for vector encoding roundtrip",
+    "steps": [
+      "Test base64 float32 little-endian roundtrip",
+      "Verify float array encoding/decoding"
+    ],
+    "completed": true,
     "depends_on": [
       "vector-config"
     ],
     "scope": [
       "internal/vector/"
-    ],
-    "steps": [
-      "Test base64 float32 little-endian roundtrip",
-      "Verify float array encoding/decoding"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "test-golden-api",
     "category": "testing",
     "description": "Implement golden API tests with fixed dataset and queries",
-    "depends_on": [
-      "query-api-basic",
-      "write-api-basic"
-    ],
-    "scope": [
-      "tests/golden/"
-    ],
     "steps": [
       "Create fixed dataset for golden tests",
       "Add golden files with expected JSON responses",
@@ -1856,19 +1849,19 @@
       "Test limit and aggregation responses",
       "Test multi-query response layout"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "query-api-basic",
+      "write-api-basic"
+    ],
+    "scope": [
+      "tests/golden/"
+    ]
   },
   {
     "id": "test-simulation-deterministic",
     "category": "testing",
     "description": "Implement deterministic simulation tests",
-    "depends_on": [
-      "object-store-abstraction",
-      "wal-commit-protocol"
-    ],
-    "scope": [
-      "tests/simulation/"
-    ],
     "steps": [
       "Create in-memory deterministic object store",
       "Implement deterministic scheduler",
@@ -1878,18 +1871,19 @@
       "Verify monotonic WAL seq invariant",
       "Test snapshot correctness for strong reads"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "object-store-abstraction",
+      "wal-commit-protocol"
+    ],
+    "scope": [
+      "tests/simulation/"
+    ]
   },
   {
     "id": "test-fault-injection",
     "category": "testing",
     "description": "Implement fault injection tests",
-    "depends_on": [
-      "object-store-abstraction"
-    ],
-    "scope": [
-      "tests/fault/"
-    ],
     "steps": [
       "Test transient 500 errors from object store",
       "Test timeout errors",
@@ -1898,37 +1892,37 @@
       "Test eventual queries degrade gracefully",
       "Verify background repair restores state"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "object-store-abstraction"
+    ],
+    "scope": [
+      "tests/fault/"
+    ]
   },
   {
     "id": "test-compat-suite",
     "category": "testing",
     "description": "Implement compatibility test suite against turbopuffer semantics",
-    "depends_on": [
-      "http-status-codes",
-      "error-response-format"
-    ],
-    "scope": [
-      "tests/compat/"
-    ],
     "steps": [
       "Test documented request shapes",
       "Verify HTTP status codes (400/401/202/429)",
       "Test response field presence/shape",
       "Verify Eq null matches missing semantics"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "http-status-codes",
+      "error-response-format"
+    ],
+    "scope": [
+      "tests/compat/"
+    ]
   },
   {
     "id": "test-compat-harness-turbopuffer",
     "category": "testing",
     "description": "Implement optional compatibility harness against turbopuffer API",
-    "depends_on": [
-      "test-compat-suite"
-    ],
-    "scope": [
-      "tests/compat/"
-    ],
     "steps": [
       "Run golden tests against turbopuffer when API key available",
       "Compare success/failure behavior",
@@ -1936,54 +1930,54 @@
       "Verify rows_remaining behavior",
       "Allow recall tolerance for ANN comparisons"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "test-compat-suite"
+    ],
+    "scope": [
+      "tests/compat/"
+    ]
   },
   {
     "id": "single-binary-subcommands",
     "category": "infrastructure",
     "description": "Implement single binary with subcommands (query, indexer, all-in-one)",
-    "depends_on": [
-      "project-setup"
-    ],
-    "scope": [
-      "cmd/vex/"
-    ],
     "steps": [
       "Test 'vex query' starts query node",
       "Test 'vex indexer' starts indexer node",
       "Test 'vex serve' or default starts all-in-one mode",
       "Verify configuration loading for each mode"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "project-setup"
+    ],
+    "scope": [
+      "cmd/vex/"
+    ]
   },
   {
     "id": "local-dev-minio",
     "category": "infrastructure",
     "description": "Support local development with MinIO",
+    "steps": [
+      "Verify MinIO can be started for local dev",
+      "Test Vex connects to local MinIO",
+      "Verify all operations work with MinIO backend"
+    ],
+    "completed": true,
     "depends_on": [
       "object-store-abstraction"
     ],
     "scope": [
       "scripts/",
       "docker-compose.yml"
-    ],
-    "steps": [
-      "Verify MinIO can be started for local dev",
-      "Test Vex connects to local MinIO",
-      "Verify all operations work with MinIO backend"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "config-management",
     "category": "infrastructure",
     "description": "Implement configuration management",
-    "depends_on": [
-      "project-setup"
-    ],
-    "scope": [
-      "internal/config/"
-    ],
     "steps": [
       "Test config loading from file",
       "Verify environment variable overrides",
@@ -1991,109 +1985,115 @@
       "Verify cache size budget config",
       "Test membership/routing config"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "project-setup"
+    ],
+    "scope": [
+      "internal/config/"
+    ]
   },
   {
     "id": "compat-mode-flag",
     "category": "functional",
     "description": "Implement compat_mode flag for strict turbopuffer compatibility",
+    "steps": [
+      "Test compat_mode=turbopuffer rejects dot_product metric",
+      "Verify Vex-only extensions disabled in compat mode"
+    ],
+    "completed": true,
     "depends_on": [
       "config-management"
     ],
     "scope": [
       "internal/config/"
-    ],
-    "steps": [
-      "Test compat_mode=turbopuffer rejects dot_product metric",
-      "Verify Vex-only extensions disabled in compat mode"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "guardrails-per-namespace",
     "category": "functional",
     "description": "Implement per-namespace guardrails for multi-tenancy",
-    "depends_on": [
-      "namespace-state-management"
-    ],
-    "scope": [
-      "internal/"
-    ],
     "steps": [
       "Test per-namespace in-memory state is demand-loaded",
       "Verify per-namespace state is evictable",
       "Test tail materialization memory caps per namespace",
       "Verify concurrent cold cache fills limited"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "namespace-state-management"
+    ],
+    "scope": [
+      "internal/"
+    ]
   },
   {
     "id": "request-timeout",
     "category": "functional",
     "description": "Implement per-request CPU budget timeouts",
+    "steps": [
+      "Test query timeout enforcement",
+      "Verify write timeout handling"
+    ],
+    "completed": true,
     "depends_on": [
       "query-api-basic"
     ],
     "scope": [
       "internal/"
-    ],
-    "steps": [
-      "Test query timeout enforcement",
-      "Verify write timeout handling"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "cache-temperature-metrics",
     "category": "functional",
     "description": "Implement cache temperature metrics (hot/warm/cold)",
+    "steps": [
+      "Test hot/warm/cold classification based on hit ratio",
+      "Verify metrics exposed for observability"
+    ],
+    "completed": true,
     "depends_on": [
       "nvme-cache",
       "ram-cache"
     ],
     "scope": [
       "internal/cache/"
-    ],
-    "steps": [
-      "Test hot/warm/cold classification based on hit ratio",
-      "Verify metrics exposed for observability"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "vector-incremental-updates",
     "category": "functional",
     "description": "Implement incremental vector updates in WAL tail",
+    "steps": [
+      "Test new vectors in tail searchable by exhaustive scan",
+      "Verify indexer folds tail vectors into IVF segments",
+      "Test L0 segments built quickly from WAL"
+    ],
+    "completed": true,
     "depends_on": [
       "vector-ivf-index",
       "tail-materialization"
     ],
     "scope": [
       "internal/vector/"
-    ],
-    "steps": [
-      "Test new vectors in tail searchable by exhaustive scan",
-      "Verify indexer folds tail vectors into IVF segments",
-      "Test L0 segments built quickly from WAL"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "segment-compaction",
     "category": "functional",
     "description": "Implement segment compaction (merge L0 into L1/L2)",
-    "depends_on": [
-      "index-lsm-model"
-    ],
-    "scope": [
-      "internal/index/"
-    ],
     "steps": [
       "Test L0 segments merge into L1",
       "Verify optional reclustering during compaction",
       "Test compaction runs in background"
     ],
-    "completed": true
+    "completed": true,
+    "depends_on": [
+      "index-lsm-model"
+    ],
+    "scope": [
+      "internal/index/"
+    ]
   },
   {
     "id": "fix-routing-proxy-write-query",
@@ -2838,5 +2838,303 @@
     "scope": [
       "internal/logging/middleware.go"
     ]
+  },
+  {
+    "id": "tests-add-auth-headers",
+    "category": "test",
+    "description": "Ensure compat/golden/integration HTTP tests send Authorization headers using a configurable API token so they exercise real auth flows.",
+    "steps": [
+      "Update test helpers to load an API token from env/config and attach Authorization: Bearer headers",
+      "Run `go test ./tests/...`",
+      "Fix any auth-related failures or mismatched error envelopes",
+      "Re-run `go test ./tests/...` to confirm green"
+    ],
+    "scope": [
+      "tests/compat",
+      "tests/golden",
+      "tests/integration"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-gzip-coverage",
+    "category": "test",
+    "description": "Add object-store-backed integration coverage for gzip request bodies and gzip responses across write/query/metadata endpoints.",
+    "steps": [
+      "Add gzip request/response cases to integration tests (write/query/metadata) using Content-Encoding and Accept-Encoding",
+      "Run `go test ./tests/integration -run Gzip`",
+      "Fix any handler or proxy gzip issues discovered",
+      "Re-run the same integration tests to verify pass"
+    ],
+    "scope": [
+      "tests/integration/object_store_test.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-required-endpoints",
+    "category": "test",
+    "description": "Add object-store-backed integration tests for list namespaces, delete namespace, warm-cache hint, and recall endpoints.",
+    "steps": [
+      "Add end-to-end tests that hit list/delete/warm/recall over HTTP with object-store backing",
+      "Run `go test ./tests/integration -run Endpoints`",
+      "Fix any missing routes or response shape issues",
+      "Re-run the same integration tests to verify pass"
+    ],
+    "scope": [
+      "tests/integration/object_store_test.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-wal-cas-idempotency",
+    "category": "test",
+    "description": "Add object-store-backed integration tests for WAL commit ordering, CAS retries, and request idempotency over HTTP.",
+    "steps": [
+      "Add integration tests that force CAS retries and duplicate request_id handling while asserting WAL ordering and response reuse",
+      "Run `go test ./tests/integration -run WalCAS`",
+      "Fix WAL commit/idempotency behavior if failures appear",
+      "Re-run the same integration tests to verify pass"
+    ],
+    "scope": [
+      "tests/integration",
+      "internal/wal",
+      "internal/write"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-write-backpressure-http",
+    "category": "test",
+    "description": "Add object-store-backed integration tests for write backpressure behavior and disable_backpressure overrides.",
+    "steps": [
+      "Add integration tests that drive unindexed_bytes past 2GiB and assert 429/override semantics",
+      "Run `go test ./tests/integration -run Backpressure`",
+      "Fix HTTP status and state transition issues if failures appear",
+      "Re-run the same integration tests to verify pass"
+    ],
+    "scope": [
+      "tests/integration",
+      "internal/write"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-sub-batch-ordering-test",
+    "category": "test",
+    "description": "Verify WAL sub-batch ordering and contents for batched requests beyond head_seq checks.",
+    "steps": [
+      "Add a test that batches multiple HTTP write requests and asserts WAL sub-batch order and contents",
+      "Run `go test ./internal/write -run BatcherSubBatch`",
+      "Fix WAL encoding or batching logic if ordering/content mismatches occur",
+      "Re-run the same test to confirm pass"
+    ],
+    "scope": [
+      "internal/write/batcher_test.go",
+      "internal/wal"
+    ],
+    "completed": false
+  },
+  {
+    "id": "bm25-tail-dedup-id-normalization",
+    "category": "bug",
+    "description": "Fix BM25 tail/index deduplication by normalizing ID types so tail updates and deletes correctly shadow indexed results.",
+    "steps": [
+      "Add a regression test that mixes typed string IDs and u64 IDs across indexed and tail data",
+      "Fix dedup logic to compare canonical ID representations consistently",
+      "Run `go test ./internal/query -run BM25.*Dedup`"
+    ],
+    "scope": [
+      "internal/query"
+    ],
+    "completed": false
+  },
+  {
+    "id": "strong-query-backpressure-regression",
+    "category": "bug",
+    "description": "Enforce strong-query 503 behavior when disable_backpressure is true and unindexed bytes exceed 2GiB, and lock it in with a regression test.",
+    "steps": [
+      "Add a regression test that sets disable_backpressure and unindexed_bytes > 2GiB and expects 503 for strong queries",
+      "Update strong-consistency path to check namespace_flags and wal.bytes_unindexed_est before executing",
+      "Run `go test ./internal/query -run StrongBackpressure`"
+    ],
+    "scope": [
+      "internal/query",
+      "pkg/api"
+    ],
+    "completed": false
+  },
+  {
+    "id": "tail-prune-indexed-entries",
+    "category": "bug",
+    "description": "Prune tail entries at or below indexed_wal_seq so TailStore represents only unindexed WAL and respects eventual tail caps.",
+    "steps": [
+      "Add a unit test that refreshes tail then advances indexed_wal_seq and expects older entries to be removed",
+      "Implement pruning during refresh or snapshot creation",
+      "Run `go test ./internal/tail -run PruneIndexed`"
+    ],
+    "scope": [
+      "internal/tail/store.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-consistency-tail",
+    "category": "test",
+    "description": "Add integration tests for strong/eventual consistency with tail overlay and 128MiB tail caps.",
+    "steps": [
+      "Add end-to-end tests that write, index, and query with strong/eventual modes and verify tail inclusion and cap behavior",
+      "Run `go test ./tests/integration -run ConsistencyTail`",
+      "Fix snapshot/tail handling if failures appear",
+      "Re-run the same integration tests to verify pass"
+    ],
+    "scope": [
+      "tests/integration",
+      "internal/query",
+      "internal/tail"
+    ],
+    "completed": false
+  },
+  {
+    "id": "indexer-wire-fts-segments",
+    "category": "bug",
+    "description": "Wire FTS/BM25 segment building into the L0 indexer pipeline and manifest publishing.",
+    "steps": [
+      "Add a test that enables full_text_search and verifies FTS artifacts are produced and referenced",
+      "Hook FTS build outputs into L0 builder and manifest writer",
+      "Run `go test ./internal/indexer -run FTS`"
+    ],
+    "scope": [
+      "internal/indexer",
+      "internal/fts",
+      "internal/index"
+    ],
+    "completed": false
+  },
+  {
+    "id": "indexer-rebuild-ready-gate",
+    "category": "bug",
+    "description": "Only mark pending_rebuilds ready after the corresponding rebuild artifacts are actually built and published.",
+    "steps": [
+      "Add a test that enables an index, triggers rebuild, and verifies queries stay 202 until artifacts exist",
+      "Update readiness logic to verify artifact presence/version before flipping ready",
+      "Run `go test ./internal/indexer -run RebuildReady`"
+    ],
+    "scope": [
+      "internal/indexer",
+      "internal/index"
+    ],
+    "completed": false
+  },
+  {
+    "id": "indexer-filter-index-nonvector",
+    "category": "bug",
+    "description": "Build filter indexes from all documents, not just vectorDocs, so filter-only and BM25 queries see complete results.",
+    "steps": [
+      "Add a test that indexes docs without vectors and verifies filter bitmap coverage includes them",
+      "Update L0 builder to include non-vector docs when constructing filter indexes",
+      "Run `go test ./internal/indexer -run FilterIndexAllDocs`"
+    ],
+    "scope": [
+      "internal/indexer",
+      "internal/filter"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-bm25-fts",
+    "category": "test",
+    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer → manifest → query.",
+    "steps": [
+      "Add end-to-end tests that enable FTS, index data, and run BM25 queries while validating 202 gating until ready",
+      "Run `go test ./tests/integration -run BM25`",
+      "Fix indexer/query integration issues if failures appear",
+      "Re-run the same integration tests to verify pass"
+    ],
+    "scope": [
+      "tests/integration",
+      "internal/fts",
+      "internal/query",
+      "internal/indexer"
+    ],
+    "completed": false
+  },
+  {
+    "id": "disk-cache-pinning-reload",
+    "category": "bug",
+    "description": "Preserve ObjectKey metadata when reloading disk cache entries so namespace pinning prevents eviction during warming.",
+    "steps": [
+      "Add a regression test that reloads cache entries and verifies pin matching by namespace prefix",
+      "Populate ObjectKey on reload and ensure pin checks use it consistently",
+      "Run `go test ./internal/cache -run PinningReload`"
+    ],
+    "scope": [
+      "internal/cache/disk.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-warm-cache-hint",
+    "category": "test",
+    "description": "Add integration tests for warm-cache hint to verify prefetch and pinning with real object store and caches.",
+    "steps": [
+      "Add end-to-end tests that call hint_cache_warm and assert warm tasks and pinned cache behavior",
+      "Run `go test ./tests/integration -run WarmCache`",
+      "Fix warm task or pinning issues if failures appear",
+      "Re-run the same integration tests to verify pass"
+    ],
+    "scope": [
+      "tests/integration",
+      "internal/warmer",
+      "internal/cache",
+      "pkg/api"
+    ],
+    "completed": false
+  },
+  {
+    "id": "catalog-cleanup-on-delete",
+    "category": "bug",
+    "description": "Remove namespace catalog entries during delete/GC so deleted namespaces no longer appear in list results.",
+    "steps": [
+      "Add a test that deletes a namespace and verifies catalog entry removal and list exclusion",
+      "Update delete/GC flow to delete catalog keys for tombstoned namespaces",
+      "Run `go test ./internal/namespace ./internal/gc -run CatalogCleanup`"
+    ],
+    "scope": [
+      "internal/namespace",
+      "internal/gc",
+      "pkg/api"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-delete-list",
+    "category": "test",
+    "description": "Add integration coverage for delete namespace followed by list namespaces to ensure tombstoned entries are excluded.",
+    "steps": [
+      "Add end-to-end tests that create, delete, and list namespaces and assert absence",
+      "Run `go test ./tests/integration -run DeleteList`",
+      "Fix delete/list interactions if failures appear",
+      "Re-run the same integration tests to verify pass"
+    ],
+    "scope": [
+      "tests/integration",
+      "pkg/api"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-tests-skip-missing-objectstore-creds",
+    "category": "reliability",
+    "description": "Skip or gate S3-backed integration tests when object-store credentials are missing to avoid hard-fail in default runs.",
+    "steps": [
+      "Update integration test setup to detect missing creds and skip with a clear message",
+      "Run `go test ./tests/integration` without creds to confirm skip behavior",
+      "Run the same tests with creds to confirm they execute normally"
+    ],
+    "scope": [
+      "tests/integration/object_store_test.go"
+    ],
+    "completed": false
   }
 ]
