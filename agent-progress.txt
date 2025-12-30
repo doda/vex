@@ -1448,3 +1448,9 @@ KEY DEPENDENCIES:
 - Resolution: excluded payload attribute from query responses while still using it to inflate WAL size.
 - Challenge: ensure per-entry WAL sizing and deterministic cap expectations.
 - Resolution: waited for head_seq per write and used object store Head sizes to compute expected tail inclusion.
+[2025-12-30T08:20:22.497Z] Auto-commit note (working)
+- Task: indexer-wire-fts-segments
+- Outcome: ERROR
+- Codex working session error: Failed to parse Codex output for CODEX_WORKING_RESULT
+- Auto-commit created by harness for uncommitted changes.
+- Next session: review the "Auto-commit uncommitted changes (working)" commit before resuming.
