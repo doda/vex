@@ -34,6 +34,9 @@ const (
 
 	// MaxMultiQuery is the maximum number of subqueries in a multi-query request.
 	MaxMultiQuery = 16
+
+	// MaxUnindexedBytes is the threshold for backpressure (2GB).
+	MaxUnindexedBytes = 2 * 1024 * 1024 * 1024
 )
 
 var (
@@ -48,6 +51,7 @@ var (
 	ErrInvalidVectorDims     = errors.New("query vector dimensions do not match schema")
 	ErrInvalidConsistency    = errors.New("consistency must be 'strong' or 'eventual'")
 	ErrSnapshotRefreshFailed = errors.New("failed to refresh snapshot for strong consistency")
+	ErrStrongQueryBackpressure = errors.New("strong query unavailable: unindexed data exceeds 2GB with disable_backpressure=true")
 	ErrInvalidAggregation    = errors.New("invalid aggregation expression")
 	ErrInvalidGroupBy        = errors.New("invalid group_by expression")
 	ErrGroupByWithoutAgg     = errors.New("group_by requires aggregate_by to be specified")
@@ -226,6 +230,9 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 	// Strong consistency is the default: refresh tail to WAL head to include all committed writes
 	isStrongConsistency := req.Consistency != "eventual"
 	if isStrongConsistency {
+		if loaded.State.NamespaceFlags.DisableBackpressure && loaded.State.WAL.BytesUnindexedEst > MaxUnindexedBytes {
+			return nil, ErrStrongQueryBackpressure
+		}
 		if h.tailStore != nil {
 			headSeq := loaded.State.WAL.HeadSeq
 			indexedSeq := loaded.State.Index.IndexedWALSeq
@@ -2041,6 +2048,9 @@ func (h *Handler) HandleMultiQuery(ctx context.Context, ns string, queries []map
 
 	// Determine consistency mode - strong is default
 	isStrongConsistency := consistency != "eventual"
+	if isStrongConsistency && loaded.State.NamespaceFlags.DisableBackpressure && loaded.State.WAL.BytesUnindexedEst > MaxUnindexedBytes {
+		return nil, ErrStrongQueryBackpressure
+	}
 
 	// Refresh tail to WAL head once for all subqueries (snapshot isolation).
 	// This ensures all subqueries execute against the same consistent snapshot.
