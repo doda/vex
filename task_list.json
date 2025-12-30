@@ -2933,7 +2933,7 @@
       "internal/write/batcher_test.go",
       "internal/wal"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "bm25-tail-dedup-id-normalization",
