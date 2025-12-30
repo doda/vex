@@ -1528,3 +1528,12 @@ KEY DEPENDENCIES:
 - Challenges: none.
 - Follow-ups: none.
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+[2025-12-30T09:20:01Z] Completed integration-delete-list: PASS
+- Added integration test that creates two namespaces, deletes one, and verifies list excludes the tombstoned entry.
+- Added retry loops around list operations to account for object-store listing consistency.
+- Files changed: tests/integration/object_store_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./tests/integration -run DeleteList -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

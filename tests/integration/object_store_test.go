@@ -1272,6 +1272,69 @@ func TestObjectStoreEndpoints(t *testing.T) {
 	})
 }
 
+func TestObjectStoreDeleteList(t *testing.T) {
+	prefix := fmt.Sprintf("objectstore-delete-list-%d", time.Now().UnixNano())
+	nsDelete := prefix + "-delete"
+	nsKeep := prefix + "-keep"
+	fixture := newS3Fixture(t, nsDelete)
+	defer fixture.close(t)
+
+	fixture.write(t, nsDelete, map[string]any{
+		"upsert_rows": []map[string]any{
+			{"id": "doc1", "name": "Alpha"},
+		},
+	})
+	fixture.write(t, nsKeep, map[string]any{
+		"upsert_rows": []map[string]any{
+			{"id": "doc1", "name": "Beta"},
+		},
+	})
+
+	collectIDs := func(result map[string]any) map[string]bool {
+		rawNamespaces, ok := result["namespaces"].([]any)
+		if !ok {
+			t.Fatalf("expected namespaces to be an array, got %T", result["namespaces"])
+		}
+		found := map[string]bool{}
+		for _, raw := range rawNamespaces {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if id, ok := entry["id"].(string); ok {
+				found[id] = true
+			}
+		}
+		return found
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		found := collectIDs(fixture.listNamespaces(t, prefix, 100))
+		if found[nsDelete] && found[nsKeep] {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected namespaces %q and %q to be listed, got %v", nsDelete, nsKeep, found)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	fixture.deleteNamespace(t, nsDelete)
+
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		found := collectIDs(fixture.listNamespaces(t, prefix, 100))
+		if found[nsKeep] && !found[nsDelete] {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected namespace %q present and %q absent, got %v", nsKeep, nsDelete, found)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
 func TestObjectStoreWarmCacheHint(t *testing.T) {
 	ns := fmt.Sprintf("objectstore-warmcache-%d", time.Now().UnixNano())
 	store := newS3Store(t)
