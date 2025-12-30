@@ -1475,3 +1475,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: go not on PATH in this environment.
 - Resolution: used /usr/local/go/bin/go for test execution.
+[2025-12-30T20:30:00Z] Completed indexer-filter-index-nonvector: PASS
+- Built filter bitmap indexes from all docs (vector + non-vector) during L0 segment build.
+- Added FilterIndexAllDocs test to ensure non-vector docs appear in filter bitmap coverage.
+- Files changed: internal/indexer/l0_builder.go.
+- Files changed: internal/indexer/filter_artifacts_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run FilterIndexAllDocs -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
