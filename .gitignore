@@ -1,6 +1,9 @@
 # Binary (the built executable at repo root)
 /vex
 
+# GoReleaser output
+/dist/
+
 # Go build cache
 /vendor/
 /.go/
