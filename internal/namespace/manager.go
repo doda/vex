@@ -562,5 +562,11 @@ func (m *StateManager) DeleteNamespace(ctx context.Context, namespace string) er
 		return fmt.Errorf("failed to update state: %w", err)
 	}
 
+	// Remove catalog entry so deleted namespaces stop appearing in list results.
+	catalogKey := CatalogKey(namespace)
+	if err := m.store.Delete(ctx, catalogKey); err != nil && !objectstore.IsNotFoundError(err) {
+		return fmt.Errorf("failed to delete catalog entry: %w", err)
+	}
+
 	return nil
 }

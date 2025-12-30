@@ -3105,7 +3105,7 @@
       "internal/gc",
       "pkg/api"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "integration-delete-list",

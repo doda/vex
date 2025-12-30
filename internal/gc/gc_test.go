@@ -103,6 +103,47 @@ func countObjects(t *testing.T, store objectstore.Store, prefix string) int {
 	return count
 }
 
+func TestCatalogCleanupOnGC(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	ctx := context.Background()
+
+	ns := "catalog-cleanup-gc"
+	createTestNamespace(t, store, ns, true, 25*time.Hour)
+
+	catalogKey := namespace.CatalogKey(ns)
+	if _, err := store.Put(ctx, catalogKey, bytes.NewReader(nil), 0, nil); err != nil {
+		t.Fatalf("failed to create catalog entry: %v", err)
+	}
+
+	config := &Config{
+		MinTombstoneAge:   1 * time.Hour,
+		ObjectBatchSize:   100,
+		PreserveTombstone: true,
+	}
+	collector := NewCollector(store, config)
+
+	if _, err := collector.CollectNamespace(ctx, ns); err != nil {
+		t.Fatalf("GC failed: %v", err)
+	}
+
+	if _, err := store.Head(ctx, catalogKey); err == nil {
+		t.Fatal("expected catalog entry to be deleted")
+	} else if !objectstore.IsNotFoundError(err) {
+		t.Fatalf("unexpected error checking catalog entry: %v", err)
+	}
+
+	result, err := store.List(ctx, &objectstore.ListOptions{
+		Prefix:  "catalog/namespaces/",
+		MaxKeys: 10,
+	})
+	if err != nil {
+		t.Fatalf("failed to list catalog entries: %v", err)
+	}
+	if len(result.Objects) != 0 {
+		t.Fatalf("expected catalog list to be empty, got %d entries", len(result.Objects))
+	}
+}
+
 // TestGC_DeletesNamespaceObjects verifies that GC deletes WAL and index objects.
 func TestGC_DeletesNamespaceObjects(t *testing.T) {
 	store := objectstore.NewMemoryStore()
