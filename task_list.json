@@ -3044,7 +3044,7 @@
   {
     "id": "integration-bm25-fts",
     "category": "test",
-    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer → manifest → query.",
+    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer \u2192 manifest \u2192 query.",
     "steps": [
       "Add end-to-end tests that enable FTS, index data, and run BM25 queries while validating 202 gating until ready",
       "Run `go test ./tests/integration -run BM25`",
@@ -3121,8 +3121,7 @@
       "tests/integration",
       "pkg/api"
     ],
-    "completed": true,
-    "passes": true
+    "completed": true
   },
   {
     "id": "integration-tests-skip-missing-objectstore-creds",
@@ -3136,7 +3135,6 @@
     "scope": [
       "tests/integration/object_store_test.go"
     ],
-    "completed": true,
-    "passes": true
+    "completed": true
   }
 ]
