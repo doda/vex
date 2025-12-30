@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/pkg/api"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -127,7 +126,7 @@ func newS3Fixture(t *testing.T, namespace string) *s3TestFixture {
 
 	store := objectstore.NewInstrumentedStore(s3Store)
 
-	cfg := &config.Config{}
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 	if err := router.SetStore(store); err != nil {
 		t.Fatalf("failed to set store: %v", err)
@@ -164,7 +163,13 @@ func (f *s3TestFixture) write(t *testing.T, ns string, data map[string]any) map[
 		t.Fatalf("failed to marshal write request: %v", err)
 	}
 
-	resp, err := http.Post(f.endpoint+"/v2/namespaces/"+ns, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", f.endpoint+"/v2/namespaces/"+ns, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build write request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addAuthHeader(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("write request failed: %v", err)
 	}
@@ -194,7 +199,13 @@ func (f *s3TestFixture) query(t *testing.T, ns string, data map[string]any) map[
 		t.Fatalf("failed to marshal query request: %v", err)
 	}
 
-	resp, err := http.Post(f.endpoint+"/v2/namespaces/"+ns+"/query", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", f.endpoint+"/v2/namespaces/"+ns+"/query", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build query request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addAuthHeader(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("query request failed: %v", err)
 	}
@@ -219,7 +230,12 @@ func (f *s3TestFixture) query(t *testing.T, ns string, data map[string]any) map[
 func (f *s3TestFixture) getMetadata(t *testing.T, ns string) map[string]any {
 	t.Helper()
 
-	resp, err := http.Get(f.endpoint + "/v1/namespaces/" + ns + "/metadata")
+	req, err := http.NewRequest("GET", f.endpoint+"/v1/namespaces/"+ns+"/metadata", nil)
+	if err != nil {
+		t.Fatalf("failed to build metadata request: %v", err)
+	}
+	addAuthHeader(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("metadata request failed: %v", err)
 	}

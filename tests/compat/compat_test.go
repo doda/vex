@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/pkg/api"
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -25,7 +24,7 @@ import (
 
 // TestWriteRequestShapes verifies all documented write request shapes are accepted.
 func TestWriteRequestShapes(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	store := objectstore.NewMemoryStore()
 	router := api.NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -165,6 +164,7 @@ func TestWriteRequestShapes(t *testing.T) {
 			bodyBytes, _ := json.Marshal(tc.body)
 			req := httptest.NewRequest("POST", "/v2/namespaces/test-compat", bytes.NewReader(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
+			addAuthHeader(req)
 			w := httptest.NewRecorder()
 
 			router.ServeHTTP(w, req)
@@ -180,7 +180,7 @@ func TestWriteRequestShapes(t *testing.T) {
 // TestQueryRequestShapes verifies all documented query request shapes are accepted.
 // Uses the test state approach for consistent behavior without write batching delays.
 func TestQueryRequestShapes(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	// Use SetState to simulate an existing namespace with data
@@ -355,6 +355,7 @@ func TestQueryRequestShapes(t *testing.T) {
 			bodyBytes, _ := json.Marshal(tc.body)
 			req := httptest.NewRequest("POST", "/v2/namespaces/query-test/query", bytes.NewReader(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
+			addAuthHeader(req)
 			w := httptest.NewRecorder()
 
 			router.ServeHTTP(w, req)
@@ -373,7 +374,7 @@ func TestQueryRequestShapes(t *testing.T) {
 
 // TestStatusCode400InvalidRequest tests that 400 is returned for invalid requests.
 func TestStatusCode400InvalidRequest(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	router.SetState(&api.ServerState{
@@ -480,6 +481,7 @@ func TestStatusCode400InvalidRequest(t *testing.T) {
 			if tc.body != "" {
 				req.Header.Set("Content-Type", "application/json")
 			}
+			addAuthHeader(req)
 
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
@@ -506,7 +508,7 @@ func TestStatusCode400InvalidRequest(t *testing.T) {
 
 // TestAttributeNameValidation tests attribute name validation using real handlers.
 func TestAttributeNameValidation(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	store := objectstore.NewMemoryStore()
 	router := api.NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -515,6 +517,7 @@ func TestAttributeNameValidation(t *testing.T) {
 		body := `{"upsert_rows":[{"id":1,"` + strings.Repeat("a", 129) + `":"value"}]}`
 		req := httptest.NewRequest("POST", "/v2/namespaces/attr-test", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -537,6 +540,7 @@ func TestAttributeNameValidation(t *testing.T) {
 		body := `{"upsert_rows":[{"id":1,"$invalid":"value"}]}`
 		req := httptest.NewRequest("POST", "/v2/namespaces/attr-test", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -558,7 +562,7 @@ func TestAttributeNameValidation(t *testing.T) {
 
 // TestStatusCode401Unauthorized tests authentication error handling.
 func TestStatusCode401Unauthorized(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	cfg.AuthToken = "secret-token"
 	router := api.NewRouter(cfg)
 
@@ -627,7 +631,7 @@ func TestStatusCode401Unauthorized(t *testing.T) {
 
 // TestStatusCode202IndexBuilding tests 202 for queries depending on building index.
 func TestStatusCode202IndexBuilding(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	router.SetState(&api.ServerState{
@@ -659,6 +663,7 @@ func TestStatusCode202IndexBuilding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/v2/namespaces/building-ns/query", strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", "application/json")
+			addAuthHeader(req)
 
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
@@ -680,7 +685,7 @@ func TestStatusCode202IndexBuilding(t *testing.T) {
 
 // TestStatusCode429Backpressure tests backpressure enforcement.
 func TestStatusCode429Backpressure(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	router.SetState(&api.ServerState{
@@ -696,6 +701,7 @@ func TestStatusCode429Backpressure(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/v2/namespaces/backpressure-ns", strings.NewReader(`{"upsert_rows":[]}`))
 	req.Header.Set("Content-Type", "application/json")
+	addAuthHeader(req)
 
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -720,7 +726,7 @@ func TestStatusCode429Backpressure(t *testing.T) {
 
 // TestStatusCode503ServiceUnavailable tests object store failures and strong query with disable_backpressure.
 func TestStatusCode503ServiceUnavailable(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	t.Run("object store unavailable", func(t *testing.T) {
@@ -752,6 +758,7 @@ func TestStatusCode503ServiceUnavailable(t *testing.T) {
 			if ep.body != "" {
 				req.Header.Set("Content-Type", "application/json")
 			}
+			addAuthHeader(req)
 
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
@@ -776,6 +783,7 @@ func TestStatusCode503ServiceUnavailable(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/v2/namespaces/bp-off-ns/query", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -801,7 +809,7 @@ func TestStatusCode503ServiceUnavailable(t *testing.T) {
 
 // TestWriteResponseShape verifies write response contains expected fields.
 func TestWriteResponseShape(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	store := objectstore.NewMemoryStore()
 	router := api.NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -815,6 +823,7 @@ func TestWriteResponseShape(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/v2/namespaces/response-test", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
+	addAuthHeader(req)
 
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -846,7 +855,7 @@ func TestWriteResponseShape(t *testing.T) {
 // TestQueryResponseShape verifies query response contains expected fields.
 // Uses stub state to avoid write batching timing issues.
 func TestQueryResponseShape(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	// Use SetState to simulate an existing namespace with data
@@ -864,6 +873,7 @@ func TestQueryResponseShape(t *testing.T) {
 		queryBytes, _ := json.Marshal(queryBody)
 		req := httptest.NewRequest("POST", "/v2/namespaces/query-response/query", bytes.NewReader(queryBytes))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -915,6 +925,7 @@ func TestQueryResponseShape(t *testing.T) {
 		queryBytes, _ := json.Marshal(queryBody)
 		req := httptest.NewRequest("POST", "/v2/namespaces/query-response/query", bytes.NewReader(queryBytes))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -945,6 +956,7 @@ func TestQueryResponseShape(t *testing.T) {
 		queryBytes, _ := json.Marshal(queryBody)
 		req := httptest.NewRequest("POST", "/v2/namespaces/query-response/query", bytes.NewReader(queryBytes))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -973,7 +985,7 @@ func TestQueryResponseShape(t *testing.T) {
 
 // TestErrorResponseShape verifies all errors follow the standard format.
 func TestErrorResponseShape(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	cfg.AuthToken = "secret"
 	router := api.NewRouter(cfg)
 
@@ -1045,7 +1057,7 @@ func TestErrorResponseShape(t *testing.T) {
 // TestMetadataResponseShape verifies metadata endpoint response format.
 // Note: Uses real handlers via object store to ensure proper metadata response shape.
 func TestMetadataResponseShape(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	store := objectstore.NewMemoryStore()
 	router := api.NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -1054,9 +1066,11 @@ func TestMetadataResponseShape(t *testing.T) {
 	setupBody := `{"upsert_rows":[{"id":1,"name":"test"}]}`
 	setupReq := httptest.NewRequest("POST", "/v2/namespaces/metadata-test", strings.NewReader(setupBody))
 	setupReq.Header.Set("Content-Type", "application/json")
+	addAuthHeader(setupReq)
 	router.ServeHTTP(httptest.NewRecorder(), setupReq)
 
 	req := httptest.NewRequest("GET", "/v1/namespaces/metadata-test/metadata", nil)
+	addAuthHeader(req)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -1083,7 +1097,7 @@ func TestMetadataResponseShape(t *testing.T) {
 
 // TestListNamespacesResponseShape verifies list namespaces response format.
 func TestListNamespacesResponseShape(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	router.SetState(&api.ServerState{
@@ -1091,6 +1105,7 @@ func TestListNamespacesResponseShape(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
+	addAuthHeader(req)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -1202,7 +1217,7 @@ func TestEqNullMatchesMissingSemantics(t *testing.T) {
 // Note: Uses stub state since the full integration would require waiting for write batching.
 // The filter logic is fully tested in TestEqNullMatchesMissingSemantics using the filter package directly.
 func TestEqNullWithIntegration(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	// Use SetState to simulate an existing namespace with data
@@ -1221,6 +1236,7 @@ func TestEqNullWithIntegration(t *testing.T) {
 		queryBytes, _ := json.Marshal(queryBody)
 		req := httptest.NewRequest("POST", "/v2/namespaces/eq-null-test/query", bytes.NewReader(queryBytes))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -1239,6 +1255,7 @@ func TestEqNullWithIntegration(t *testing.T) {
 		queryBytes, _ := json.Marshal(queryBody)
 		req := httptest.NewRequest("POST", "/v2/namespaces/eq-null-test/query", bytes.NewReader(queryBytes))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -1252,7 +1269,7 @@ func TestEqNullWithIntegration(t *testing.T) {
 
 // TestEqNullWithDeleteByFilter tests Eq null semantics in delete_by_filter.
 func TestEqNullWithDeleteByFilter(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	store := objectstore.NewMemoryStore()
 	router := api.NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -1268,6 +1285,7 @@ func TestEqNullWithDeleteByFilter(t *testing.T) {
 	setupBytes, _ := json.Marshal(setupBody)
 	setupReq := httptest.NewRequest("POST", "/v2/namespaces/delete-null-test", bytes.NewReader(setupBytes))
 	setupReq.Header.Set("Content-Type", "application/json")
+	addAuthHeader(setupReq)
 	router.ServeHTTP(httptest.NewRecorder(), setupReq)
 
 	// Delete docs where status is null
@@ -1277,6 +1295,7 @@ func TestEqNullWithDeleteByFilter(t *testing.T) {
 	deleteBytes, _ := json.Marshal(deleteBody)
 	deleteReq := httptest.NewRequest("POST", "/v2/namespaces/delete-null-test", bytes.NewReader(deleteBytes))
 	deleteReq.Header.Set("Content-Type", "application/json")
+	addAuthHeader(deleteReq)
 
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, deleteReq)
@@ -1302,7 +1321,7 @@ func TestEqNullWithDeleteByFilter(t *testing.T) {
 
 // TestDocumentIDTypes tests all supported ID types.
 func TestDocumentIDTypes(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	store := objectstore.NewMemoryStore()
 	router := api.NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -1330,6 +1349,7 @@ func TestDocumentIDTypes(t *testing.T) {
 			bodyBytes, _ := json.Marshal(body)
 			req := httptest.NewRequest("POST", "/v2/namespaces/id-types-test", bytes.NewReader(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
+			addAuthHeader(req)
 
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
@@ -1345,7 +1365,7 @@ func TestDocumentIDTypes(t *testing.T) {
 // TestWriteOrdering tests that write requests accept proper operation ordering.
 // Tests that delete_by_filter + upsert in same request is accepted (resurrection pattern).
 func TestWriteOrdering(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	store := objectstore.NewMemoryStore()
 	router := api.NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -1360,6 +1380,7 @@ func TestWriteOrdering(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/v2/namespaces/ordering-test", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
+	addAuthHeader(req)
 
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -1386,7 +1407,7 @@ func TestWriteOrdering(t *testing.T) {
 // TestFilterOperators tests various filter operators for compatibility.
 // Uses stub state to verify all filter operators are accepted.
 func TestFilterOperators(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	// Use SetState to simulate an existing namespace
@@ -1425,6 +1446,7 @@ func TestFilterOperators(t *testing.T) {
 			queryBytes, _ := json.Marshal(queryBody)
 			req := httptest.NewRequest("POST", "/v2/namespaces/filter-ops-test/query", bytes.NewReader(queryBytes))
 			req.Header.Set("Content-Type", "application/json")
+			addAuthHeader(req)
 
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
@@ -1439,7 +1461,7 @@ func TestFilterOperators(t *testing.T) {
 
 // TestCompressionSupport tests gzip request/response compression.
 func TestCompressionSupport(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	router.SetState(&api.ServerState{
@@ -1451,6 +1473,7 @@ func TestCompressionSupport(t *testing.T) {
 		// For this test, we verify the Content-Encoding header is handled
 		req := httptest.NewRequest("GET", "/v1/namespaces", nil)
 		req.Header.Set("Accept-Encoding", "gzip")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -1465,7 +1488,7 @@ func TestCompressionSupport(t *testing.T) {
 // TestPaginationByID tests that pagination query patterns are accepted.
 // Tests that id > X filter pattern is valid for cursor-based pagination.
 func TestPaginationByID(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	router := api.NewRouter(cfg)
 
 	// Use SetState to simulate an existing namespace
@@ -1485,6 +1508,7 @@ func TestPaginationByID(t *testing.T) {
 		queryBytes, _ := json.Marshal(queryBody)
 		req := httptest.NewRequest("POST", "/v2/namespaces/pagination-test/query", bytes.NewReader(queryBytes))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -1504,6 +1528,7 @@ func TestPaginationByID(t *testing.T) {
 		queryBytes, _ := json.Marshal(queryBody)
 		req := httptest.NewRequest("POST", "/v2/namespaces/pagination-test/query", bytes.NewReader(queryBytes))
 		req.Header.Set("Content-Type", "application/json")
+		addAuthHeader(req)
 
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -1516,7 +1541,7 @@ func TestPaginationByID(t *testing.T) {
 
 // TestNamespaceEndpoints tests all namespace-related endpoints.
 func TestNamespaceEndpoints(t *testing.T) {
-	cfg := config.Default()
+	cfg := newTestConfig()
 	store := objectstore.NewMemoryStore()
 	router := api.NewRouterWithStore(cfg, nil, nil, nil, store)
 	defer router.Close()
@@ -1530,10 +1555,12 @@ func TestNamespaceEndpoints(t *testing.T) {
 	createBytes, _ := json.Marshal(createBody)
 	createReq := httptest.NewRequest("POST", "/v2/namespaces/ns-endpoint-test", bytes.NewReader(createBytes))
 	createReq.Header.Set("Content-Type", "application/json")
+	addAuthHeader(createReq)
 	router.ServeHTTP(httptest.NewRecorder(), createReq)
 
 	t.Run("GET /v1/namespaces/:namespace/metadata", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/namespaces/ns-endpoint-test/metadata", nil)
+		addAuthHeader(req)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
@@ -1544,6 +1571,7 @@ func TestNamespaceEndpoints(t *testing.T) {
 
 	t.Run("GET /v1/namespaces/:namespace/hint_cache_warm", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/namespaces/ns-endpoint-test/hint_cache_warm", nil)
+		addAuthHeader(req)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
@@ -1554,6 +1582,7 @@ func TestNamespaceEndpoints(t *testing.T) {
 
 	t.Run("GET /v1/namespaces", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/namespaces", nil)
+		addAuthHeader(req)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
@@ -1564,6 +1593,7 @@ func TestNamespaceEndpoints(t *testing.T) {
 
 	t.Run("DELETE /v2/namespaces/:namespace", func(t *testing.T) {
 		req := httptest.NewRequest("DELETE", "/v2/namespaces/ns-endpoint-test", nil)
+		addAuthHeader(req)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
@@ -1573,6 +1603,7 @@ func TestNamespaceEndpoints(t *testing.T) {
 
 		// Verify namespace is deleted - subsequent requests should return 404
 		metaReq := httptest.NewRequest("GET", "/v1/namespaces/ns-endpoint-test/metadata", nil)
+		addAuthHeader(metaReq)
 		metaW := httptest.NewRecorder()
 		router.ServeHTTP(metaW, metaReq)
 
