@@ -3009,7 +3009,7 @@
       "internal/fts",
       "internal/index"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "indexer-rebuild-ready-gate",

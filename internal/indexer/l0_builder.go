@@ -13,6 +13,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/fts"
 	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/schema"
@@ -128,7 +129,11 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 
 	// Build L0 segment with IVF index
 	schemaDef := buildSchemaDefinition(state)
-	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, lastSeq, docs, dims, dtype, metric, schemaDef)
+	ftsConfigs, err := buildFTSConfigs(state)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build FTS configs: %w", err)
+	}
+	segment, err := p.buildL0Segment(ctx, ns, startSeq+1, lastSeq, docs, dims, dtype, metric, schemaDef, ftsConfigs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build L0 segment: %w", err)
 	}
@@ -457,7 +462,7 @@ type vectorDocColumn struct {
 }
 
 // buildL0Segment builds an L0 segment with IVF index from the documents.
-func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType, metric vector.DistanceMetric, schemaDef *schema.Definition) (*index.Segment, error) {
+func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType, metric vector.DistanceMetric, schemaDef *schema.Definition, ftsConfigs map[string]*fts.Config) (*index.Segment, error) {
 	if len(docs) == 0 {
 		return nil, nil
 	}
@@ -603,6 +608,48 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		}
 	}
 
+	var ftsKeys []string
+	var ftsBytes int64
+	if len(ftsConfigs) > 0 {
+		ftsBuilder := fts.NewIndexBuilder()
+		for i, doc := range docs {
+			if doc.deleted {
+				continue
+			}
+			if len(doc.attrs) == 0 {
+				continue
+			}
+			ftsBuilder.AddDocument(uint32(i), doc.attrs, ftsConfigs)
+		}
+		indexes := ftsBuilder.Build()
+		if len(indexes) > 0 {
+			attrNames := make([]string, 0, len(indexes))
+			for name, idx := range indexes {
+				if idx == nil || idx.TotalDocs == 0 {
+					continue
+				}
+				attrNames = append(attrNames, name)
+			}
+			sort.Strings(attrNames)
+			for _, attrName := range attrNames {
+				idx := indexes[attrName]
+				if idx == nil || idx.TotalDocs == 0 {
+					continue
+				}
+				data, err := idx.Serialize()
+				if err != nil {
+					return nil, fmt.Errorf("failed to serialize FTS index %s: %w", attrName, err)
+				}
+				key, err := writer.WriteFTSData(ctx, attrName, data)
+				if err != nil {
+					return nil, fmt.Errorf("failed to write FTS %s: %w", attrName, err)
+				}
+				ftsKeys = append(ftsKeys, key)
+				ftsBytes += int64(len(data))
+			}
+		}
+	}
+
 	writer.Seal()
 
 	// Calculate segment stats
@@ -616,6 +663,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		totalBytes += int64(centroidsBuf.Len()) + int64(offsetsBuf.Len()) + int64(len(ivfIndex.GetClusterDataBytes()))
 	}
 	totalBytes += filterBytes
+	totalBytes += ftsBytes
 
 	segment := &index.Segment{
 		ID:          segID,
@@ -624,6 +672,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		EndWALSeq:   endSeq,
 		DocsKey:     docsKey,
 		FilterKeys:  filterKeys,
+		FTSKeys:     ftsKeys,
 		IVFKeys: func() *index.IVFKeys {
 			if ivfIndex == nil {
 				return nil
@@ -868,6 +917,39 @@ func buildSchemaDefinition(state *namespace.State) *schema.Definition {
 		return nil
 	}
 	return def
+}
+
+func buildFTSConfigs(state *namespace.State) (map[string]*fts.Config, error) {
+	if state == nil || state.Schema == nil || len(state.Schema.Attributes) == 0 {
+		return nil, nil
+	}
+
+	configs := make(map[string]*fts.Config)
+	for name, attr := range state.Schema.Attributes {
+		if len(attr.FullTextSearch) == 0 {
+			continue
+		}
+		if schema.AttrType(attr.Type) != schema.TypeString {
+			continue
+		}
+
+		var raw any
+		if err := json.Unmarshal(attr.FullTextSearch, &raw); err != nil {
+			return nil, fmt.Errorf("failed to parse full_text_search for %s: %w", name, err)
+		}
+		cfg, err := fts.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse full_text_search for %s: %w", name, err)
+		}
+		if cfg == nil {
+			continue
+		}
+		configs[name] = cfg
+	}
+	if len(configs) == 0 {
+		return nil, nil
+	}
+	return configs, nil
 }
 
 // intSqrt computes integer square root.

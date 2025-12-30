@@ -1454,3 +1454,14 @@ KEY DEPENDENCIES:
 - Codex working session error: Failed to parse Codex output for CODEX_WORKING_RESULT
 - Auto-commit created by harness for uncommitted changes.
 - Next session: review the "Auto-commit uncommitted changes (working)" commit before resuming.
+[2025-12-30T18:15:00Z] Completed indexer-wire-fts-segments: PASS
+- Wired FTS segment building into L0 indexer using schema full_text_search configs and published FTS keys into manifests.
+- Added FTS segment test to ensure FTS objects are written and referenced in manifests.
+- Files changed: internal/indexer/l0_builder.go.
+- Files changed: internal/indexer/fts_segments_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/indexer -run FTS (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: go binary not on PATH.
+- Resolution: used /usr/local/go/bin/go for test runs.
+- Follow-ups: none.
