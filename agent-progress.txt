@@ -1343,3 +1343,14 @@ KEY DEPENDENCIES:
 - Tests: /usr/local/go/bin/go test ./internal/metrics -count=1 (pass).
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
+[2025-12-30T06:50:00Z] Completed logging-request-metrics-final: PASS
+- Implemented logging middleware to initialize request metrics and read updated values after handler execution.
+- Added middleware test to assert cache_temperature/query_execution_ms are logged when handlers set metrics.
+- Verified live query logs include cache_temperature/query_execution_ms and server_total_ms via filesystem-backed serve run.
+- Files changed: internal/logging/middleware.go.
+- Files changed: internal/logging/middleware_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/logging -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Verification: ./vex serve with filesystem store + curl write/query; inspected /tmp/vex-logging.log for updated metrics (pass).
+- Challenges: none.

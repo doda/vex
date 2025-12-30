@@ -270,3 +270,40 @@ func TestMiddlewareServerTotalMs(t *testing.T) {
 		t.Errorf("expected server_total_ms >= 0, got: %f", serverTotalMs)
 	}
 }
+
+func TestMiddlewareCapturesRequestMetrics(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewWithWriter(&buf)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if metrics := RequestMetricsFromContext(r.Context()); metrics != nil {
+			metrics.CacheTemp = CacheWarm
+			metrics.QueryExecMs = 12.5
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /test", handler)
+
+	wrappedHandler := Middleware(logger)(mux)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(rec, req)
+
+	output := buf.String()
+	var logEntry map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &logEntry); err != nil {
+		t.Fatalf("log output is not valid JSON: %v", err)
+	}
+
+	if logEntry["cache_temperature"] != "warm" {
+		t.Errorf("expected cache_temperature='warm', got: %v", logEntry["cache_temperature"])
+	}
+
+	if logEntry["query_execution_ms"] != 12.5 {
+		t.Errorf("expected query_execution_ms=12.5, got: %v", logEntry["query_execution_ms"])
+	}
+}
