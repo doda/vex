@@ -112,7 +112,8 @@ func newS3Store(t *testing.T) objectstore.Store {
 	accessKey := getenvAny("VEX_TEST_S3_ACCESS_KEY", "VEX_TEST_MINIO_ACCESS_KEY")
 	secretKey := getenvAny("VEX_TEST_S3_SECRET_KEY", "VEX_TEST_MINIO_SECRET_KEY")
 	if accessKey == "" || secretKey == "" {
-		t.Fatalf("missing object store credentials; run ./scripts/setup-garage.sh and source %s", garageCredsPath)
+		t.Skipf("skipping S3 integration tests: missing object store credentials; run ./scripts/setup-garage.sh and source %s", garageCredsPath)
+		return nil
 	}
 	bucket := getenvAny("VEX_TEST_S3_BUCKET", "VEX_TEST_MINIO_BUCKET")
 	if bucket == "" {
