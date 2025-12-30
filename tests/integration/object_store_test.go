@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -19,8 +20,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vexsearch/vex/internal/cache"
+	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/indexer"
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/warmer"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/api"
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -259,6 +263,64 @@ type stateCASFailingStore struct {
 	failCount      int
 }
 
+type blockingGetStore struct {
+	objectstore.Store
+	mu          sync.Mutex
+	blockKey    string
+	started     chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func newBlockingGetStore(store objectstore.Store) *blockingGetStore {
+	return &blockingGetStore{
+		Store:   store,
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *blockingGetStore) SetBlockKey(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blockKey = key
+}
+
+func (s *blockingGetStore) WaitForBlock(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.started:
+		return
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for cache warm manifest fetch")
+	}
+}
+
+func (s *blockingGetStore) Release() {
+	s.releaseOnce.Do(func() {
+		close(s.release)
+	})
+}
+
+func (s *blockingGetStore) Get(ctx context.Context, key string, opts *objectstore.GetOptions) (io.ReadCloser, *objectstore.ObjectInfo, error) {
+	s.mu.Lock()
+	blockKey := s.blockKey
+	s.mu.Unlock()
+
+	if blockKey != "" && key == blockKey {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+	}
+	return s.Store.Get(ctx, key, opts)
+}
+
 func (s *stateCASFailingStore) PutIfMatch(ctx context.Context, key string, body io.Reader, size int64, etag string, opts *objectstore.PutOptions) (*objectstore.ObjectInfo, error) {
 	s.mu.Lock()
 	if key == s.stateKey && s.failsRemaining > 0 {
@@ -295,6 +357,25 @@ func readState(ctx context.Context, store objectstore.Store, ns string) (*namesp
 		return nil, err
 	}
 	return &state, nil
+}
+
+func readManifest(ctx context.Context, store objectstore.Store, key string) (*index.Manifest, error) {
+	reader, _, err := store.Get(ctx, key, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	var manifest index.Manifest
+	if err := manifest.UnmarshalJSON(data); err != nil {
+		return nil, err
+	}
+	return &manifest, nil
 }
 
 func readStateWithInfo(ctx context.Context, store objectstore.Store, ns string) (*namespace.State, *objectstore.ObjectInfo, error) {
@@ -1189,6 +1270,191 @@ func TestObjectStoreEndpoints(t *testing.T) {
 			t.Fatalf("expected status ok, got %v", result["status"])
 		}
 	})
+}
+
+func TestObjectStoreWarmCacheHint(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-warmcache-%d", time.Now().UnixNano())
+	store := newS3Store(t)
+	blockingStore := newBlockingGetStore(store)
+
+	cfg := newTestConfig()
+	router := api.NewRouter(cfg)
+
+	diskCache, err := cache.NewDiskCache(cache.DiskCacheConfig{
+		RootPath: t.TempDir(),
+		MaxBytes: 64 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("failed to create disk cache: %v", err)
+	}
+	ramCache := cache.NewMemoryCache(cache.MemoryCacheConfig{
+		MaxBytes: 8 * 1024 * 1024,
+	})
+
+	router.SetDiskCache(diskCache)
+	router.SetRAMCache(ramCache)
+	if err := router.SetStore(blockingStore); err != nil {
+		t.Fatalf("failed to set store: %v", err)
+	}
+	cacheWarmer := warmer.New(blockingStore, router.StateManager(), diskCache, ramCache, warmer.DefaultConfig())
+	router.SetCacheWarmer(cacheWarmer)
+
+	server := httptest.NewServer(router)
+	fixture := &s3TestFixture{
+		router:   router,
+		store:    blockingStore,
+		server:   server,
+		endpoint: server.URL,
+	}
+	defer fixture.close(t)
+
+	fixture.write(t, ns, map[string]any{
+		"upsert_rows": []map[string]any{
+			{"id": "doc1", "vector": []float64{0.1, 0.2}, "category": "alpha"},
+			{"id": "doc2", "vector": []float64{0.2, 0.1}, "category": "beta"},
+		},
+	})
+
+	state := waitForStateHeadSeq(t, store, ns, 1)
+	indexNamespaceToSeq(t, store, ns, state.WAL.HeadSeq)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	updated, err := readState(ctx, store, ns)
+	cancel()
+	if err != nil {
+		t.Fatalf("failed to read state: %v", err)
+	}
+
+	manifestKey := updated.Index.ManifestKey
+	if manifestKey == "" && updated.Index.ManifestSeq != 0 {
+		manifestKey = index.ManifestKey(ns, updated.Index.ManifestSeq)
+	}
+	if manifestKey == "" {
+		t.Fatalf("expected manifest key after indexing")
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	manifest, err := readManifest(ctx, store, manifestKey)
+	cancel()
+	if err != nil {
+		t.Fatalf("failed to read manifest: %v", err)
+	}
+	if len(manifest.Segments) == 0 {
+		t.Fatalf("expected at least one segment in manifest")
+	}
+
+	segment := manifest.Segments[0]
+	if segment.IVFKeys == nil || segment.IVFKeys.CentroidsKey == "" || segment.IVFKeys.ClusterOffsetsKey == "" {
+		t.Fatalf("expected IVF keys for warm cache prefetch")
+	}
+	if segment.DocsKey == "" {
+		t.Fatalf("expected docs key for warm cache prefetch")
+	}
+	if len(segment.FilterKeys) == 0 {
+		t.Fatalf("expected filter keys for warm cache prefetch")
+	}
+
+	expectedKeys := []string{segment.IVFKeys.CentroidsKey, segment.IVFKeys.ClusterOffsetsKey, segment.DocsKey}
+	expectedKeys = append(expectedKeys, segment.FilterKeys...)
+
+	cacheKeys := make(map[string]cache.CacheKey, len(expectedKeys))
+	for _, key := range expectedKeys {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		info, err := store.Head(ctx, key)
+		cancel()
+		if err != nil {
+			t.Fatalf("failed to head %s: %v", key, err)
+		}
+		cacheKeys[key] = cache.CacheKey{ObjectKey: key, ETag: info.ETag}
+	}
+
+	missingBefore := false
+	for _, key := range expectedKeys {
+		if _, err := diskCache.Get(cacheKeys[key]); err != nil {
+			if errors.Is(err, cache.ErrCacheMiss) {
+				missingBefore = true
+				continue
+			}
+			t.Fatalf("unexpected disk cache get error for %s: %v", key, err)
+		}
+	}
+	if !missingBefore {
+		t.Fatalf("expected disk cache to be cold before warming")
+	}
+
+	blockingStore.SetBlockKey(manifestKey)
+	t.Cleanup(blockingStore.Release)
+
+	body := fixture.warmCache(t, ns)
+	if len(body) != 0 {
+		t.Fatalf("expected empty warm cache response, got %q", string(body))
+	}
+
+	blockingStore.WaitForBlock(t)
+
+	prefix := "vex/namespaces/" + ns + "/"
+	deadline := time.Now().Add(5 * time.Second)
+	for !diskCache.IsPinned(prefix) {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected disk cache to be pinned during warm")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	blockingStore.Release()
+
+	waitForDisk := func(key string) {
+		t.Helper()
+		cacheKey := cacheKeys[key]
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := diskCache.Get(cacheKey); err == nil {
+				return
+			} else if !errors.Is(err, cache.ErrCacheMiss) {
+				t.Fatalf("unexpected disk cache error for %s: %v", key, err)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for disk cache entry %s", key)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	waitForRAM := func(key string) {
+		t.Helper()
+		memKey := cache.MemoryCacheKey{
+			Namespace: ns,
+			ShardID:   "warm",
+			ItemID:    key,
+			ItemType:  cache.TypeCentroid,
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := ramCache.Get(memKey); err == nil {
+				return
+			} else if !errors.Is(err, cache.ErrRAMCacheMiss) {
+				t.Fatalf("unexpected RAM cache error for %s: %v", key, err)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for RAM cache entry %s", key)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	for _, key := range expectedKeys {
+		waitForDisk(key)
+	}
+	waitForRAM(segment.IVFKeys.CentroidsKey)
+	waitForRAM(segment.IVFKeys.ClusterOffsetsKey)
+
+	deadline = time.Now().Add(5 * time.Second)
+	for diskCache.IsPinned(prefix) {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected disk cache to unpin after warm")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func TestObjectStoreWalCASIdempotency(t *testing.T) {
