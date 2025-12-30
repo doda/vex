@@ -1485,3 +1485,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-30T08:55:30Z] Completed integration-bm25-fts: PASS
+- Added BM25/FTS integration coverage with 202 gating until pending rebuild ready, then BM25 success.
+- Implemented queryRaw/pending rebuild/schema wait helpers and new TestObjectStoreBM25FTS flow.
+- Fixed batcher to add pending rebuilds for schema changes so FTS enables trigger readiness gating.
+- Files changed: tests/integration/object_store_test.go; internal/write/batcher.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./tests/integration -run BM25 -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: schema updates through batcher skipped pending rebuilds, blocking 202 gating.
+- Resolution: aggregated DetectSchemaRebuildChanges in batcher and applied AddPendingRebuild after AdvanceWAL.
+- Follow-ups: none.

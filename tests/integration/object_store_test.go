@@ -207,6 +207,34 @@ func (f *s3TestFixture) writeRaw(t *testing.T, ns string, data map[string]any) (
 	return resp.StatusCode, respBody
 }
 
+func (f *s3TestFixture) queryRaw(t *testing.T, ns string, data map[string]any) (int, []byte) {
+	t.Helper()
+
+	body, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("failed to marshal query request: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", f.endpoint+"/v2/namespaces/"+ns+"/query", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build query request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addAuthHeader(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("query request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	return resp.StatusCode, respBody
+}
+
 func (f *s3TestFixture) write(t *testing.T, ns string, data map[string]any) map[string]any {
 	t.Helper()
 
@@ -356,6 +384,52 @@ func waitForStateHeadSeq(t *testing.T, store objectstore.Store, ns string, want 
 				t.Fatalf("timed out waiting for state.json: %v", err)
 			}
 			t.Fatalf("timed out waiting for wal head_seq %d (current %d)", want, state.WAL.HeadSeq)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func waitForSchemaAttribute(t *testing.T, store objectstore.Store, ns, attr string) *namespace.State {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		state, err := readState(ctx, store, ns)
+		cancel()
+		if err != nil && !objectstore.IsNotFoundError(err) {
+			t.Fatalf("failed to read state.json: %v", err)
+		}
+		if err == nil && state.Schema != nil && state.Schema.Attributes != nil {
+			if _, ok := state.Schema.Attributes[attr]; ok {
+				return state
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for schema attribute %q", attr)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func waitForPendingRebuild(t *testing.T, store objectstore.Store, ns, kind, attribute string, wantReady bool) *namespace.State {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		state, err := readState(ctx, store, ns)
+		cancel()
+		if err != nil && !objectstore.IsNotFoundError(err) {
+			t.Fatalf("failed to read state.json: %v", err)
+		}
+		if err == nil {
+			for _, pr := range state.Index.PendingRebuilds {
+				if pr.Kind == kind && pr.Attribute == attribute && pr.Ready == wantReady {
+					return state
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for pending rebuild %s/%s ready=%v", kind, attribute, wantReady)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -1274,6 +1348,96 @@ func TestObjectStoreWriteBackpressure(t *testing.T) {
 	state := waitForStateHeadSeq(t, fixture.store, ns, 2)
 	if !state.NamespaceFlags.DisableBackpressure {
 		t.Fatalf("expected namespace disable_backpressure flag to be set")
+	}
+}
+
+func TestObjectStoreBM25FTS(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-bm25-fts-%d", time.Now().UnixNano())
+	fixture := newS3Fixture(t, ns)
+	defer fixture.close(t)
+
+	fixture.write(t, ns, map[string]any{
+		"schema": map[string]any{
+			"content": map[string]any{
+				"type": "string",
+			},
+		},
+		"upsert_rows": []map[string]any{
+			{"id": "doc1", "content": "hello world"},
+			{"id": "doc2", "content": "vex search engine"},
+		},
+	})
+
+	state := waitForStateHeadSeq(t, fixture.store, ns, 1)
+	if state.WAL.HeadSeq != 1 {
+		t.Fatalf("expected wal head_seq 1, got %d", state.WAL.HeadSeq)
+	}
+	state = waitForSchemaAttribute(t, fixture.store, ns, "content")
+	if len(state.Schema.Attributes["content"].FullTextSearch) != 0 {
+		t.Fatalf("expected full_text_search to be disabled initially")
+	}
+
+	fixture.write(t, ns, map[string]any{
+		"schema": map[string]any{
+			"content": map[string]any{
+				"type":             "string",
+				"full_text_search": true,
+			},
+		},
+		"upsert_rows": []map[string]any{
+			{"id": "doc3", "content": "search results for vex"},
+		},
+	})
+
+	waitForStateHeadSeq(t, fixture.store, ns, 2)
+	state = waitForSchemaAttribute(t, fixture.store, ns, "content")
+	attr := state.Schema.Attributes["content"]
+	if len(attr.FullTextSearch) == 0 {
+		t.Fatalf("expected full_text_search to be enabled in schema update")
+	}
+	waitForPendingRebuild(t, fixture.store, ns, "fts", "content", false)
+
+	status, body := fixture.queryRaw(t, ns, map[string]any{
+		"rank_by": []any{"content", "BM25", "search"},
+		"limit":   10,
+	})
+	if status != http.StatusAccepted {
+		t.Fatalf("expected 202 for pending FTS rebuild, got %d: %s", status, string(body))
+	}
+	var pendingResp map[string]any
+	if err := json.Unmarshal(body, &pendingResp); err != nil {
+		t.Fatalf("failed to unmarshal pending rebuild response: %v", err)
+	}
+	if pendingResp["status"] != "accepted" {
+		t.Fatalf("expected status accepted, got %v", pendingResp["status"])
+	}
+
+	stateMan := namespace.NewStateManager(fixture.store)
+	idx := indexer.New(fixture.store, stateMan, &indexer.IndexerConfig{
+		PollInterval:          100 * time.Millisecond,
+		NamespacePollInterval: 100 * time.Millisecond,
+	}, nil)
+	if err := idx.WatchNamespace(ns); err != nil {
+		t.Fatalf("failed to watch namespace: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := idx.Stop(); err != nil {
+			t.Logf("failed to stop indexer: %v", err)
+		}
+	})
+
+	readyState := waitForPendingRebuild(t, fixture.store, ns, "fts", "content", true)
+	if readyState.Index.IndexedWALSeq < readyState.WAL.HeadSeq {
+		t.Fatalf("expected indexed_wal_seq >= head_seq after rebuild ready, got %d < %d", readyState.Index.IndexedWALSeq, readyState.WAL.HeadSeq)
+	}
+
+	result := fixture.query(t, ns, map[string]any{
+		"rank_by": []any{"content", "BM25", "search"},
+		"limit":   10,
+	})
+	ids := extractRowIDs(t, result)
+	if !ids["doc2"] || !ids["doc3"] {
+		t.Fatalf("expected BM25 results to include doc2 and doc3, got %v", ids)
 	}
 }
 

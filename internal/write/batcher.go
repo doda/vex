@@ -351,6 +351,7 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	results := make([]*WriteResponse, len(batch.writes))
 	var schemaDelta *namespace.Schema
 	var anyDisableBackpressure bool
+	rebuildChanges := make(map[string]PendingRebuildChange)
 	baseSize, err := wal.LogicalSize(walEntry)
 	if err != nil {
 		batchErr := fmt.Errorf("failed to size WAL entry: %w", err)
@@ -413,6 +414,15 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 				for k, v := range writeSchemaDelta.Attributes {
 					schemaDelta.Attributes[k] = v
 				}
+			}
+		}
+
+		// Track pending rebuilds for schema updates in this request.
+		if pw.req.Schema != nil {
+			changes := DetectSchemaRebuildChanges(pw.req.Schema, loaded.State.Schema)
+			for _, change := range changes {
+				key := change.Kind + ":" + change.Attribute
+				rebuildChanges[key] = change
 			}
 		}
 	}
@@ -490,7 +500,7 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	}
 
 	// Update namespace state (use batchCtx for durability)
-	_, err = b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, loaded.ETag, walKeyRelative, result.LogicalBytes, namespace.AdvanceWALOptions{
+	updatedState, err := b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, loaded.ETag, walKeyRelative, result.LogicalBytes, namespace.AdvanceWALOptions{
 		SchemaDelta:         schemaDelta,
 		DisableBackpressure: anyDisableBackpressure,
 	})
@@ -506,6 +516,17 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 			}
 		}
 		return
+	}
+
+	if len(rebuildChanges) > 0 && updatedState != nil {
+		currentETag := updatedState.ETag
+		for _, change := range rebuildChanges {
+			updated, rebuildErr := b.stateMan.AddPendingRebuild(batchCtx, batch.namespace, currentETag, change.Kind, change.Attribute)
+			if rebuildErr != nil {
+				break
+			}
+			currentETag = updated.ETag
+		}
 	}
 
 	commitState.lastCommit = time.Now()
