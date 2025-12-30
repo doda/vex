@@ -232,8 +232,9 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 	if nt.upToSeq > afterSeq {
 		startSeq = nt.upToSeq + 1
 	}
+	needsPrune := afterSeq > nt.afterSeq
 
-	if startSeq > upToSeq {
+	if startSeq > upToSeq && !needsPrune {
 		// Already have everything
 		nt.mu.Unlock()
 		return nil
@@ -250,12 +251,21 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
 
+	if needsPrune {
+		if ts.pruneIndexedEntriesLocked(namespace, nt, afterSeq) {
+			if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
+				return err
+			}
+		}
+	}
+
 	startSeq = afterSeq + 1
 	if nt.upToSeq > afterSeq {
 		startSeq = nt.upToSeq + 1
 	}
 
 	if startSeq > upToSeq {
+		nt.afterSeq = afterSeq
 		return nil
 	}
 
@@ -351,6 +361,34 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 	nt.afterSeq = afterSeq
 
 	return nil
+}
+
+func (ts *TailStore) pruneIndexedEntriesLocked(namespace string, nt *namespaceTail, indexedSeq uint64) bool {
+	if indexedSeq == 0 {
+		return false
+	}
+
+	pruned := false
+	for seq, entry := range nt.entries {
+		if seq > indexedSeq {
+			continue
+		}
+		delete(nt.entries, seq)
+		nt.tailBytes -= entry.sizeBytes
+		if entry.inRAM {
+			nt.ramBytes -= entry.sizeBytes
+		}
+		if ts.diskCache != nil {
+			cacheKey := cache.CacheKey{
+				ObjectKey: entry.fullKey,
+				ETag:      "",
+			}
+			_ = ts.diskCache.Delete(cacheKey)
+		}
+		pruned = true
+	}
+
+	return pruned
 }
 
 func (ts *TailStore) Scan(ctx context.Context, namespace string, f *filter.Filter) ([]*Document, error) {

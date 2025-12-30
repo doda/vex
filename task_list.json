@@ -2976,7 +2976,7 @@
     "scope": [
       "internal/tail/store.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "integration-consistency-tail",
