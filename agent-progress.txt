@@ -1609,3 +1609,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: python not available.
 - Resolution: used python3 for task_list.json update.
+[2026-01-03T20:01:25Z] Completed metadata-approx-stats-nonzero: PASS
+- Populated metadata approx_row_count/approx_logical_bytes from index manifest stats when available.
+- Added metadata test that writes docs, indexes WAL, and asserts non-zero stats.
+- Files changed: pkg/api/router.go.
+- Files changed: pkg/api/metadata_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./pkg/api -run ApproxStatsFromManifest -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

@@ -3236,7 +3236,7 @@
       "internal/namespace",
       "internal/index"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "s3-conditional-put-atomic",
