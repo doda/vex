@@ -209,7 +209,7 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 
 	r.mux.HandleFunc("GET /health", r.handleHealth)
 	r.mux.HandleFunc("GET /metrics", r.handleMetrics)
-	r.mux.HandleFunc("POST /_test/state", r.handleSetTestState)
+	r.mux.HandleFunc("POST /_test/state", r.adminAuthMiddleware(r.handleSetTestState))
 	r.mux.HandleFunc("GET /v1/namespaces", r.authMiddleware(r.handleListNamespaces))
 	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/metadata", r.authMiddleware(r.validateNamespace(r.handleGetMetadata)))
 	r.mux.HandleFunc("GET /v1/namespaces/{namespace}/hint_cache_warm", r.authMiddleware(r.validateNamespace(r.handleWarmCache)))

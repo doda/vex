@@ -1736,3 +1736,14 @@ KEY DEPENDENCIES:
 - Tests: /usr/local/go/bin/go test ./tests/integration -run WarmCache -count=1 (pass).
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 [2026-01-03T22:14:43.216Z] Audit (codex): FAIL, 5 area(s), 15 new, lens=production-readiness.
+[2026-01-04T02:30:00Z] Completed secure-disable-test-state-endpoint: PASS
+- Admin-gated POST /_test/state behind admin auth to prevent unauthenticated state mutation.
+- Added API test asserting unauthenticated and non-admin tokens are rejected for /_test/state.
+- Files changed: pkg/api/router.go.
+- Files changed: pkg/api/test_state_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./pkg/api -run TestTestStateEndpoint_RequiresAdminAuth -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: go binary not on PATH.
+- Resolution: used /usr/local/go/bin/go for test execution.
+- Follow-ups: none.
