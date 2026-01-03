@@ -1593,3 +1593,4 @@ KEY DEPENDENCIES:
 - Challenges: needed pre-fix failing run without breaking compilation.
 - Resolution: temporarily stashed reader.go wiring, ran test to confirm failure, then restored changes.
 - Follow-ups: none.
+[2026-01-03T19:48:06.887Z] Audit (codex): FAIL, 6 area(s), 13 new, lens=spec.
