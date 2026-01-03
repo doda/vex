@@ -184,6 +184,18 @@ func (b *IVFBuilder) Build() (*IVFIndex, error) {
 		return nil, fmt.Errorf("k-means clustering failed: %w", err)
 	}
 
+	// Split oversized clusters to ensure balanced cluster sizes
+	// Target: no cluster should have more than 2x the average size
+	avgClusterSize := n / nClusters
+	maxClusterSize := avgClusterSize * 2
+	if maxClusterSize < 1000 {
+		maxClusterSize = 1000 // Minimum threshold
+	}
+
+	centroids, assignments, nClusters = splitOversizedClusters(
+		b.vectors, b.dims, centroids, assignments, nClusters, maxClusterSize, b.metric,
+	)
+
 	// Build cluster data
 	clusterOffsets, clusterData := b.buildClusterData(nClusters, assignments)
 

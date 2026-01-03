@@ -13,6 +13,7 @@ import (
 
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/indexer"
 	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/routing"
@@ -101,6 +102,16 @@ func Run(args []string) {
 			cacheWarmer := warmer.New(store, router.StateManager(), diskCache, ramCache, warmer.DefaultConfig())
 			router.SetCacheWarmer(cacheWarmer)
 		}
+
+		// Start the indexer for all-in-one mode
+		indexerConfig := indexer.DefaultConfig()
+		idx := indexer.New(store, router.StateManager(), indexerConfig, nil)
+		idx.Start()
+		fmt.Println("Indexer started")
+		defer func() {
+			fmt.Println("Stopping indexer...")
+			idx.Stop()
+		}()
 	}
 
 	srv := &http.Server{

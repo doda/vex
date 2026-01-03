@@ -162,3 +162,90 @@ func centroidChange(prev, curr []float32, dims, k int) float64 {
 	}
 	return math.Sqrt(totalChange / float64(k))
 }
+
+// splitOversizedClusters splits clusters that exceed maxSize into smaller clusters.
+// This ensures balanced cluster sizes for efficient search.
+func splitOversizedClusters(vectors []float32, dims int, centroids []float32, assignments []int, nClusters, maxSize int, metric DistanceMetric) ([]float32, []int, int) {
+	n := len(assignments)
+
+	// Count cluster sizes
+	clusterSizes := make([]int, nClusters)
+	for _, c := range assignments {
+		clusterSizes[c]++
+	}
+
+	// Find oversized clusters
+	var oversized []int
+	for i, size := range clusterSizes {
+		if size > maxSize {
+			oversized = append(oversized, i)
+		}
+	}
+
+	if len(oversized) == 0 {
+		return centroids, assignments, nClusters
+	}
+
+	// Split each oversized cluster
+	newCentroids := make([]float32, len(centroids))
+	copy(newCentroids, centroids)
+	newAssignments := make([]int, n)
+	copy(newAssignments, assignments)
+	newNClusters := nClusters
+
+	for _, clusterID := range oversized {
+		// Collect vectors in this cluster
+		var clusterVecIndices []int
+		for i, c := range newAssignments {
+			if c == clusterID {
+				clusterVecIndices = append(clusterVecIndices, i)
+			}
+		}
+
+		if len(clusterVecIndices) <= maxSize {
+			continue // Already small enough (may have been shrunk by previous splits)
+		}
+
+		// Extract vectors for this cluster
+		clusterVectors := make([]float32, len(clusterVecIndices)*dims)
+		for i, idx := range clusterVecIndices {
+			copy(clusterVectors[i*dims:(i+1)*dims], vectors[idx*dims:(idx+1)*dims])
+		}
+
+		// Split into 2 sub-clusters using k-means
+		numSplits := 2
+		for len(clusterVecIndices)/numSplits > maxSize && numSplits < 16 {
+			numSplits *= 2 // Split into more clusters if still too large
+		}
+
+		subCentroids, subAssignments, err := kmeans(clusterVectors, dims, numSplits, 20, 0.001, metric)
+		if err != nil {
+			continue // Skip splitting on error
+		}
+
+		// First sub-cluster keeps the original cluster ID
+		// Additional sub-clusters get new IDs
+		for i, subCluster := range subAssignments {
+			origIdx := clusterVecIndices[i]
+			if subCluster == 0 {
+				// Keep original assignment
+				newAssignments[origIdx] = clusterID
+			} else {
+				// Assign to new cluster
+				newClusterID := newNClusters + subCluster - 1
+				newAssignments[origIdx] = newClusterID
+			}
+		}
+
+		// Update centroid for original cluster
+		copy(newCentroids[clusterID*dims:(clusterID+1)*dims], subCentroids[0:dims])
+
+		// Add new centroids
+		for i := 1; i < numSplits; i++ {
+			newCentroids = append(newCentroids, subCentroids[i*dims:(i+1)*dims]...)
+		}
+		newNClusters += numSplits - 1
+	}
+
+	return newCentroids, newAssignments, newNClusters
+}

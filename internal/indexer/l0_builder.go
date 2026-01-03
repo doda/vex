@@ -77,11 +77,16 @@ func (p *L0SegmentProcessor) AsWALProcessor() WALProcessor {
 // ProcessWAL builds L0 segments with IVF indexes from WAL entries.
 // The etag parameter is the current namespace state ETag for optimistic locking.
 func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
+	fmt.Printf("[l0_builder] ProcessWAL starting for %s: range (%d, %d]\n", ns, startSeq, endSeq)
+
 	// Read WAL entries
 	entries, totalBytes, lastSeq, err := p.indexer.ProcessWALRange(ctx, ns, startSeq, endSeq)
 	if err != nil {
+		fmt.Printf("[l0_builder] Failed to read WAL range for %s: %v\n", ns, err)
 		return nil, fmt.Errorf("failed to read WAL range: %w", err)
 	}
+
+	fmt.Printf("[l0_builder] Read %d WAL entries for %s, totalBytes=%d, lastSeq=%d\n", len(entries), ns, totalBytes, lastSeq)
 
 	if len(entries) == 0 {
 		return &WALProcessResult{
@@ -91,18 +96,25 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 		}, nil
 	}
 
+	fmt.Printf("[l0_builder] Checking for patch mutations in %s...\n", ns)
 	var baseDocs map[uint64]baseDocument
 	if hasPatchMutations(entries) {
+		fmt.Printf("[l0_builder] Loading base documents for %s...\n", ns)
 		baseDocs, err = p.loadBaseDocuments(ctx, ns, state)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load base documents: %w", err)
 		}
+		fmt.Printf("[l0_builder] Loaded %d base documents for %s\n", len(baseDocs), ns)
 	}
 
 	// Extract documents from WAL entries (including non-vector upserts)
+	fmt.Printf("[l0_builder] Extracting documents from %d entries for %s...\n", len(entries), ns)
 	docs, dims := extractDocuments(entries, baseDocs)
+	fmt.Printf("[l0_builder] Extracted %d documents (dims=%d) for %s\n", len(docs), dims, ns)
+
 	if len(docs) == 0 {
 		// No vectors or tombstones in this WAL range, just track the bytes processed
+		fmt.Printf("[l0_builder] No documents to index for %s\n", ns)
 		return &WALProcessResult{
 			BytesIndexed:       totalBytes,
 			ProcessedWALSeq:    lastSeq,
@@ -128,6 +140,7 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 	}
 
 	// Build L0 segment with IVF index
+	fmt.Printf("[l0_builder] Building L0 segment for %s with %d docs...\n", ns, len(docs))
 	schemaDef := buildSchemaDefinition(state)
 	ftsConfigs, err := buildFTSConfigs(state)
 	if err != nil {
@@ -139,11 +152,13 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 	}
 
 	if segment != nil {
+		fmt.Printf("[l0_builder] Publishing segment for %s...\n", ns)
 		// Publish the new manifest with the L0 segment and update state
 		result, err := p.publishSegment(ctx, ns, segment, state, etag)
 		if err != nil {
 			return nil, fmt.Errorf("failed to publish segment: %w", err)
 		}
+		fmt.Printf("[l0_builder] Published segment for %s successfully\n", ns)
 		result.BytesIndexed = totalBytes
 		return result, nil
 	}
@@ -489,13 +504,14 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	// Determine number of clusters
 	nClusters := p.config.NClusters
 	if nClusters <= 0 && len(vectorDocs) > 0 {
-		// Auto-calculate: sqrt(n), capped at 256
+		// Auto-calculate: sqrt(n), but cap at 32 for build speed
+		// The IVF build with k-means++ is O(n * k * dims) which is too slow for large k
 		nClusters = intSqrt(len(vectorDocs))
 		if nClusters < 1 {
 			nClusters = 1
 		}
-		if nClusters > 256 {
-			nClusters = 256
+		if nClusters > 32 {
+			nClusters = 32
 		}
 	}
 	if len(vectorDocs) > 0 && nClusters > len(vectorDocs) {
@@ -523,10 +539,12 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		}
 
 		var err error
-		ivfIndex, err = builder.Build()
+		// Use single-pass build for speed - full k-means is too slow for large indexes
+		ivfIndex, err = builder.BuildWithSinglePass()
 		if err != nil {
 			return nil, fmt.Errorf("failed to build IVF index: %w", err)
 		}
+		fmt.Printf("[l0_builder] IVF index built for %s: %d clusters\n", ns, ivfIndex.NClusters)
 
 		if err := ivfIndex.WriteCentroidsFile(&centroidsBuf); err != nil {
 			return nil, fmt.Errorf("failed to serialize centroids: %w", err)

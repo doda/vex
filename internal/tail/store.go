@@ -249,11 +249,10 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 	}
 
 	nt.mu.Lock()
-	defer nt.mu.Unlock()
-
 	if needsPrune {
 		if ts.pruneIndexedEntriesLocked(namespace, nt, afterSeq) {
 			if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
+				nt.mu.Unlock()
 				return err
 			}
 		}
@@ -266,8 +265,10 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 
 	if startSeq > upToSeq {
 		nt.afterSeq = afterSeq
+		nt.mu.Unlock()
 		return nil
 	}
+	nt.mu.Unlock()
 
 	decoder, err := wal.NewDecoder()
 	if err != nil {
@@ -290,7 +291,7 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 
 		if ts.diskCache != nil {
 			if reader, err := ts.diskCache.GetReader(cacheKey); err == nil {
-				compressed, err = readAll(reader)
+				compressed, err = readAllWithContext(ctx, reader)
 				reader.Close()
 				if err != nil {
 					compressed = nil
@@ -307,7 +308,7 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 				}
 				return err
 			}
-			compressed, err = readAll(reader)
+			compressed, err = readAllWithContext(ctx, reader)
 			reader.Close()
 			if err != nil {
 				return err
@@ -320,7 +321,14 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 		}
 
 		sizeBytes := int64(len(compressed))
+		nt.mu.Lock()
+		if _, exists := nt.entries[seq]; exists {
+			nt.mu.Unlock()
+			continue
+		}
 		keepInRAM := ts.shouldKeepInRAM(nt, sizeBytes)
+		nt.mu.Unlock()
+
 		var entry *wal.WalEntry
 		var docs []*Document
 		if keepInRAM {
@@ -338,27 +346,36 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 			inRAM:     keepInRAM,
 		}
 
-		nt.entries[seq] = entryState
-		nt.tailBytes += entryState.sizeBytes
-		if keepInRAM {
-			nt.ramBytes += entryState.sizeBytes
-		}
-		if seq > nt.upToSeq {
-			nt.upToSeq = seq
-		}
+		nt.mu.Lock()
+		if _, exists := nt.entries[seq]; !exists {
+			nt.entries[seq] = entryState
+			nt.tailBytes += entryState.sizeBytes
+			if keepInRAM {
+				nt.ramBytes += entryState.sizeBytes
+			}
+			if seq > nt.upToSeq {
+				nt.upToSeq = seq
+			}
 
-		if err := ts.enforceRAMCapLocked(nt); err != nil {
-			return err
+			if err := ts.enforceRAMCapLocked(nt); err != nil {
+				nt.mu.Unlock()
+				return err
+			}
+			if err := ts.enforceGuardrailsCapLocked(nt); err != nil {
+				nt.mu.Unlock()
+				return err
+			}
+			if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
+				nt.mu.Unlock()
+				return err
+			}
 		}
-		if err := ts.enforceGuardrailsCapLocked(nt); err != nil {
-			return err
-		}
-		if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
-			return err
-		}
+		nt.mu.Unlock()
 	}
 
+	nt.mu.Lock()
 	nt.afterSeq = afterSeq
+	nt.mu.Unlock()
 
 	return nil
 }
@@ -774,7 +791,7 @@ func (ts *TailStore) loadCompressedEntry(ctx context.Context, fullKey string) ([
 
 	if ts.diskCache != nil {
 		if reader, err := ts.diskCache.GetReader(cacheKey); err == nil {
-			compressed, err := readAll(reader)
+			compressed, err := readAllWithContext(ctx, reader)
 			reader.Close()
 			if err == nil {
 				return compressed, nil
@@ -789,7 +806,7 @@ func (ts *TailStore) loadCompressedEntry(ctx context.Context, fullKey string) ([
 		}
 		return nil, err
 	}
-	compressed, err := readAll(reader)
+	compressed, err := readAllWithContext(ctx, reader)
 	reader.Close()
 	if err != nil {
 		return nil, err

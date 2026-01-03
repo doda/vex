@@ -1,6 +1,7 @@
 package tail
 
 import (
+	"context"
 	"encoding/binary"
 	"io"
 	"math"
@@ -10,9 +11,33 @@ import (
 	"github.com/vexsearch/vex/internal/wal"
 )
 
-// readAll reads all bytes from a reader.
-func readAll(r io.Reader) ([]byte, error) {
-	return io.ReadAll(r)
+// readAllWithContext reads all bytes from a reader, honoring context cancellation.
+func readAllWithContext(ctx context.Context, r io.Reader) ([]byte, error) {
+	if ctx == nil {
+		return io.ReadAll(r)
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(r)
+		select {
+		case done <- result{data: data, err: err}:
+		default:
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		if closer, ok := r.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, ctx.Err()
+	case res := <-done:
+		return res.data, res.err
+	}
 }
 
 // materializeEntry converts a WAL entry into materialized documents.
