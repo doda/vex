@@ -157,7 +157,8 @@ type ParsedRankBy struct {
 }
 
 // DefaultNProbe is the default number of centroids to probe in ANN search.
-const DefaultNProbe = 8
+// Lower values = faster queries, higher values = better recall.
+const DefaultNProbe = 4
 
 // Handler handles query operations.
 type Handler struct {

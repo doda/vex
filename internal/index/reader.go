@@ -625,10 +625,32 @@ func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, cl
 		}
 	}
 
-	// Stream large clusters one at a time
-	for _, rng := range largeRanges {
-		if err := r.searchClusterStreaming(ctx, clusterDataKey, rng, query, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap, collector); err != nil {
-			continue // Skip failed clusters
+	// Stream large clusters in parallel to utilize all CPU cores
+	if len(largeRanges) > 0 {
+		var wg sync.WaitGroup
+		// Create per-goroutine collectors to avoid contention
+		collectors := make([]*topKCollector, len(largeRanges))
+		for i := range collectors {
+			collectors[i] = newTopKCollector(collector.limit)
+		}
+
+		for i, rng := range largeRanges {
+			wg.Add(1)
+			go func(idx int, byteRange vector.ByteRange) {
+				defer wg.Done()
+				// Each goroutine uses its own collector
+				if err := r.searchClusterStreaming(ctx, clusterDataKey, byteRange, query, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap, collectors[idx]); err != nil {
+					// Skip failed clusters
+				}
+			}(i, rng)
+		}
+		wg.Wait()
+
+		// Merge results from all collectors
+		for _, c := range collectors {
+			for _, res := range c.results() {
+				collector.consider(res)
+			}
 		}
 	}
 
@@ -651,11 +673,13 @@ func (r *Reader) streamingChunkSize(entrySize int) int {
 }
 
 // searchClusterStreaming searches a large cluster by streaming data in chunks.
+// Uses disk cache to avoid repeated S3 fetches for the same chunks.
 func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey string, rng vector.ByteRange, query []float32, dims int, dtype vector.DType, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
 	// Each vector entry is: 8 bytes (docID) + dims*element bytes (vector data)
 	entrySize := 8 + dims*vectorBytesPerElement(dtype)
 	chunkSize := r.streamingChunkSize(entrySize)
 
+	ns := namespaceFromClusterDataKey(clusterDataKey)
 	offset := rng.Offset
 	remaining := rng.Length
 
@@ -665,24 +689,54 @@ func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey stri
 			fetchLen = remaining
 		}
 
-		opts := &objectstore.GetOptions{
-			Range: &objectstore.ByteRange{
-				Start: int64(offset),
-				End:   int64(offset + fetchLen - 1),
-			},
+		// Try disk cache first
+		cacheKey := cache.CacheKey{
+			ObjectKey: fmt.Sprintf("%s#%d-%d", clusterDataKey, offset, fetchLen),
 		}
 
-		reader, _, err := r.store.Get(ctx, clusterDataKey, opts)
-		if err != nil {
-			return fmt.Errorf("failed to fetch cluster chunk: %w", err)
+		var data []byte
+		var err error
+		cacheHit := false
+
+		if r.diskCache != nil {
+			if cacheReader, cacheErr := r.diskCache.GetReader(cacheKey); cacheErr == nil {
+				metrics.IncANNClusterRangeCacheHit(ns)
+				data, err = readAllWithContext(ctx, cacheReader)
+				cacheReader.Close()
+				if err == nil {
+					cacheHit = true
+				}
+			} else if errors.Is(cacheErr, cache.ErrCacheMiss) {
+				metrics.IncANNClusterRangeCacheMiss(ns)
+			}
 		}
 
-		// Use LimitReader to only read the expected amount (minio may return more than requested)
-		limitedReader := io.LimitReader(reader, int64(fetchLen))
-		data, err := readAllWithContext(ctx, limitedReader)
-		reader.Close()
-		if err != nil {
-			return fmt.Errorf("failed to read cluster chunk: %w", err)
+		// Fetch from S3 if not in cache
+		if !cacheHit {
+			opts := &objectstore.GetOptions{
+				Range: &objectstore.ByteRange{
+					Start: int64(offset),
+					End:   int64(offset + fetchLen - 1),
+				},
+			}
+
+			reader, _, err := r.store.Get(ctx, clusterDataKey, opts)
+			if err != nil {
+				return fmt.Errorf("failed to fetch cluster chunk: %w", err)
+			}
+
+			// Use LimitReader to only read the expected amount (minio may return more than requested)
+			limitedReader := io.LimitReader(reader, int64(fetchLen))
+			data, err = readAllWithContext(ctx, limitedReader)
+			reader.Close()
+			if err != nil {
+				return fmt.Errorf("failed to read cluster chunk: %w", err)
+			}
+
+			// Store in cache for next time
+			if r.diskCache != nil {
+				r.diskCache.PutBytes(cacheKey, data)
+			}
 		}
 
 		// Search this chunk
