@@ -2,6 +2,7 @@
 package index
 
 import (
+	"bufio"
 	"bytes"
 	"container/heap"
 	"context"
@@ -1106,14 +1107,7 @@ func (r *Reader) GetManifestSegments(ctx context.Context, manifestKey string) ([
 }
 
 // IndexedDocument represents a document read from an index segment.
-// Uses default JSON field names to match the compactor's docs column format.
-type IndexedDocument struct {
-	ID         string
-	NumericID  uint64
-	WALSeq     uint64
-	Deleted    bool
-	Attributes map[string]any
-}
+type IndexedDocument = DocColumn
 
 // LoadSegmentDocs loads documents from all segments in a manifest.
 // Documents are returned with their WAL sequence for deduplication.
@@ -1186,13 +1180,27 @@ func (r *Reader) loadDocsFromSegment(ctx context.Context, seg Segment) ([]Indexe
 		return nil, nil
 	}
 
-	// Decode column format (JSON encoded docs, matching compactor format)
-	var docs []IndexedDocument
-	if err := json.Unmarshal(data, &docs); err != nil {
-		return nil, fmt.Errorf("failed to parse docs data: %w", err)
+	decoded := data
+	if IsZstdCompressed(data) {
+		decoded, err = DecompressZstd(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decompress docs: %w", err)
+		}
 	}
 
-	return docs, nil
+	docs, err := DecodeDocsColumn(decoded)
+	if err == nil {
+		return docs, nil
+	}
+	if errors.Is(err, ErrDocsColumnFormat) || errors.Is(err, ErrDocsColumnVersion) {
+		var fallbackDocs []IndexedDocument
+		if err := json.Unmarshal(decoded, &fallbackDocs); err != nil {
+			return nil, fmt.Errorf("failed to parse docs data: %w", err)
+		}
+		return fallbackDocs, nil
+	}
+
+	return nil, err
 }
 
 // LoadDocsForIDs loads only the documents matching the specified numeric IDs.
@@ -1329,8 +1337,17 @@ func (r *Reader) loadDocsForIDsFromSegment(ctx context.Context, seg Segment, idS
 		jsonReader = fullReader
 	}
 
+	buffered := bufio.NewReader(jsonReader)
+	peek, err := buffered.Peek(len(docsColumnMagic))
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("failed to peek docs column magic: %w", err)
+	}
+	if len(peek) == len(docsColumnMagic) && bytes.Equal(peek, docsColumnMagic[:]) {
+		return DecodeDocsColumnForIDs(buffered, idSet)
+	}
+
 	// Use streaming JSON decoder directly from the reader (no buffering the whole file)
-	decoder := json.NewDecoder(jsonReader)
+	decoder := json.NewDecoder(buffered)
 
 	// Read opening bracket
 	token, err := decoder.Token()

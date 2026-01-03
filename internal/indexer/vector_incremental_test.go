@@ -158,7 +158,7 @@ func TestVectorIncrementalUpdates_Step1_TailExhaustiveScan(t *testing.T) {
 		store.mu.Unlock()
 
 		// Refresh to include new entry
-		err := tailStore.Refresh(ctx, "test-ns", 1, 2)
+		err := tailStore.Refresh(ctx, "test-ns", 0, 2)
 		if err != nil {
 			t.Fatalf("Refresh failed: %v", err)
 		}
@@ -505,7 +505,7 @@ func TestL0SegmentRecordsTombstones(t *testing.T) {
 	}
 	found := false
 	for _, doc := range segmentDocs {
-		if doc.ID == "1" && doc.Deleted && doc.WALSeq == 2 {
+		if doc.ID == "u64:1" && doc.Deleted && doc.WALSeq == 2 {
 			found = true
 			break
 		}

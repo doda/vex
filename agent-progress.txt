@@ -1681,3 +1681,16 @@ KEY DEPENDENCIES:
 - Challenges: gofmt not on PATH.
 - Resolution: used /usr/local/go/bin/gofmt.
 - Follow-ups: none.
+[2026-01-04T00:00:00Z] Completed segment-docs-columnar-zstd: PASS
+- Implemented zstd-compressed columnar docs format with new encoder/decoder and reader support.
+- Updated L0 builder and compactor to write columnar docs, and reader/compactor to decode with JSON fallback.
+- Switched index segments to store typed ID keys (u64:/uuid:/str:) so queries return correct ID types.
+- Added docs column round-trip + compression test and updated indexer/query tests for new format.
+- Files changed: internal/index/docs_column.go, internal/index/reader.go, internal/index/compactor.go, internal/index/docs_column_test.go.
+- Files changed: internal/indexer/l0_builder.go, internal/indexer/non_vector_docs_test.go, internal/indexer/non_u64_ids_test.go, internal/indexer/vector_incremental_test.go.
+- Files changed: internal/query/order_by_index_test.go, internal/query/bm25_index_scan_test.go, internal/index/reader_large_test.go, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/index ./internal/indexer -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./internal/query -run "OrderByWithIndexedDocuments|BM25IndexScan" -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: indexer tests failed due to typed ID expectations and tail refresh pruning.
+- Resolution: aligned tests with typed ID keys and refreshed tail with afterSeq=0 to keep unindexed WAL.

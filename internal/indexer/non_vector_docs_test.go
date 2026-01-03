@@ -103,10 +103,10 @@ func TestIndexerIncludesNonVectorDocs(t *testing.T) {
 	for _, doc := range indexedDocs {
 		docAttrs[doc.ID] = doc.Attributes
 	}
-	if attrs, ok := docAttrs["1"]; !ok || attrs["name"] != "alpha" {
+	if attrs, ok := docAttrs["u64:1"]; !ok || attrs["name"] != "alpha" {
 		t.Errorf("expected doc 1 attributes to include name=alpha, got %v", attrs)
 	}
-	if attrs, ok := docAttrs["2"]; !ok || attrs["name"] != "beta" {
+	if attrs, ok := docAttrs["u64:2"]; !ok || attrs["name"] != "beta" {
 		t.Errorf("expected doc 2 attributes to include name=beta, got %v", attrs)
 	}
 

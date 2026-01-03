@@ -58,6 +58,8 @@ func TestIndexerSupportsUUIDAndStringIDs(t *testing.T) {
 
 	uuidVal := uuid.MustParse("123e4567-e89b-12d3-a456-426614174000")
 	stringID := "doc-string-1"
+	expectedUUIDKey := fmt.Sprintf("uuid:%x", uuidVal[:])
+	expectedStringKey := "str:" + stringID
 
 	docs := []vectorIDDoc{
 		{id: &wal.DocumentID{Id: &wal.DocumentID_Uuid{Uuid: uuidVal[:]}}, vector: []float32{1.0, 0.0, 0.0, 0.0}},
@@ -105,11 +107,11 @@ func TestIndexerSupportsUUIDAndStringIDs(t *testing.T) {
 	for _, doc := range indexedDocs {
 		seen[doc.ID] = true
 	}
-	if !seen[uuidVal.String()] {
-		t.Errorf("expected UUID doc %s in docs column", uuidVal.String())
+	if !seen[expectedUUIDKey] {
+		t.Errorf("expected UUID doc key %s in docs column", expectedUUIDKey)
 	}
-	if !seen[stringID] {
-		t.Errorf("expected string doc %s in docs column", stringID)
+	if !seen[expectedStringKey] {
+		t.Errorf("expected string doc key %s in docs column", expectedStringKey)
 	}
 
 	handler := query.NewHandler(store, stateMan, nil)
