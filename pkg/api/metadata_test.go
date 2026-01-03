@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vexsearch/vex/internal/indexer"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -68,6 +70,83 @@ func TestMetadataEndpoint_ReturnsNamespaceMetadata(t *testing.T) {
 	// Verify approx_logical_bytes is present
 	if _, ok := result["approx_logical_bytes"]; !ok {
 		t.Errorf("expected approx_logical_bytes field")
+	}
+}
+
+func TestMetadataEndpoint_ApproxStatsFromManifest(t *testing.T) {
+	cfg := testConfig()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	body := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "name": "alpha", "value": 100},
+			map[string]any{"id": 2, "name": "beta", "value": 200},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/stats-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeAuthed(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(w.Result().Body)
+		t.Fatalf("failed to create namespace: %d, body: %s", w.Result().StatusCode, string(respBody))
+	}
+
+	loaded, err := router.stateManager.Load(context.Background(), "stats-ns")
+	if err != nil {
+		t.Fatalf("failed to load state for indexing: %v", err)
+	}
+	if loaded.State.WAL.HeadSeq == 0 {
+		t.Fatalf("expected wal head seq to be > 0")
+	}
+
+	idx := indexer.New(store, router.stateManager, nil, nil)
+	processor := indexer.NewL0SegmentProcessor(store, router.stateManager, nil, idx)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := processor.ProcessWAL(ctx, "stats-ns", 0, loaded.State.WAL.HeadSeq, loaded.State, loaded.ETag)
+	if err != nil {
+		t.Fatalf("failed to index wal range: %v", err)
+	}
+	if result == nil || !result.ManifestWritten {
+		t.Fatalf("expected manifest to be written during indexing")
+	}
+
+	req = httptest.NewRequest("GET", "/v1/namespaces/stats-ns/metadata", nil)
+	w = httptest.NewRecorder()
+	router.ServeAuthed(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var metadata map[string]any
+	if err := json.Unmarshal(respBody, &metadata); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	rowCount, ok := metadata["approx_row_count"].(float64)
+	if !ok {
+		t.Fatalf("expected approx_row_count to be numeric, got %T", metadata["approx_row_count"])
+	}
+	if rowCount <= 0 {
+		t.Errorf("expected approx_row_count > 0, got %v", rowCount)
+	}
+
+	logicalBytes, ok := metadata["approx_logical_bytes"].(float64)
+	if !ok {
+		t.Fatalf("expected approx_logical_bytes to be numeric, got %T", metadata["approx_logical_bytes"])
+	}
+	if logicalBytes <= 0 {
+		t.Errorf("expected approx_logical_bytes > 0, got %v", logicalBytes)
 	}
 }
 

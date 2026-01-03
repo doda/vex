@@ -19,6 +19,7 @@ import (
 	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/guardrails"
+	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
 	"github.com/vexsearch/vex/internal/namespace"
@@ -513,10 +514,22 @@ func (r *Router) handleGetMetadata(w http.ResponseWriter, req *http.Request) {
 			indexObj["unindexed_bytes"] = state.WAL.BytesUnindexedEst
 		}
 
+		approxRowCount := int64(0)
+		approxLogicalBytes := int64(0)
+		if state.Index.ManifestSeq > 0 && state.Index.ManifestKey != "" {
+			manifest, err := index.LoadManifest(req.Context(), r.store, ns, state.Index.ManifestSeq)
+			if err != nil {
+				r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
+				return
+			}
+			approxRowCount = manifest.Stats.ApproxRowCount
+			approxLogicalBytes = manifest.Stats.ApproxLogicalBytes
+		}
+
 		response := map[string]interface{}{
 			"namespace":            ns,
-			"approx_row_count":     int64(0),
-			"approx_logical_bytes": int64(0),
+			"approx_row_count":     approxRowCount,
+			"approx_logical_bytes": approxLogicalBytes,
 			"created_at":           state.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
 			"updated_at":           state.UpdatedAt.Format("2006-01-02T15:04:05.000Z"),
 			"encryption": map[string]interface{}{
