@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -214,11 +215,11 @@ func extractDocuments(entries []*wal.WalEntry, baseDocs map[uint64]baseDocument)
 				switch mutation.Type {
 				case wal.MutationType_MUTATION_TYPE_DELETE:
 					docMap[docKey] = &vectorDocument{
-						id:      docID,
-						idKey:   docKey,
-						walSeq:  entry.Seq,
+						id:        docID,
+						idKey:     docKey,
+						walSeq:    entry.Seq,
 						numericID: numericID,
-						deleted: true,
+						deleted:   true,
 					}
 
 				case wal.MutationType_MUTATION_TYPE_UPSERT:
@@ -236,13 +237,13 @@ func extractDocuments(entries []*wal.WalEntry, baseDocs map[uint64]baseDocument)
 					}
 
 					docMap[docKey] = &vectorDocument{
-						id:      docID,
-						idKey:   docKey,
-						walSeq:  entry.Seq,
+						id:        docID,
+						idKey:     docKey,
+						walSeq:    entry.Seq,
 						numericID: numericID,
-						vec:     vec,
-						attrs:   attrs,
-						deleted: false,
+						vec:       vec,
+						attrs:     attrs,
+						deleted:   false,
 					}
 
 				case wal.MutationType_MUTATION_TYPE_PATCH:
@@ -467,15 +468,6 @@ func numericIDForKey(key string) uint64 {
 	return id
 }
 
-type vectorDocColumn struct {
-	ID         string
-	NumericID  uint64
-	WALSeq     uint64
-	Deleted    bool
-	Attributes map[string]any
-	Vector     []float32
-}
-
 // buildL0Segment builds an L0 segment with IVF index from the documents.
 func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, startSeq, endSeq uint64, docs []vectorDocument, dims int, dtype vector.DType, metric vector.DistanceMetric, schemaDef *schema.Definition, ftsConfigs map[string]*fts.Config) (*index.Segment, error) {
 	if len(docs) == 0 {
@@ -570,10 +562,10 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		}
 	}
 
-	docColumns := make([]vectorDocColumn, 0, len(docs))
+	docColumns := make([]index.DocColumn, 0, len(docs))
 	for _, doc := range docs {
-		docColumns = append(docColumns, vectorDocColumn{
-			ID:         doc.id.String(),
+		docColumns = append(docColumns, index.DocColumn{
+			ID:         doc.idKey,
 			NumericID:  doc.numericID,
 			WALSeq:     doc.walSeq,
 			Deleted:    doc.deleted,
@@ -581,9 +573,13 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 			Vector:     doc.vec,
 		})
 	}
-	docsData, err := json.Marshal(docColumns)
+	rawDocsData, err := index.EncodeDocsColumn(docColumns)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize docs: %w", err)
+	}
+	docsData, err := index.CompressDocsColumn(rawDocsData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compress docs: %w", err)
 	}
 	docsKey, err := writer.WriteDocsData(ctx, docsData)
 	if err != nil {
@@ -795,15 +791,6 @@ func hasPatchMutations(entries []*wal.WalEntry) bool {
 	return false
 }
 
-type baseDocColumn struct {
-	ID         string
-	NumericID  uint64
-	WALSeq     uint64
-	Deleted    bool
-	Attributes map[string]any
-	Vector     []float32
-}
-
 func (p *L0SegmentProcessor) loadBaseDocuments(ctx context.Context, ns string, state *namespace.State) (map[uint64]baseDocument, error) {
 	if state == nil || state.Index.ManifestKey == "" {
 		return nil, nil
@@ -835,15 +822,35 @@ func (p *L0SegmentProcessor) loadBaseDocuments(ctx context.Context, ns string, s
 			continue
 		}
 
-		var docs []baseDocColumn
-		if err := json.Unmarshal(data, &docs); err != nil {
-			return nil, fmt.Errorf("failed to parse docs data: %w", err)
+		decoded := data
+		if index.IsZstdCompressed(data) {
+			decoded, err = index.DecompressZstd(data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decompress docs data: %w", err)
+			}
+		}
+
+		docs, err := index.DecodeDocsColumn(decoded)
+		if err != nil {
+			if errors.Is(err, index.ErrDocsColumnFormat) || errors.Is(err, index.ErrDocsColumnVersion) {
+				var fallbackDocs []index.DocColumn
+				if err := json.Unmarshal(decoded, &fallbackDocs); err != nil {
+					return nil, fmt.Errorf("failed to parse docs data: %w", err)
+				}
+				docs = fallbackDocs
+			} else {
+				return nil, fmt.Errorf("failed to decode docs data: %w", err)
+			}
 		}
 
 		for _, doc := range docs {
 			numericID := doc.NumericID
 			if numericID == 0 && doc.ID != "" {
-				if parsedID, err := document.ParseID(doc.ID); err == nil {
+				parsedID, err := document.ParseIDKey(doc.ID)
+				if err != nil {
+					parsedID, err = document.ParseID(doc.ID)
+				}
+				if err == nil {
 					idKey := documentIDKeyFromID(parsedID)
 					numericID = numericIDForKey(idKey)
 				}

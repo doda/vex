@@ -41,9 +41,9 @@ func TestLargeSegmentDocsMemory(t *testing.T) {
 		}
 	}
 
-	docsData, err := json.Marshal(docs)
+	docsData, err := EncodeDocsColumnZstd(docs)
 	if err != nil {
-		t.Fatalf("failed to marshal docs: %v", err)
+		t.Fatalf("failed to encode docs: %v", err)
 	}
 	docsKey := "vex/namespaces/test-ns/index/segments/seg_001/docs.col.zst"
 
@@ -127,7 +127,7 @@ func TestLargeSegmentDocsMemory(t *testing.T) {
 	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterOffsetsKey, bytes.NewReader(offsetsData), int64(len(offsetsData)), nil)
 	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterDataKey, bytes.NewReader(allClusterData), int64(len(allClusterData)), nil)
 
-	t.Logf("Created test data: %d docs, docs.json size: %d bytes (%.1f MB)",
+	t.Logf("Created test data: %d docs, docs.col.zst size: %d bytes (%.1f MB)",
 		numDocs, len(docsData), float64(len(docsData))/(1024*1024))
 
 	reader := NewReader(store, nil, nil)
@@ -187,7 +187,7 @@ func TestLoadDocsForIDs(t *testing.T) {
 		}
 	}
 
-	docsData, _ := json.Marshal(docs)
+	docsData, _ := EncodeDocsColumnZstd(docs)
 	docsKey := "vex/namespaces/test-ns/index/segments/seg_001/docs.col.zst"
 
 	manifest := &Manifest{
@@ -262,7 +262,7 @@ func BenchmarkLoadSegmentDocsLarge(b *testing.B) {
 		}
 	}
 
-	docsData, _ := json.Marshal(docs)
+	docsData, _ := EncodeDocsColumnZstd(docs)
 	docsKey := "vex/namespaces/test-ns/index/segments/seg_001/docs.col.zst"
 
 	manifest := &Manifest{
@@ -313,7 +313,7 @@ func BenchmarkLoadDocsForIDs(b *testing.B) {
 		}
 	}
 
-	docsData, _ := json.Marshal(docs)
+	docsData, _ := EncodeDocsColumnZstd(docs)
 	docsKey := "vex/namespaces/test-ns/index/segments/seg_001/docs.col.zst"
 
 	manifest := &Manifest{

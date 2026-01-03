@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -157,14 +160,7 @@ func (c *FullCompactor) Compact(ctx context.Context, plan *CompactionPlan) (*Com
 }
 
 // MergedDocument represents a document after merging/deduplication.
-type MergedDocument struct {
-	ID         string
-	NumericID  uint64 // Parsed numeric ID (0 if ID is non-numeric)
-	WALSeq     uint64
-	Deleted    bool
-	Attributes map[string]any
-	Vector     []float32
-}
+type MergedDocument = DocColumn
 
 // readSegmentDocuments reads documents from all source segments.
 func (c *FullCompactor) readSegmentDocuments(ctx context.Context, segments []Segment) ([]MergedDocument, error) {
@@ -204,19 +200,44 @@ func (c *FullCompactor) readSegmentDocs(ctx context.Context, seg Segment) ([]Mer
 		return nil, fmt.Errorf("failed to read docs data: %w", err)
 	}
 
-	// Decode column format (simplified - assumes JSON encoded docs)
-	var docs []MergedDocument
-	if err := json.Unmarshal(data, &docs); err != nil {
-		// Fallback: try to read from IVF if docs format fails
-		return c.readDocsFromIVF(ctx, seg)
+	decoded := data
+	if IsZstdCompressed(data) {
+		decoded, err = DecompressZstd(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decompress docs data: %w", err)
+		}
+	}
+
+	docs, err := DecodeDocsColumn(decoded)
+	if err != nil {
+		if errors.Is(err, ErrDocsColumnFormat) || errors.Is(err, ErrDocsColumnVersion) {
+			var fallbackDocs []MergedDocument
+			if err := json.Unmarshal(decoded, &fallbackDocs); err != nil {
+				// Fallback: try to read from IVF if docs format fails
+				return c.readDocsFromIVF(ctx, seg)
+			}
+			docs = fallbackDocs
+		} else {
+			return nil, fmt.Errorf("failed to decode docs column: %w", err)
+		}
 	}
 
 	// Ensure NumericID is derived from ID for docs loaded from JSON
 	for i := range docs {
 		if docs[i].NumericID == 0 && docs[i].ID != "" {
-			// Try to parse ID as numeric
-			var numID uint64
-			if _, err := fmt.Sscanf(docs[i].ID, "%d", &numID); err == nil && numID != 0 {
+			if parsedID, err := document.ParseIDKey(docs[i].ID); err == nil {
+				if parsedID.Type() == document.IDTypeU64 {
+					docs[i].NumericID = parsedID.U64()
+					continue
+				}
+			}
+			if parsedID, err := document.ParseID(docs[i].ID); err == nil {
+				if parsedID.Type() == document.IDTypeU64 {
+					docs[i].NumericID = parsedID.U64()
+					continue
+				}
+			}
+			if numID, err := strconv.ParseUint(docs[i].ID, 10, 64); err == nil && numID != 0 {
 				docs[i].NumericID = numID
 			}
 		}
@@ -284,7 +305,7 @@ func (c *FullCompactor) readDocsFromIVF(ctx context.Context, seg Segment) ([]Mer
 	merged := make([]MergedDocument, 0, len(docs))
 	for _, doc := range docs {
 		merged = append(merged, MergedDocument{
-			ID:        fmt.Sprintf("%d", doc.ID),
+			ID:        fmt.Sprintf("u64:%d", doc.ID),
 			NumericID: doc.ID,
 			WALSeq:    seg.EndWALSeq, // Approximate with segment's end WAL seq
 			Vector:    doc.Vector,
@@ -371,16 +392,19 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 	// Always write docs column to preserve WAL sequence and tombstone metadata
 	var docsKey string
 	if len(docs) > 0 {
-		docsData, err := json.Marshal(docs)
+		rawDocsData, err := EncodeDocsColumn(docs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to serialize docs: %w", err)
+		}
+		docsData, err := CompressDocsColumn(rawDocsData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compress docs: %w", err)
 		}
 		docsKey, err = writer.WriteDocsData(ctx, docsData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to write docs: %w", err)
 		}
 		result.ObjectsWritten = append(result.ObjectsWritten, docsKey)
-		result.BytesWritten += int64(len(docsData))
 	}
 
 	writer.Seal()
@@ -521,10 +545,10 @@ func intSqrt(n int) int {
 
 // BackgroundCompactor manages background compaction for namespaces.
 type BackgroundCompactor struct {
-	store     objectstore.Store
-	lsmConfig *LSMConfig
+	store      objectstore.Store
+	lsmConfig  *LSMConfig
 	compConfig *CompactorConfig
-	stateMan  *namespace.StateManager
+	stateMan   *namespace.StateManager
 
 	mu        sync.RWMutex
 	trees     map[string]*LSMTree

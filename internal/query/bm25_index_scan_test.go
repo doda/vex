@@ -83,11 +83,11 @@ func setupIndexedDocsInStore(t *testing.T, ctx context.Context, store objectstor
 	t.Helper()
 
 	// Create the segment docs file
-	docsData, err := json.Marshal(docs)
+	docsData, err := index.EncodeDocsColumnZstd(docs)
 	if err != nil {
-		t.Fatalf("failed to marshal docs: %v", err)
+		t.Fatalf("failed to encode docs: %v", err)
 	}
-	docsKey := "vex/namespaces/" + nsName + "/index/segments/seg_001/docs.json"
+	docsKey := "vex/namespaces/" + nsName + "/index/segments/seg_001/docs.col.zst"
 	store.PutIfAbsent(ctx, docsKey, bytes.NewReader(docsData), int64(len(docsData)), nil)
 
 	// Create the manifest

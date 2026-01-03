@@ -3344,7 +3344,7 @@
       "internal/indexer/l0_builder.go",
       "internal/index/segment.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "fts-artifact-key-format",

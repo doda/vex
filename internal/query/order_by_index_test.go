@@ -73,7 +73,7 @@ func (m *indexOrderByMockTailStore) Close() error {
 // writeIndexDocs writes documents to the object store in the segment format.
 func writeIndexDocs(store objectstore.Store, manifestKey, docsKey string, docs []index.IndexedDocument) error {
 	// Write docs data
-	docsData, err := json.Marshal(docs)
+	docsData, err := index.EncodeDocsColumnZstd(docs)
 	if err != nil {
 		return err
 	}
@@ -132,9 +132,9 @@ func TestOrderByWithIndexedDocuments(t *testing.T) {
 	docsKey := "vex/namespaces/test-ns/index/segments/seg_1/docs.col.zst"
 
 	indexedDocs := []index.IndexedDocument{
-		{ID: "1", NumericID: 1, WALSeq: 5, Attributes: map[string]any{"score": float64(100), "name": "indexed-doc-1"}},
-		{ID: "2", NumericID: 2, WALSeq: 6, Attributes: map[string]any{"score": float64(300), "name": "indexed-doc-2"}},
-		{ID: "3", NumericID: 3, WALSeq: 7, Attributes: map[string]any{"score": float64(200), "name": "indexed-doc-3"}},
+		{ID: "u64:1", NumericID: 1, WALSeq: 5, Attributes: map[string]any{"score": float64(100), "name": "indexed-doc-1"}},
+		{ID: "u64:2", NumericID: 2, WALSeq: 6, Attributes: map[string]any{"score": float64(300), "name": "indexed-doc-2"}},
+		{ID: "u64:3", NumericID: 3, WALSeq: 7, Attributes: map[string]any{"score": float64(200), "name": "indexed-doc-3"}},
 	}
 
 	if err := writeIndexDocs(store, manifestKey, docsKey, indexedDocs); err != nil {
