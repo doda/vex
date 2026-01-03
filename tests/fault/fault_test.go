@@ -31,10 +31,10 @@ import (
 )
 
 var (
-	errInjected500       = errors.New("injected 500 error")
-	errContextDeadline   = errors.New("context deadline exceeded")
-	errPartialRead       = errors.New("connection reset during read")
-	errTransientFailure  = errors.New("transient failure")
+	errInjected500      = errors.New("injected 500 error")
+	errContextDeadline  = errors.New("context deadline exceeded")
+	errPartialRead      = errors.New("connection reset during read")
+	errTransientFailure = errors.New("transient failure")
 )
 
 // FaultMode represents the type of fault to inject.
@@ -945,6 +945,7 @@ func TestEventualQueriesDegradeGracefully(t *testing.T) {
 		}
 
 		h := query.NewHandler(store, stateMan, mockTail)
+		h.MarkSnapshotRefreshed(ns, time.Now())
 
 		req := &query.QueryRequest{
 			RankBy:      []any{"id", "asc"},
@@ -978,6 +979,7 @@ func TestEventualQueriesDegradeGracefully(t *testing.T) {
 		}
 
 		h := query.NewHandler(store, stateMan, mockTail)
+		h.MarkSnapshotRefreshed(ns, time.Now())
 
 		req := &query.QueryRequest{
 			RankBy:      []any{"vector", "ANN", []any{1.0, 0.0, 0.0}},
@@ -1014,6 +1016,7 @@ func TestEventualQueriesDegradeGracefully(t *testing.T) {
 		}
 
 		h := query.NewHandler(store, stateMan, mockTail)
+		h.MarkSnapshotRefreshed(ns, time.Now())
 
 		// Strong query should fail
 		strongReq := &query.QueryRequest{
@@ -1055,6 +1058,7 @@ func TestEventualQueriesDegradeGracefully(t *testing.T) {
 		}
 
 		h := query.NewHandler(store, stateMan, mockTail)
+		h.MarkSnapshotRefreshed(ns, time.Now())
 
 		subqueries := []map[string]any{
 			{"rank_by": []any{"id", "asc"}, "limit": 5},

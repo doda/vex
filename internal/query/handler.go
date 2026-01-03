@@ -9,6 +9,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/vexsearch/vex/internal/cache"
@@ -32,6 +34,9 @@ const (
 	// EventualTailCapBytes is the max tail bytes to search in eventual consistency mode (128 MiB).
 	EventualTailCapBytes = 128 * 1024 * 1024
 
+	// EventualSnapshotTTL is the maximum staleness allowed for eventual snapshots.
+	EventualSnapshotTTL = 60 * time.Second
+
 	// MaxMultiQuery is the maximum number of subqueries in a multi-query request.
 	MaxMultiQuery = 16
 
@@ -40,24 +45,24 @@ const (
 )
 
 var (
-	ErrRankByRequired        = errors.New("rank_by is required unless aggregate_by is specified")
-	ErrInvalidRankBy         = errors.New("invalid rank_by expression")
-	ErrInvalidLimit          = errors.New("limit/top_k must be between 1 and 10,000")
-	ErrInvalidFilter         = errors.New("invalid filter expression")
-	ErrInvalidRequest        = errors.New("invalid query request")
-	ErrNamespaceNotFound     = errors.New("namespace not found")
-	ErrAttributeConflict     = errors.New("cannot specify both include_attributes and exclude_attributes")
-	ErrInvalidVectorEncoding = errors.New("vector_encoding must be 'float' or 'base64'")
-	ErrInvalidVectorDims     = errors.New("query vector dimensions do not match schema")
-	ErrInvalidConsistency    = errors.New("consistency must be 'strong' or 'eventual'")
-	ErrSnapshotRefreshFailed = errors.New("failed to refresh snapshot for strong consistency")
+	ErrRankByRequired          = errors.New("rank_by is required unless aggregate_by is specified")
+	ErrInvalidRankBy           = errors.New("invalid rank_by expression")
+	ErrInvalidLimit            = errors.New("limit/top_k must be between 1 and 10,000")
+	ErrInvalidFilter           = errors.New("invalid filter expression")
+	ErrInvalidRequest          = errors.New("invalid query request")
+	ErrNamespaceNotFound       = errors.New("namespace not found")
+	ErrAttributeConflict       = errors.New("cannot specify both include_attributes and exclude_attributes")
+	ErrInvalidVectorEncoding   = errors.New("vector_encoding must be 'float' or 'base64'")
+	ErrInvalidVectorDims       = errors.New("query vector dimensions do not match schema")
+	ErrInvalidConsistency      = errors.New("consistency must be 'strong' or 'eventual'")
+	ErrSnapshotRefreshFailed   = errors.New("failed to refresh snapshot for strong consistency")
 	ErrStrongQueryBackpressure = errors.New("strong query unavailable: unindexed data exceeds 2GB with disable_backpressure=true")
-	ErrInvalidAggregation    = errors.New("invalid aggregation expression")
-	ErrInvalidGroupBy        = errors.New("invalid group_by expression")
-	ErrGroupByWithoutAgg     = errors.New("group_by requires aggregate_by to be specified")
-	ErrTooManySubqueries     = errors.New("multi-query exceeds maximum of 16 subqueries")
-	ErrInvalidMultiQuery     = errors.New("invalid multi-query format")
-	ErrConcurrencyLimitWait  = errors.New("query concurrency limit reached, request queued")
+	ErrInvalidAggregation      = errors.New("invalid aggregation expression")
+	ErrInvalidGroupBy          = errors.New("invalid group_by expression")
+	ErrGroupByWithoutAgg       = errors.New("group_by requires aggregate_by to be specified")
+	ErrTooManySubqueries       = errors.New("multi-query exceeds maximum of 16 subqueries")
+	ErrInvalidMultiQuery       = errors.New("invalid multi-query format")
+	ErrConcurrencyLimitWait    = errors.New("query concurrency limit reached, request queued")
 )
 
 // AggregationType indicates the type of aggregation function.
@@ -161,6 +166,10 @@ type Handler struct {
 	tailStore   tail.Store
 	indexReader *index.Reader
 	limiter     *ConcurrencyLimiter
+	refreshMu   sync.RWMutex
+	lastRefresh map[string]time.Time
+	now         func() time.Time
+	eventualTTL time.Duration
 }
 
 // NewHandler creates a new query handler.
@@ -171,6 +180,9 @@ func NewHandler(store objectstore.Store, stateMan *namespace.StateManager, tailS
 		tailStore:   tailStore,
 		indexReader: index.NewReader(store, nil, nil),
 		limiter:     NewConcurrencyLimiter(DefaultConcurrencyLimit),
+		lastRefresh: make(map[string]time.Time),
+		now:         time.Now,
+		eventualTTL: EventualSnapshotTTL,
 	}
 }
 
@@ -182,6 +194,9 @@ func NewHandlerWithLimit(store objectstore.Store, stateMan *namespace.StateManag
 		tailStore:   tailStore,
 		indexReader: index.NewReader(store, nil, nil),
 		limiter:     NewConcurrencyLimiter(limit),
+		lastRefresh: make(map[string]time.Time),
+		now:         time.Now,
+		eventualTTL: EventualSnapshotTTL,
 	}
 }
 
@@ -193,12 +208,97 @@ func NewHandlerWithCache(store objectstore.Store, stateMan *namespace.StateManag
 		tailStore:   tailStore,
 		indexReader: index.NewReader(store, diskCache, ramCache),
 		limiter:     NewConcurrencyLimiter(DefaultConcurrencyLimit),
+		lastRefresh: make(map[string]time.Time),
+		now:         time.Now,
+		eventualTTL: EventualSnapshotTTL,
 	}
 }
 
 // Limiter returns the concurrency limiter for testing/metrics.
 func (h *Handler) Limiter() *ConcurrencyLimiter {
 	return h.limiter
+}
+
+// SetNowFunc overrides the handler clock (useful for tests).
+func (h *Handler) SetNowFunc(now func() time.Time) {
+	h.refreshMu.Lock()
+	defer h.refreshMu.Unlock()
+	if now == nil {
+		h.now = time.Now
+		return
+	}
+	h.now = now
+}
+
+// SetEventualSnapshotTTL overrides the eventual consistency staleness window.
+func (h *Handler) SetEventualSnapshotTTL(ttl time.Duration) {
+	h.refreshMu.Lock()
+	h.eventualTTL = ttl
+	h.refreshMu.Unlock()
+}
+
+// MarkSnapshotRefreshed records a refresh time for eventual consistency tracking.
+func (h *Handler) MarkSnapshotRefreshed(namespace string, at time.Time) {
+	h.refreshMu.Lock()
+	if h.lastRefresh == nil {
+		h.lastRefresh = make(map[string]time.Time)
+	}
+	h.lastRefresh[namespace] = at
+	h.refreshMu.Unlock()
+}
+
+func (h *Handler) nowTime() time.Time {
+	h.refreshMu.RLock()
+	now := h.now
+	h.refreshMu.RUnlock()
+	if now == nil {
+		return time.Now()
+	}
+	return now()
+}
+
+func (h *Handler) shouldRefreshEventual(namespace string, now time.Time) bool {
+	h.refreshMu.RLock()
+	last, ok := h.lastRefresh[namespace]
+	ttl := h.eventualTTL
+	h.refreshMu.RUnlock()
+	if ttl == 0 {
+		ttl = EventualSnapshotTTL
+	}
+	if !ok {
+		return true
+	}
+	return now.Sub(last) > ttl
+}
+
+func (h *Handler) refreshTailIfNeeded(ctx context.Context, ns string, loaded *namespace.LoadedState, strong bool) error {
+	if h.tailStore == nil {
+		return nil
+	}
+
+	headSeq := loaded.State.WAL.HeadSeq
+	indexedSeq := loaded.State.Index.IndexedWALSeq
+	if headSeq <= indexedSeq {
+		return nil
+	}
+
+	if !strong {
+		now := h.nowTime()
+		if !h.shouldRefreshEventual(ns, now) {
+			return nil
+		}
+		if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
+			return fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
+		}
+		h.MarkSnapshotRefreshed(ns, now)
+		return nil
+	}
+
+	if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
+		return fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
+	}
+	h.MarkSnapshotRefreshed(ns, h.nowTime())
+	return nil
 }
 
 // Handle executes a query against the given namespace.
@@ -233,15 +333,9 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		if loaded.State.NamespaceFlags.DisableBackpressure && loaded.State.WAL.BytesUnindexedEst > MaxUnindexedBytes {
 			return nil, ErrStrongQueryBackpressure
 		}
-		if h.tailStore != nil {
-			headSeq := loaded.State.WAL.HeadSeq
-			indexedSeq := loaded.State.Index.IndexedWALSeq
-			if headSeq > indexedSeq {
-				if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
-					return nil, fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
-				}
-			}
-		}
+	}
+	if err := h.refreshTailIfNeeded(ctx, ns, loaded, isStrongConsistency); err != nil {
+		return nil, err
 	}
 
 	// Parse the rank_by expression
@@ -2096,14 +2190,8 @@ func (h *Handler) HandleMultiQuery(ctx context.Context, ns string, queries []map
 
 	// Refresh tail to WAL head once for all subqueries (snapshot isolation).
 	// This ensures all subqueries execute against the same consistent snapshot.
-	if isStrongConsistency && h.tailStore != nil {
-		headSeq := loaded.State.WAL.HeadSeq
-		indexedSeq := loaded.State.Index.IndexedWALSeq
-		if headSeq > indexedSeq {
-			if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
-			}
-		}
+	if err := h.refreshTailIfNeeded(ctx, ns, loaded, isStrongConsistency); err != nil {
+		return nil, err
 	}
 
 	// Determine byte limit for eventual consistency
