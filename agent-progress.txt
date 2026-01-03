@@ -1619,3 +1619,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-04T00:20:00Z] Completed s3-conditional-put-atomic: PASS
+- Implemented atomic S3 PutIfAbsent/PutIfMatch using If-None-Match/If-Match headers and shared checksum handling.
+- Added S3 integration test for concurrent WAL committers to assert unique WAL seqs and existing WAL objects.
+- Files changed: pkg/objectstore/s3.go.
+- Files changed: tests/integration/object_store_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./pkg/objectstore -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./tests/integration -run WalCAS -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.

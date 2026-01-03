@@ -21,11 +21,12 @@ import (
 	"time"
 
 	"github.com/vexsearch/vex/internal/cache"
+	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/indexer"
 	"github.com/vexsearch/vex/internal/namespace"
-	"github.com/vexsearch/vex/internal/warmer"
 	"github.com/vexsearch/vex/internal/wal"
+	"github.com/vexsearch/vex/internal/warmer"
 	"github.com/vexsearch/vex/pkg/api"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -1629,6 +1630,100 @@ func TestObjectStoreWalCASIdempotency(t *testing.T) {
 	}
 	if entry1.CommittedUnixMs > entry2.CommittedUnixMs {
 		t.Fatalf("expected wal commit order to increase, got %d then %d", entry1.CommittedUnixMs, entry2.CommittedUnixMs)
+	}
+}
+
+func TestObjectStoreConcurrentWalCAS(t *testing.T) {
+	ns := fmt.Sprintf("objectstore-walcas-concurrent-%d", time.Now().UnixNano())
+	store := newS3Store(t)
+	stateMgr := namespace.NewStateManager(store)
+
+	const (
+		writers          = 6
+		commitsPerWriter = 4
+	)
+
+	ctx := context.Background()
+	start := make(chan struct{})
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	seqs := make(map[uint64]string)
+	totalSuccess := 0
+	uniqueSuccess := 0
+
+	for i := 0; i < writers; i++ {
+		writerID := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			committer, err := wal.NewCommitter(store, stateMgr)
+			if err != nil {
+				t.Errorf("failed to create committer: %v", err)
+				return
+			}
+			defer committer.Close()
+
+			<-start
+
+			for j := 0; j < commitsPerWriter; j++ {
+				entry := wal.NewWalEntry(ns, 0)
+				reqID := fmt.Sprintf("req-%d-%d", writerID, j)
+				batch := wal.NewWriteSubBatch(reqID)
+				batch.AddUpsert(wal.DocumentIDFromID(document.NewU64ID(uint64(writerID*100+j))), nil, nil, 0)
+				entry.SubBatches = append(entry.SubBatches, batch)
+
+				result, err := committer.Commit(ctx, ns, entry, nil)
+				if err != nil {
+					continue
+				}
+
+				mu.Lock()
+				totalSuccess++
+				if prev, ok := seqs[result.Seq]; ok {
+					t.Errorf("duplicate wal seq %d committed for %s and %s", result.Seq, prev, reqID)
+				} else {
+					seqs[result.Seq] = reqID
+					uniqueSuccess++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if totalSuccess == 0 {
+		t.Fatal("expected at least one successful commit")
+	}
+	if totalSuccess != uniqueSuccess {
+		t.Fatalf("expected no duplicate wal seqs: successes=%d unique=%d", totalSuccess, uniqueSuccess)
+	}
+
+	loaded, err := stateMgr.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if int(loaded.State.WAL.HeadSeq) != uniqueSuccess {
+		t.Fatalf("expected head_seq %d, got %d", uniqueSuccess, loaded.State.WAL.HeadSeq)
+	}
+
+	verifyCommitter, err := wal.NewCommitter(store, stateMgr)
+	if err != nil {
+		t.Fatalf("failed to create verifier: %v", err)
+	}
+	defer verifyCommitter.Close()
+
+	for seq := range seqs {
+		exists, err := verifyCommitter.VerifyWALExists(ctx, ns, seq)
+		if err != nil {
+			t.Fatalf("failed to verify wal seq %d: %v", seq, err)
+		}
+		if !exists {
+			t.Fatalf("expected wal seq %d to exist", seq)
+		}
 	}
 }
 

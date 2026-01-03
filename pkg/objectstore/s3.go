@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -111,39 +112,12 @@ func (s *S3Store) Head(ctx context.Context, key string) (*ObjectInfo, error) {
 }
 
 func (s *S3Store) Put(ctx context.Context, key string, body io.Reader, size int64, opts *PutOptions) (*ObjectInfo, error) {
-	putOpts := minio.PutObjectOptions{}
-
-	if opts != nil {
-		if opts.ContentType != "" {
-			putOpts.ContentType = opts.ContentType
-		}
-		if opts.Checksum != "" {
-			checksumBytes, err := base64.StdEncoding.DecodeString(opts.Checksum)
-			if err == nil && len(checksumBytes) == 32 {
-				putOpts.UserMetadata = map[string]string{
-					"X-Amz-Checksum-SHA256": opts.Checksum,
-				}
-			}
-		}
+	reader, size, putOpts, err := s.preparePut(body, size, opts)
+	if err != nil {
+		return nil, err
 	}
 
-	// Compute SHA-256 if checksum verification is needed
-	var buf bytes.Buffer
-	if opts != nil && opts.Checksum != "" {
-		hash := sha256.New()
-		tee := io.TeeReader(body, hash)
-		if _, err := io.Copy(&buf, tee); err != nil {
-			return nil, fmt.Errorf("failed to compute checksum: %w", err)
-		}
-		computed := base64.StdEncoding.EncodeToString(hash.Sum(nil))
-		if computed != opts.Checksum {
-			return nil, fmt.Errorf("%w: checksum mismatch: expected %s, got %s", ErrChecksumFailed, opts.Checksum, computed)
-		}
-		body = bytes.NewReader(buf.Bytes())
-		size = int64(buf.Len())
-	}
-
-	info, err := s.client.PutObject(ctx, s.bucket, key, body, size, putOpts)
+	info, err := s.client.PutObject(ctx, s.bucket, key, reader, size, putOpts)
 	if err != nil {
 		return nil, s.mapError(err)
 	}
@@ -157,37 +131,47 @@ func (s *S3Store) Put(ctx context.Context, key string, body io.Reader, size int6
 }
 
 func (s *S3Store) PutIfAbsent(ctx context.Context, key string, body io.Reader, size int64, opts *PutOptions) (*ObjectInfo, error) {
-	// Check if object exists
-	_, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
-	if err == nil {
-		// Object already exists
-		return nil, ErrAlreadyExists
+	reader, size, putOpts, err := s.preparePut(body, size, opts)
+	if err != nil {
+		return nil, err
 	}
-	errResp := minio.ToErrorResponse(err)
-	if errResp.Code != "NoSuchKey" {
-		return nil, s.mapError(err)
+	putOpts.SetMatchETagExcept("*")
+
+	info, err := s.client.PutObject(ctx, s.bucket, key, reader, size, putOpts)
+	if err != nil {
+		mapped := s.mapError(err)
+		if errors.Is(mapped, ErrPrecondition) {
+			return nil, ErrAlreadyExists
+		}
+		return nil, mapped
 	}
 
-	// Object doesn't exist, try to put it
-	// Note: MinIO doesn't support atomic If-None-Match, so there's a race window
-	// For production use with S3, you'd use CopyObject with a conditional header
-	return s.Put(ctx, key, body, size, opts)
+	return &ObjectInfo{
+		Key:          key,
+		Size:         info.Size,
+		ETag:         strings.Trim(info.ETag, "\""),
+		LastModified: info.LastModified,
+	}, nil
 }
 
 func (s *S3Store) PutIfMatch(ctx context.Context, key string, body io.Reader, size int64, etag string, opts *PutOptions) (*ObjectInfo, error) {
-	// Check if object exists with matching ETag
-	stat, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
+	reader, size, putOpts, err := s.preparePut(body, size, opts)
+	if err != nil {
+		return nil, err
+	}
+	putOpts.SetMatchETag(etag)
+
+	info, err := s.client.PutObject(ctx, s.bucket, key, reader, size, putOpts)
 	if err != nil {
 		return nil, s.mapError(err)
 	}
 
-	currentETag := strings.Trim(stat.ETag, "\"")
-	if currentETag != etag {
-		return nil, ErrPrecondition
-	}
-
-	// ETag matches, proceed with put
-	return s.Put(ctx, key, body, size, opts)
+	return &ObjectInfo{
+		Key:          key,
+		Size:         info.Size,
+		ETag:         strings.Trim(info.ETag, "\""),
+		LastModified: info.LastModified,
+	}, nil
 }
 
 func (s *S3Store) Delete(ctx context.Context, key string) error {
@@ -279,4 +263,45 @@ func (s *S3Store) mapError(err error) error {
 	}
 
 	return err
+}
+
+func (s *S3Store) preparePut(body io.Reader, size int64, opts *PutOptions) (io.Reader, int64, minio.PutObjectOptions, error) {
+	putOpts := minio.PutObjectOptions{}
+
+	if opts != nil {
+		if opts.ContentType != "" {
+			putOpts.ContentType = opts.ContentType
+		}
+		if opts.IfMatch != "" {
+			putOpts.SetMatchETag(opts.IfMatch)
+		}
+		if opts.IfNoneMatch != "" {
+			putOpts.SetMatchETagExcept(opts.IfNoneMatch)
+		}
+		if opts.Checksum != "" {
+			checksumBytes, err := base64.StdEncoding.DecodeString(opts.Checksum)
+			if err == nil && len(checksumBytes) == 32 {
+				putOpts.UserMetadata = map[string]string{
+					"X-Amz-Checksum-SHA256": opts.Checksum,
+				}
+			}
+		}
+	}
+
+	if opts == nil || opts.Checksum == "" {
+		return body, size, putOpts, nil
+	}
+
+	var buf bytes.Buffer
+	hash := sha256.New()
+	tee := io.TeeReader(body, hash)
+	if _, err := io.Copy(&buf, tee); err != nil {
+		return nil, 0, minio.PutObjectOptions{}, fmt.Errorf("failed to compute checksum: %w", err)
+	}
+	computed := base64.StdEncoding.EncodeToString(hash.Sum(nil))
+	if computed != opts.Checksum {
+		return nil, 0, minio.PutObjectOptions{}, fmt.Errorf("%w: checksum mismatch: expected %s, got %s", ErrChecksumFailed, opts.Checksum, computed)
+	}
+
+	return bytes.NewReader(buf.Bytes()), int64(buf.Len()), putOpts, nil
 }
