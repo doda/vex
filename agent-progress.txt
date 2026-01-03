@@ -1650,3 +1650,14 @@ KEY DEPENDENCIES:
 - Challenges: eventual tests expected no refresh when refresh fails.
 - Resolution: marked snapshots refreshed in tests to keep within TTL window.
 - Follow-ups: none.
+[2026-01-03T20:49:26Z] Completed tail-index-dedup-walseq-compare: PASS
+- Implemented WAL-seq comparison when merging tail and index ANN results so stale tail entries cannot shadow newer indexed docs.
+- Normalized segment state keys by parsed document IDs to align with tail dedup lookups.
+- Added regression test for stale tail vs newer indexed doc in ANN merge path.
+- Files changed: internal/query/handler.go.
+- Files changed: internal/query/vector_ann_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/query -run ANNSearch -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

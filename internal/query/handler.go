@@ -835,9 +835,10 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 				}
 
 				// Build docID -> segmentDocState mapping
-				if idoc.ID != "" {
-					if existing, ok := segmentStates[idoc.ID]; !ok || idoc.WALSeq > existing.walSeq {
-						segmentStates[idoc.ID] = segmentDocState{
+				if docID, ok := indexedDocumentID(idoc); ok {
+					idStr := docID.String()
+					if existing, ok := segmentStates[idStr]; !ok || idoc.WALSeq > existing.walSeq {
+						segmentStates[idStr] = segmentDocState{
 							walSeq:  idoc.WALSeq,
 							deleted: idoc.Deleted,
 						}
@@ -939,16 +940,30 @@ type segmentDocState struct {
 }
 
 func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64, indexDocIDs map[uint64]document.ID, indexDocAttrs map[uint64]map[string]any, segmentStates map[string]segmentDocState) []Row {
-	// Use deduplicator to track tail documents for proper deduplication.
-	// Tail always has the authoritative version (higher WAL seq than index).
-	dedup := NewDeduplicator()
-
-	// Add tail results first (they have WAL seq info and are always authoritative over index)
-	for _, res := range tailResults {
-		dedup.AddTailDoc(res.Doc)
+	type tailCandidate struct {
+		doc  *tail.Document
+		dist float64
 	}
 
-	// Track distances separately since Deduplicator doesn't store distances
+	tailByID := make(map[string]tailCandidate, len(tailResults))
+	for _, res := range tailResults {
+		if res.Doc == nil {
+			continue
+		}
+		idStr := res.Doc.ID.String()
+		existing, ok := tailByID[idStr]
+		if !ok {
+			tailByID[idStr] = tailCandidate{doc: res.Doc, dist: res.Distance}
+			continue
+		}
+		newVersion := DocVersion{WalSeq: res.Doc.WalSeq, SubBatchID: res.Doc.SubBatchID}
+		oldVersion := DocVersion{WalSeq: existing.doc.WalSeq, SubBatchID: existing.doc.SubBatchID}
+		if newVersion.IsNewerThan(oldVersion) {
+			tailByID[idStr] = tailCandidate{doc: res.Doc, dist: res.Distance}
+		}
+	}
+
+	// Track distances for tail/index candidates keyed by document ID.
 	type scoredDoc struct {
 		docID      any
 		dist       float64
@@ -959,15 +974,14 @@ func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResult
 	docDistances := make(map[string]scoredDoc)
 
 	// Add tail results with their distances (skip deleted/tombstoned docs)
-	for _, res := range tailResults {
-		if res.Doc.Deleted {
+	for idStr, entry := range tailByID {
+		if entry.doc.Deleted {
 			continue
 		}
-		idStr := res.Doc.ID.String()
 		docDistances[idStr] = scoredDoc{
-			docID:      docIDToAny(res.Doc.ID),
-			dist:       res.Distance,
-			attributes: res.Doc.Attributes,
+			docID:      docIDToAny(entry.doc.ID),
+			dist:       entry.dist,
+			attributes: entry.doc.Attributes,
 		}
 	}
 
@@ -989,14 +1003,19 @@ func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResult
 		}
 		idStr := docID.String()
 
-		// Check if this doc exists in tail - tail is always authoritative
-		// Tail contains all docs with WAL seq > indexedWALSeq, so if a doc
-		// is in tail, that version supersedes the index version.
-		if existingDoc := dedup.GetDoc(idStr); existingDoc != nil {
-			// Tail has this doc - tail is authoritative since it has newer data
-			// The doc is either updated (keep tail version) or deleted (skip entirely)
-			// Deleted docs are already excluded from docDistances above
-			continue
+		indexWalSeq := indexedWALSeq
+		if segmentStates != nil {
+			if state, ok := segmentStates[idStr]; ok {
+				indexWalSeq = state.walSeq
+			}
+		}
+
+		if tailEntry, ok := tailByID[idStr]; ok {
+			tailVersion := DocVersion{WalSeq: tailEntry.doc.WalSeq, SubBatchID: tailEntry.doc.SubBatchID}
+			indexVersion := DocVersion{WalSeq: indexWalSeq}
+			if tailVersion.IsNewerThan(indexVersion) {
+				continue
+			}
 		}
 
 		if segmentStates != nil {
