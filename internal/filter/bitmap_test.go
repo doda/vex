@@ -16,6 +16,7 @@ func TestFilterIndex_ScalarString(t *testing.T) {
 	idx.AddValue(2, "electronics")
 	idx.AddValue(3, "clothing")
 	idx.AddValue(4, nil) // null value
+	idx.AddMissing(5)
 
 	idx.Finalize()
 
@@ -35,6 +36,16 @@ func TestFilterIndex_ScalarString(t *testing.T) {
 		bm := idx.Eq(nil)
 		if bm.GetCardinality() != 1 {
 			t.Errorf("expected 1 row, got %d", bm.GetCardinality())
+		}
+		if !bm.Contains(5) {
+			t.Error("expected row 5")
+		}
+	})
+
+	t.Run("NullBitmap", func(t *testing.T) {
+		bm := idx.NullBitmap()
+		if bm.GetCardinality() != 1 {
+			t.Errorf("expected 1 explicit null row, got %d", bm.GetCardinality())
 		}
 		if !bm.Contains(4) {
 			t.Error("expected row 4")
@@ -243,6 +254,7 @@ func TestFilterIndex_Serialize(t *testing.T) {
 	idx.AddValue(1, "b")
 	idx.AddValue(2, "a")
 	idx.AddValue(3, nil)
+	idx.AddMissing(4)
 
 	idx.Finalize()
 
@@ -278,6 +290,11 @@ func TestFilterIndex_Serialize(t *testing.T) {
 	nullBm := idx2.NullBitmap()
 	if nullBm.GetCardinality() != 1 {
 		t.Errorf("expected 1 null row, got %d", nullBm.GetCardinality())
+	}
+
+	missingBm := idx2.MissingBitmap()
+	if missingBm.GetCardinality() != 1 {
+		t.Errorf("expected 1 missing row, got %d", missingBm.GetCardinality())
 	}
 }
 

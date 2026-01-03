@@ -44,7 +44,8 @@ func (b *IndexBuilder) AddDocument(rowID uint32, attrs map[string]any) {
 
 		value, exists := attrs[attrName]
 		if !exists {
-			value = nil
+			b.indexes[attrName].AddMissing(rowID)
+			continue
 		}
 
 		b.indexes[attrName].AddValue(rowID, value)

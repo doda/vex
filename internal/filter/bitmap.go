@@ -24,38 +24,40 @@ var (
 
 // FilterIndexHeader contains metadata about the filter index.
 type FilterIndexHeader struct {
-	FormatVersion  int             `json:"format_version"`
-	Attribute      string          `json:"attribute"`
-	Type           schema.AttrType `json:"type"`
-	ValueCount     int             `json:"value_count"`
-	DocCount       uint32          `json:"doc_count"`
-	IsArray        bool            `json:"is_array"`
-	MinValue       any             `json:"min_value,omitempty"`
-	MaxValue       any             `json:"max_value,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
+	FormatVersion int             `json:"format_version"`
+	Attribute     string          `json:"attribute"`
+	Type          schema.AttrType `json:"type"`
+	ValueCount    int             `json:"value_count"`
+	DocCount      uint32          `json:"doc_count"`
+	IsArray       bool            `json:"is_array"`
+	MinValue      any             `json:"min_value,omitempty"`
+	MaxValue      any             `json:"max_value,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 // FilterIndex represents a roaring bitmap index for a single filterable attribute.
 // It maps values to document row IDs.
 type FilterIndex struct {
-	header       FilterIndexHeader
-	valueBitmaps map[string]*roaring.Bitmap // value (serialized) -> bitmap of row IDs
-	nullBitmap  *roaring.Bitmap            // rows with null/missing values
-	sortedKeys  []string                   // sorted keys for range queries
+	header        FilterIndexHeader
+	valueBitmaps  map[string]*roaring.Bitmap // value (serialized) -> bitmap of row IDs
+	nullBitmap    *roaring.Bitmap            // rows with explicit null values
+	missingBitmap *roaring.Bitmap            // rows where attribute is missing
+	sortedKeys    []string                   // sorted keys for range queries
 }
 
 // NewFilterIndex creates a new filter index for the given attribute.
 func NewFilterIndex(attrName string, attrType schema.AttrType) *FilterIndex {
 	return &FilterIndex{
 		header: FilterIndexHeader{
-			FormatVersion: 1,
+			FormatVersion: 2,
 			Attribute:     attrName,
 			Type:          attrType,
 			IsArray:       attrType.IsArray(),
 			CreatedAt:     time.Now().UTC(),
 		},
-		valueBitmaps: make(map[string]*roaring.Bitmap),
-		nullBitmap:   roaring.NewBitmap(),
+		valueBitmaps:  make(map[string]*roaring.Bitmap),
+		nullBitmap:    roaring.NewBitmap(),
+		missingBitmap: roaring.NewBitmap(),
 	}
 }
 
@@ -81,6 +83,11 @@ func (idx *FilterIndex) AddValue(rowID uint32, value any) {
 	}
 
 	idx.addSingleValue(rowID, value)
+}
+
+// AddMissing marks a document where the attribute is missing.
+func (idx *FilterIndex) AddMissing(rowID uint32) {
+	idx.missingBitmap.Add(rowID)
 }
 
 // addSingleValue adds a single value to the index.
@@ -159,6 +166,7 @@ func (idx *FilterIndex) Finalize() {
 		bm.RunOptimize()
 	}
 	idx.nullBitmap.RunOptimize()
+	idx.missingBitmap.RunOptimize()
 }
 
 // GetDocCount returns the total number of unique documents in the index.
@@ -168,13 +176,14 @@ func (idx *FilterIndex) GetDocCount() uint32 {
 		all.Or(bm)
 	}
 	all.Or(idx.nullBitmap)
+	all.Or(idx.missingBitmap)
 	return uint32(all.GetCardinality())
 }
 
 // Eq returns the bitmap of rows where the attribute equals the given value.
 func (idx *FilterIndex) Eq(value any) *roaring.Bitmap {
 	if value == nil {
-		return idx.nullBitmap.Clone()
+		return idx.missingBitmap.Clone()
 	}
 
 	key, ok := idx.serializeValue(value)
@@ -189,6 +198,11 @@ func (idx *FilterIndex) Eq(value any) *roaring.Bitmap {
 
 // NotEq returns the bitmap of rows where the attribute does not equal the given value.
 func (idx *FilterIndex) NotEq(value any, allRows *roaring.Bitmap) *roaring.Bitmap {
+	if value == nil {
+		result := allRows.Clone()
+		result.AndNot(idx.missingBitmap)
+		return result
+	}
 	eq := idx.Eq(value)
 	result := allRows.Clone()
 	result.AndNot(eq)
@@ -295,9 +309,14 @@ func (idx *FilterIndex) ContainsAny(values []any) *roaring.Bitmap {
 	return idx.In(values)
 }
 
-// NullBitmap returns the bitmap of rows with null/missing values.
+// NullBitmap returns the bitmap of rows with explicit null values.
 func (idx *FilterIndex) NullBitmap() *roaring.Bitmap {
 	return idx.nullBitmap.Clone()
+}
+
+// MissingBitmap returns the bitmap of rows where the attribute is missing.
+func (idx *FilterIndex) MissingBitmap() *roaring.Bitmap {
+	return idx.missingBitmap.Clone()
 }
 
 // AllValuesBitmap returns a bitmap of all rows with non-null values.
@@ -338,6 +357,18 @@ func (idx *FilterIndex) Serialize() ([]byte, error) {
 		return nil, err
 	}
 	if _, err := buf.Write(nullBytes); err != nil {
+		return nil, err
+	}
+
+	// Write missing bitmap
+	missingBytes, err := idx.missingBitmap.ToBytes()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize missing bitmap: %w", err)
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, uint32(len(missingBytes))); err != nil {
+		return nil, err
+	}
+	if _, err := buf.Write(missingBytes); err != nil {
 		return nil, err
 	}
 
@@ -402,8 +433,10 @@ func Deserialize(data []byte) (*FilterIndex, error) {
 	}
 
 	idx := &FilterIndex{
-		header:       header,
-		valueBitmaps: make(map[string]*roaring.Bitmap),
+		header:        header,
+		valueBitmaps:  make(map[string]*roaring.Bitmap),
+		nullBitmap:    roaring.NewBitmap(),
+		missingBitmap: roaring.NewBitmap(),
 	}
 
 	// Read null bitmap
@@ -417,11 +450,29 @@ func Deserialize(data []byte) (*FilterIndex, error) {
 		return nil, fmt.Errorf("failed to read null bitmap: %w", err)
 	}
 
-	idx.nullBitmap = roaring.NewBitmap()
 	if len(nullBytes) > 0 {
 		if err := idx.nullBitmap.UnmarshalBinary(nullBytes); err != nil {
 			return nil, fmt.Errorf("failed to deserialize null bitmap: %w", err)
 		}
+	}
+
+	if header.FormatVersion >= 2 {
+		var missingLen uint32
+		if err := binary.Read(r, binary.LittleEndian, &missingLen); err != nil {
+			return nil, fmt.Errorf("failed to read missing bitmap length: %w", err)
+		}
+
+		missingBytes := make([]byte, missingLen)
+		if _, err := io.ReadFull(r, missingBytes); err != nil {
+			return nil, fmt.Errorf("failed to read missing bitmap: %w", err)
+		}
+		if len(missingBytes) > 0 {
+			if err := idx.missingBitmap.UnmarshalBinary(missingBytes); err != nil {
+				return nil, fmt.Errorf("failed to deserialize missing bitmap: %w", err)
+			}
+		}
+	} else {
+		idx.missingBitmap = idx.nullBitmap.Clone()
 	}
 
 	// Read key count

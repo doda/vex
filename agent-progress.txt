@@ -1671,3 +1671,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-03T21:04:04Z] Completed filter-null-vs-missing-distinction: PASS
+- Differentiated missing vs explicit null in filter evaluation and bitmap indexes; Eq null now matches missing only, NotEq null matches any present value.
+- Added missing bitmap tracking in filter indexes and updated serialization format to include it.
+- Updated filter eval, builder, and bitmap tests to cover missing vs explicit null semantics.
+- Files changed: internal/filter/filter.go; internal/filter/bitmap.go; internal/filter/builder.go; internal/filter/filter_test.go; internal/filter/filter_eval_test.go; internal/filter/builder_test.go; internal/filter/bitmap_test.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/filter -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: gofmt not on PATH.
+- Resolution: used /usr/local/go/bin/gofmt.
+- Follow-ups: none.
