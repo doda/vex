@@ -2849,12 +2849,12 @@
       "Fix any auth-related failures or mismatched error envelopes",
       "Re-run `go test ./tests/...` to confirm green"
     ],
+    "completed": true,
     "scope": [
       "tests/compat",
       "tests/golden",
       "tests/integration"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-gzip-coverage",
@@ -2866,10 +2866,10 @@
       "Fix any handler or proxy gzip issues discovered",
       "Re-run the same integration tests to verify pass"
     ],
+    "completed": true,
     "scope": [
       "tests/integration/object_store_test.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-required-endpoints",
@@ -2881,10 +2881,10 @@
       "Fix any missing routes or response shape issues",
       "Re-run the same integration tests to verify pass"
     ],
+    "completed": true,
     "scope": [
       "tests/integration/object_store_test.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-wal-cas-idempotency",
@@ -2896,12 +2896,12 @@
       "Fix WAL commit/idempotency behavior if failures appear",
       "Re-run the same integration tests to verify pass"
     ],
+    "completed": true,
     "scope": [
       "tests/integration",
       "internal/wal",
       "internal/write"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-write-backpressure-http",
@@ -2913,11 +2913,11 @@
       "Fix HTTP status and state transition issues if failures appear",
       "Re-run the same integration tests to verify pass"
     ],
+    "completed": true,
     "scope": [
       "tests/integration",
       "internal/write"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-sub-batch-ordering-test",
@@ -2929,11 +2929,11 @@
       "Fix WAL encoding or batching logic if ordering/content mismatches occur",
       "Re-run the same test to confirm pass"
     ],
+    "completed": true,
     "scope": [
       "internal/write/batcher_test.go",
       "internal/wal"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "bm25-tail-dedup-id-normalization",
@@ -2944,10 +2944,10 @@
       "Fix dedup logic to compare canonical ID representations consistently",
       "Run `go test ./internal/query -run BM25.*Dedup`"
     ],
+    "completed": true,
     "scope": [
       "internal/query"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "strong-query-backpressure-regression",
@@ -2958,11 +2958,11 @@
       "Update strong-consistency path to check namespace_flags and wal.bytes_unindexed_est before executing",
       "Run `go test ./internal/query -run StrongBackpressure`"
     ],
+    "completed": true,
     "scope": [
       "internal/query",
       "pkg/api"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "tail-prune-indexed-entries",
@@ -2973,10 +2973,10 @@
       "Implement pruning during refresh or snapshot creation",
       "Run `go test ./internal/tail -run PruneIndexed`"
     ],
+    "completed": true,
     "scope": [
       "internal/tail/store.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-consistency-tail",
@@ -2988,12 +2988,12 @@
       "Fix snapshot/tail handling if failures appear",
       "Re-run the same integration tests to verify pass"
     ],
+    "completed": true,
     "scope": [
       "tests/integration",
       "internal/query",
       "internal/tail"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "indexer-wire-fts-segments",
@@ -3004,12 +3004,12 @@
       "Hook FTS build outputs into L0 builder and manifest writer",
       "Run `go test ./internal/indexer -run FTS`"
     ],
+    "completed": true,
     "scope": [
       "internal/indexer",
       "internal/fts",
       "internal/index"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "indexer-rebuild-ready-gate",
@@ -3020,11 +3020,11 @@
       "Update readiness logic to verify artifact presence/version before flipping ready",
       "Run `go test ./internal/indexer -run RebuildReady`"
     ],
+    "completed": true,
     "scope": [
       "internal/indexer",
       "internal/index"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "indexer-filter-index-nonvector",
@@ -3035,29 +3035,29 @@
       "Update L0 builder to include non-vector docs when constructing filter indexes",
       "Run `go test ./internal/indexer -run FilterIndexAllDocs`"
     ],
+    "completed": true,
     "scope": [
       "internal/indexer",
       "internal/filter"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-bm25-fts",
     "category": "test",
-    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer \u2192 manifest \u2192 query.",
+    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer → manifest → query.",
     "steps": [
       "Add end-to-end tests that enable FTS, index data, and run BM25 queries while validating 202 gating until ready",
       "Run `go test ./tests/integration -run BM25`",
       "Fix indexer/query integration issues if failures appear",
       "Re-run the same integration tests to verify pass"
     ],
+    "completed": true,
     "scope": [
       "tests/integration",
       "internal/fts",
       "internal/query",
       "internal/indexer"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "disk-cache-pinning-reload",
@@ -3068,10 +3068,10 @@
       "Populate ObjectKey on reload and ensure pin checks use it consistently",
       "Run `go test ./internal/cache -run PinningReload`"
     ],
+    "completed": true,
     "scope": [
       "internal/cache/disk.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-warm-cache-hint",
@@ -3083,13 +3083,13 @@
       "Fix warm task or pinning issues if failures appear",
       "Re-run the same integration tests to verify pass"
     ],
+    "completed": true,
     "scope": [
       "tests/integration",
       "internal/warmer",
       "internal/cache",
       "pkg/api"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "catalog-cleanup-on-delete",
@@ -3100,12 +3100,12 @@
       "Update delete/GC flow to delete catalog keys for tombstoned namespaces",
       "Run `go test ./internal/namespace ./internal/gc -run CatalogCleanup`"
     ],
+    "completed": true,
     "scope": [
       "internal/namespace",
       "internal/gc",
       "pkg/api"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-delete-list",
@@ -3117,11 +3117,11 @@
       "Fix delete/list interactions if failures appear",
       "Re-run the same integration tests to verify pass"
     ],
+    "completed": true,
     "scope": [
       "tests/integration",
       "pkg/api"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "integration-tests-skip-missing-objectstore-creds",
@@ -3132,10 +3132,10 @@
       "Run `go test ./tests/integration` without creds to confirm skip behavior",
       "Run the same tests with creds to confirm they execute normally"
     ],
+    "completed": true,
     "scope": [
       "tests/integration/object_store_test.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "vector-query-topk-heap",
@@ -3148,11 +3148,11 @@
       "Update tests to pass with heap pruning and verify result correctness",
       "Run `go test ./internal/index -run ANN`"
     ],
+    "completed": true,
     "scope": [
       "internal/index/reader.go",
       "internal/query/vector_ann_test.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "vector-query-parallel-range-fetch",
@@ -3165,11 +3165,11 @@
       "Update tests to pass and verify per-range caching semantics remain correct",
       "Run `go test ./internal/index -run MultiRange`"
     ],
+    "completed": true,
     "scope": [
       "internal/index/reader.go",
       "internal/index/reader_test.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "vector-query-large-cluster-streaming",
@@ -3182,11 +3182,11 @@
       "Update tests to pass and verify streaming search returns correct top-k results",
       "Run `go test ./internal/index -run Streaming`"
     ],
+    "completed": true,
     "scope": [
       "internal/index/reader.go",
       "internal/index/reader_test.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "vector-query-cache-verification",
@@ -3199,11 +3199,213 @@
       "Update tests to pass and confirm cold query uses object store and warm query uses cache",
       "Run `go test ./internal/index -run Cache`"
     ],
+    "completed": true,
     "scope": [
       "internal/index/reader.go",
       "internal/cache",
       "internal/metrics"
+    ]
+  },
+  {
+    "id": "api-objectstore-failure-503",
+    "category": "api",
+    "description": "Return HTTP 503 (not 500) for object store/state failures on list namespaces, metadata, warm-cache, delete namespace, and recall endpoints with the standard error envelope.",
+    "steps": [
+      "Inject an object store failure for each affected endpoint and confirm current status codes are 500",
+      "Update error mapping to return 503 with {\"status\":\"error\",\"error\":\"...\"}",
+      "Add or update endpoint-level tests to assert 503 on object store failures",
+      "Re-run the endpoint tests and verify 503 responses"
     ],
-    "completed": true
+    "scope": [
+      "pkg/api/router.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "metadata-approx-stats-nonzero",
+    "category": "bug",
+    "description": "Populate metadata response with real approx_row_count and approx_logical_bytes instead of zero constants.",
+    "steps": [
+      "Trace where stats are computed/stored in state or index manifests and confirm they are available",
+      "Plumb the actual approx_row_count and approx_logical_bytes into the metadata response",
+      "Add a test that writes data, indexes, and validates metadata stats are non-zero",
+      "Re-run the test to confirm stats reflect stored values"
+    ],
+    "scope": [
+      "pkg/api/router.go",
+      "internal/namespace",
+      "internal/index"
+    ],
+    "completed": false
+  },
+  {
+    "id": "s3-conditional-put-atomic",
+    "category": "bug",
+    "description": "Implement S3 PutIfAbsent/PutIfMatch using native conditional headers to ensure atomic CAS semantics.",
+    "steps": [
+      "Replace Stat+Put race window with PUT using If-None-Match/If-Match headers",
+      "Ensure conflicts return a distinct error and are handled by retry logic",
+      "Add or update object store tests to simulate concurrent writers and assert no duplicate WAL seqs",
+      "Run the object store tests to confirm CAS behavior"
+    ],
+    "scope": [
+      "pkg/objectstore/s3.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "patch-missing-id-snapshot-required",
+    "category": "bug",
+    "description": "Prevent patch_rows/patch_columns from creating docs when snapshot/tail data is unavailable; require a snapshot or return an error.",
+    "steps": [
+      "Identify code paths that bypass existence checks when tail snapshot is missing",
+      "Change behavior to error (or otherwise ensure missing IDs are ignored) when no snapshot is available",
+      "Add a regression test that disables tail/snapshot and patches a missing ID expecting a failure or no-op per spec",
+      "Run the write tests to confirm patches do not create missing docs"
+    ],
+    "scope": [
+      "internal/write/handler.go",
+      "internal/write/batcher.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "eventual-consistency-ttl-enforcement",
+    "category": "bug",
+    "description": "Enforce the 60s staleness bound for eventual consistency by refreshing state/tail on expiry.",
+    "steps": [
+      "Add TTL tracking for eventual snapshots and force refresh when stale > 60s",
+      "Add a test that advances time beyond TTL and verifies eventual queries refresh state/tail",
+      "Run the query consistency tests to confirm behavior"
+    ],
+    "scope": [
+      "internal/query/handler.go",
+      "internal/tail"
+    ],
+    "completed": false
+  },
+  {
+    "id": "tail-index-dedup-walseq-compare",
+    "category": "bug",
+    "description": "Compare WAL sequence when merging tail and index results so older tail versions cannot shadow newer indexed docs.",
+    "steps": [
+      "Identify merge logic that assumes tail is always newer",
+      "Add WAL-seq comparison and choose the highest version per ID",
+      "Add a regression test with stale tail vs newer indexed doc to verify last-write-wins",
+      "Run the query tests to confirm correct dedup"
+    ],
+    "scope": [
+      "internal/query/handler.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "id-normalization-preserve-string",
+    "category": "bug",
+    "description": "Preserve string IDs that are numeric as strings instead of coercing to u64.",
+    "steps": [
+      "Update ID parsing to keep JSON string inputs as string IDs even if numeric",
+      "Add tests for string \"42\" and numeric 42 to ensure they remain distinct IDs",
+      "Run document ID tests to confirm separation"
+    ],
+    "scope": [
+      "internal/document/id.go",
+      "internal/document"
+    ],
+    "completed": false
+  },
+  {
+    "id": "filter-null-vs-missing-distinction",
+    "category": "bug",
+    "description": "Differentiate explicit null from missing attributes in filter evaluation per spec.",
+    "steps": [
+      "Adjust filter evaluation to track explicit null vs missing attributes separately",
+      "Update Eq/NotEq null semantics to match spec with explicit null preserved",
+      "Add tests that distinguish missing vs explicit null behavior",
+      "Run filter tests to confirm updated semantics"
+    ],
+    "scope": [
+      "internal/filter/filter.go",
+      "internal/filter"
+    ],
+    "completed": false
+  },
+  {
+    "id": "segment-docs-columnar-zstd",
+    "category": "bug",
+    "description": "Store docs in segments as zstd-compressed columnar format for docs.col.zst instead of raw JSON.",
+    "steps": [
+      "Implement columnar doc encoding and zstd compression for docs.col.zst writes",
+      "Update segment reader to decode the new format",
+      "Add a test that writes and reads a segment and validates format and compression",
+      "Run indexer/segment tests to confirm compatibility"
+    ],
+    "scope": [
+      "internal/indexer/l0_builder.go",
+      "internal/index/segment.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "fts-artifact-key-format",
+    "category": "bug",
+    "description": "Publish FTS artifacts using spec-compliant keys fts.<field>.bm25 instead of fts/<attr>.idx.",
+    "steps": [
+      "Update FTS segment writer to use the correct key naming",
+      "Update any readers/manifest references to match the new keys",
+      "Add a test to assert manifest fts_keys use fts.<field>.bm25",
+      "Run FTS/indexer tests to confirm behavior"
+    ],
+    "scope": [
+      "internal/index/segment.go",
+      "internal/fts"
+    ],
+    "completed": false
+  },
+  {
+    "id": "fts-language-stemming-options",
+    "category": "bug",
+    "description": "Apply full_text_search options (language, stemming, remove_stopwords, ascii_folding) in tokenization.",
+    "steps": [
+      "Wire tokenizer to respect language-specific stopwords and stemming settings",
+      "Honor remove_stopwords and ascii_folding config in tokenization pipeline",
+      "Add tests for non-English language and stemming toggles",
+      "Run FTS tests to confirm option effects"
+    ],
+    "scope": [
+      "internal/fts/tokenizer.go",
+      "internal/fts"
+    ],
+    "completed": false
+  },
+  {
+    "id": "disk-cache-namespace-metrics-fix",
+    "category": "observability",
+    "description": "Attribute disk cache hits/misses to the correct namespace by parsing keys under vex/namespaces/<namespace>/...",
+    "steps": [
+      "Fix namespace extraction logic for object keys",
+      "Add a test that records cache events for multiple namespaces and verifies labels",
+      "Run cache metrics tests to confirm per-namespace attribution"
+    ],
+    "scope": [
+      "internal/cache/disk.go",
+      "internal/metrics"
+    ],
+    "completed": false
+  },
+  {
+    "id": "warm-cache-prefetch-bounds",
+    "category": "performance",
+    "description": "Limit warm-cache hint prefetch to centroids, cluster offsets, doc column headers, and hottest filter bitmaps instead of full object reads.",
+    "steps": [
+      "Replace io.ReadAll on large objects with bounded header/prefix reads",
+      "Implement selection of hottest filter bitmaps only",
+      "Add a test to assert warm hint does not read full docs/bitmaps",
+      "Run warm-cache tests to confirm bounded prefetch"
+    ],
+    "scope": [
+      "internal/warmer/warmer.go"
+    ],
+    "completed": false
   }
 ]
