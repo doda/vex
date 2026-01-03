@@ -1548,3 +1548,13 @@ KEY DEPENDENCIES:
 - Challenges: creds file existed so skipping required temporarily moving it aside.
 - Resolution: moved /tmp/vex-garage/creds.env to .bak for skip test, then restored.
 - Follow-ups: none.
+[2026-01-03T19:13:46Z] Completed vector-query-topk-heap: PASS
+- Implemented top-k heap collector for ANN cluster scans (batch + streaming) and reused for filtered ANN.
+- Added ANN tests asserting bounded candidate retention for batch and streaming paths.
+- Files changed: internal/index/reader.go.
+- Files changed: internal/index/reader_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/index -run ANN (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Challenges: go not on PATH for test runs.
+- Resolution: used /usr/local/go/bin/go for go test.
