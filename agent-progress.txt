@@ -1723,3 +1723,15 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-04T02:10:00Z] Completed warm-cache-prefetch-bounds: PASS
+- Implemented bounded warm-cache prefetch with docs header range reads and hot-filter bitmap selection.
+- Added prefetch config for docs header byte cap and hot filter count; RAM caches doc headers.
+- Updated warm-cache integration expectations for disk vs RAM cache entries.
+- Added warmer unit test to assert range reads and skipped cold filter bitmaps.
+- Files changed: internal/warmer/warmer.go.
+- Files changed: internal/warmer/warmer_test.go.
+- Files changed: tests/integration/object_store_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/warmer -run PrefetchBounds -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./tests/integration -run WarmCache -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).

@@ -3406,6 +3406,6 @@
     "scope": [
       "internal/warmer/warmer.go"
     ],
-    "completed": false
+    "completed": true
   }
 ]
