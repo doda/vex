@@ -27,11 +27,22 @@ type Reader struct {
 	store     objectstore.Store
 	diskCache *cache.DiskCache
 	ramCache  *cache.MemoryCache
+	// largeClusterChunkBytes controls streaming chunk size for large clusters.
+	largeClusterChunkBytes int
 
 	// Per-namespace IVF reader cache
 	mu      sync.RWMutex
 	readers map[string]*cachedIVFReader
 }
+
+// ReaderOptions configures index reader behavior.
+type ReaderOptions struct {
+	// LargeClusterChunkBytes controls chunk size for streaming large clusters.
+	// If zero, DefaultLargeClusterChunkBytes is used.
+	LargeClusterChunkBytes int
+}
+
+const DefaultLargeClusterChunkBytes = 5 * 1024 * 1024
 
 // cachedIVFReader holds a cached IVF reader for a segment.
 type cachedIVFReader struct {
@@ -43,11 +54,17 @@ type cachedIVFReader struct {
 
 // NewReader creates a new index reader.
 func NewReader(store objectstore.Store, diskCache *cache.DiskCache, ramCache *cache.MemoryCache) *Reader {
+	return NewReaderWithOptions(store, diskCache, ramCache, ReaderOptions{})
+}
+
+// NewReaderWithOptions creates a new index reader with custom options.
+func NewReaderWithOptions(store objectstore.Store, diskCache *cache.DiskCache, ramCache *cache.MemoryCache, opts ReaderOptions) *Reader {
 	return &Reader{
-		store:     store,
-		diskCache: diskCache,
-		ramCache:  ramCache,
-		readers:   make(map[string]*cachedIVFReader),
+		store:                  store,
+		diskCache:              diskCache,
+		ramCache:               ramCache,
+		largeClusterChunkBytes: opts.LargeClusterChunkBytes,
+		readers:                make(map[string]*cachedIVFReader),
 	}
 }
 
@@ -576,18 +593,26 @@ func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, cl
 	return nil
 }
 
+func (r *Reader) streamingChunkSize(entrySize int) int {
+	chunkSize := r.largeClusterChunkBytes
+	if chunkSize <= 0 {
+		chunkSize = DefaultLargeClusterChunkBytes
+	}
+	if chunkSize < entrySize {
+		chunkSize = entrySize
+	}
+	aligned := (chunkSize / entrySize) * entrySize
+	if aligned == 0 {
+		aligned = entrySize
+	}
+	return aligned
+}
+
 // searchClusterStreaming searches a large cluster by streaming data in chunks.
 func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey string, rng vector.ByteRange, query []float32, dims int, dtype vector.DType, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
-	// Each vector entry is: 8 bytes (docID) + dims*4 bytes (float32 vector)
-	entrySize := 8 + dims*4
-
-	// Stream in chunks of 5MB to reduce number of S3 requests
-	chunkSize := 5 * 1024 * 1024
-	if chunkSize < entrySize*10 {
-		chunkSize = entrySize * 10
-	}
-	// Round to entry boundary
-	chunkSize = (chunkSize / entrySize) * entrySize
+	// Each vector entry is: 8 bytes (docID) + dims*element bytes (vector data)
+	entrySize := 8 + dims*vectorBytesPerElement(dtype)
+	chunkSize := r.streamingChunkSize(entrySize)
 
 	offset := rng.Offset
 	remaining := rng.Length

@@ -1569,3 +1569,15 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-03T22:00:00Z] Completed vector-query-large-cluster-streaming: PASS
+- Implemented configurable streaming chunk size with entry-size alignment for large ANN cluster reads.
+- Added streaming tests covering chunked range reads, alignment, and top-k correctness across streamed chunks.
+- Updated range store test helper to track range-call order for streaming verification.
+- Files changed: internal/index/reader.go.
+- Files changed: internal/index/reader_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/index -run Streaming (fail before fix: expected 2088 range calls, got 3).
+- Tests: /usr/local/go/bin/go test ./internal/index -run Streaming (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: needed to assert chunk alignment without impacting existing range tests.
+- Resolution: added rangeStore call tracking plus helper to parse range boundaries.
