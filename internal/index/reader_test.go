@@ -286,6 +286,159 @@ func TestSearchWithMultiRange(t *testing.T) {
 	}
 }
 
+func TestANNTopKHeapBoundsCandidates(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	ctx := context.Background()
+
+	dims := 8
+	nClusters := 2
+	topK := 5
+	nProbe := 2
+	docsPerCluster := 2000
+
+	centroid0 := make([]float32, dims)
+	centroid1 := make([]float32, dims)
+	centroid0[0] = 1
+	centroid1[1] = 1
+
+	centroidsData := createTestCentroidsFileWithCentroids(t, dims, [][]float32{centroid0, centroid1}, vector.MetricCosineDistance)
+
+	cluster0Data := createUniformClusterData(dims, docsPerCluster, 1, 0.9)
+	cluster1Data := createUniformClusterData(dims, docsPerCluster, docsPerCluster+1, 0.1)
+	allClusterData := append(cluster0Data, cluster1Data...)
+
+	offsets := []vector.ClusterOffset{
+		{Offset: 0, Length: uint64(len(cluster0Data)), DocCount: uint32(docsPerCluster)},
+		{Offset: uint64(len(cluster0Data)), Length: uint64(len(cluster1Data)), DocCount: uint32(docsPerCluster)},
+	}
+	offsetsData := createTestOffsetsFile(t, offsets)
+
+	manifest := &Manifest{
+		FormatVersion: 1,
+		Namespace:     "test-ns",
+		GeneratedAt:   time.Now().UTC(),
+		IndexedWALSeq: 10,
+		Segments: []Segment{
+			{
+				ID:          "seg_001",
+				Level:       0,
+				StartWALSeq: 1,
+				EndWALSeq:   10,
+				IVFKeys: &IVFKeys{
+					CentroidsKey:      "vex/namespaces/test-ns/index/segments/seg_001/vectors.centroids.bin",
+					ClusterOffsetsKey: "vex/namespaces/test-ns/index/segments/seg_001/vectors.cluster_offsets.bin",
+					ClusterDataKey:    "vex/namespaces/test-ns/index/segments/seg_001/vectors.clusters.pack",
+					NClusters:         nClusters,
+					VectorCount:       docsPerCluster * nClusters,
+				},
+			},
+		},
+	}
+
+	manifestData, _ := json.Marshal(manifest)
+	manifestKey := ManifestKey("test-ns", 1)
+
+	store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.CentroidsKey, bytes.NewReader(centroidsData), int64(len(centroidsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterOffsetsKey, bytes.NewReader(offsetsData), int64(len(offsetsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterDataKey, bytes.NewReader(allClusterData), int64(len(allClusterData)), nil)
+
+	reader := NewReader(store, nil, nil)
+	ivfReader, clusterDataKey, err := reader.GetIVFReader(ctx, "test-ns", manifestKey, 1)
+	if err != nil {
+		t.Fatalf("GetIVFReader() error = %v", err)
+	}
+
+	queryVec := make([]float32, dims)
+	queryVec[0] = 1
+
+	results, maxCandidates, err := reader.searchWithMultiRangeStats(ctx, ivfReader, clusterDataKey, queryVec, topK, nProbe)
+	if err != nil {
+		t.Fatalf("searchWithMultiRangeStats() error = %v", err)
+	}
+	if len(results) > topK {
+		t.Errorf("expected at most %d results, got %d", topK, len(results))
+	}
+	if maxCandidates > topK {
+		t.Errorf("expected max candidates <= %d, got %d", topK, maxCandidates)
+	}
+}
+
+func TestANNTopKHeapBoundsStreaming(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	ctx := context.Background()
+
+	dims := 256
+	topK := 5
+	nProbe := 1
+
+	entrySize := 8 + dims*4
+	docsPerCluster := (MaxClusterSizeForBatch / entrySize) + 128
+	if docsPerCluster < topK*4 {
+		docsPerCluster = topK * 4
+	}
+
+	centroid := make([]float32, dims)
+	centroid[0] = 1
+	centroidsData := createTestCentroidsFileWithCentroids(t, dims, [][]float32{centroid}, vector.MetricCosineDistance)
+
+	clusterData := createUniformClusterData(dims, docsPerCluster, 1, 0.2)
+	offsets := []vector.ClusterOffset{
+		{Offset: 0, Length: uint64(len(clusterData)), DocCount: uint32(docsPerCluster)},
+	}
+	offsetsData := createTestOffsetsFile(t, offsets)
+
+	manifest := &Manifest{
+		FormatVersion: 1,
+		Namespace:     "test-ns",
+		GeneratedAt:   time.Now().UTC(),
+		IndexedWALSeq: 10,
+		Segments: []Segment{
+			{
+				ID:          "seg_001",
+				Level:       0,
+				StartWALSeq: 1,
+				EndWALSeq:   10,
+				IVFKeys: &IVFKeys{
+					CentroidsKey:      "vex/namespaces/test-ns/index/segments/seg_001/vectors.centroids.bin",
+					ClusterOffsetsKey: "vex/namespaces/test-ns/index/segments/seg_001/vectors.cluster_offsets.bin",
+					ClusterDataKey:    "vex/namespaces/test-ns/index/segments/seg_001/vectors.clusters.pack",
+					NClusters:         1,
+					VectorCount:       docsPerCluster,
+				},
+			},
+		},
+	}
+
+	manifestData, _ := json.Marshal(manifest)
+	manifestKey := ManifestKey("test-ns", 1)
+
+	store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.CentroidsKey, bytes.NewReader(centroidsData), int64(len(centroidsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterOffsetsKey, bytes.NewReader(offsetsData), int64(len(offsetsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterDataKey, bytes.NewReader(clusterData), int64(len(clusterData)), nil)
+
+	reader := NewReader(store, nil, nil)
+	ivfReader, clusterDataKey, err := reader.GetIVFReader(ctx, "test-ns", manifestKey, 1)
+	if err != nil {
+		t.Fatalf("GetIVFReader() error = %v", err)
+	}
+
+	queryVec := make([]float32, dims)
+	queryVec[0] = 1
+
+	results, maxCandidates, err := reader.searchWithMultiRangeStats(ctx, ivfReader, clusterDataKey, queryVec, topK, nProbe)
+	if err != nil {
+		t.Fatalf("searchWithMultiRangeStats() error = %v", err)
+	}
+	if len(results) > topK {
+		t.Errorf("expected at most %d results, got %d", topK, len(results))
+	}
+	if maxCandidates > topK {
+		t.Errorf("expected max candidates <= %d, got %d", topK, maxCandidates)
+	}
+}
+
 func TestSearchWithMultiRangeF16(t *testing.T) {
 	store := objectstore.NewMemoryStore()
 	ctx := context.Background()
@@ -729,4 +882,22 @@ func createClusterDocsDataWithDType(t *testing.T, dims int, docs []struct {
 	}
 
 	return buf.Bytes()
+}
+
+func createUniformClusterData(dims, docs int, startID int, value float32) []byte {
+	entrySize := 8 + dims*4
+	data := make([]byte, entrySize*docs)
+	pos := 0
+	valueBits := math.Float32bits(value)
+
+	for i := 0; i < docs; i++ {
+		binary.LittleEndian.PutUint64(data[pos:], uint64(startID+i))
+		pos += 8
+		for j := 0; j < dims; j++ {
+			binary.LittleEndian.PutUint32(data[pos:], valueBits)
+			pos += 4
+		}
+	}
+
+	return data
 }

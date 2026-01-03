@@ -3,11 +3,13 @@ package index
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"unsafe"
 
@@ -402,12 +404,94 @@ func (f *MultiRangeClusterDataFetcher) FetchRanges(ctx context.Context, ranges [
 // Larger clusters are streamed to avoid OOM.
 const MaxClusterSizeForBatch = 10 * 1024 * 1024 // 10MB
 
+type topKCollector struct {
+	limit   int
+	heap    topKHeap
+	maxSize int
+}
+
+type topKHeap []vector.IVFSearchResult
+
+func (h topKHeap) Len() int           { return len(h) }
+func (h topKHeap) Less(i, j int) bool { return h[i].Distance > h[j].Distance }
+func (h topKHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *topKHeap) Push(x any) {
+	*h = append(*h, x.(vector.IVFSearchResult))
+}
+
+func (h *topKHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
+
+func newTopKCollector(limit int) *topKCollector {
+	if limit < 1 {
+		limit = 1
+	}
+	return &topKCollector{limit: limit}
+}
+
+func (c *topKCollector) consider(res vector.IVFSearchResult) {
+	if len(c.heap) < c.limit {
+		heap.Push(&c.heap, res)
+		if len(c.heap) > c.maxSize {
+			c.maxSize = len(c.heap)
+		}
+		return
+	}
+	if len(c.heap) == 0 {
+		return
+	}
+	if res.Distance < c.heap[0].Distance {
+		c.heap[0] = res
+		heap.Fix(&c.heap, 0)
+	}
+}
+
+func (c *topKCollector) results() []vector.IVFSearchResult {
+	if len(c.heap) == 0 {
+		return nil
+	}
+	results := make([]vector.IVFSearchResult, len(c.heap))
+	copy(results, c.heap)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
+	return results
+}
+
 // SearchWithMultiRange performs ANN search using multi-range fetching for efficiency.
 func (r *Reader) SearchWithMultiRange(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, query []float32, topK, nProbe int) ([]vector.IVFSearchResult, error) {
+	results, _, err := r.searchANN(ctx, ivfReader, clusterDataKey, query, topK, nProbe, nil)
+	return results, err
+}
+
+func (r *Reader) searchWithMultiRangeStats(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, query []float32, topK, nProbe int) ([]vector.IVFSearchResult, int, error) {
+	results, collector, err := r.searchANN(ctx, ivfReader, clusterDataKey, query, topK, nProbe, nil)
+	if collector == nil {
+		return results, 0, err
+	}
+	return results, collector.maxSize, err
+}
+
+func (r *Reader) searchANN(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, query []float32, topK, nProbe int, filterBitmap *roaring.Bitmap) ([]vector.IVFSearchResult, *topKCollector, error) {
 	if ivfReader == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
+	collector := newTopKCollector(topK)
+	if err := r.collectANN(ctx, ivfReader, clusterDataKey, query, nProbe, filterBitmap, collector); err != nil {
+		return nil, collector, err
+	}
+
+	return collector.results(), collector, nil
+}
+
+func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, query []float32, nProbe int, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
 	// Find nearest centroids
 	nearestClusters := findNearestCentroids(ivfReader, query, nProbe)
 
@@ -425,45 +509,33 @@ func (r *Reader) SearchWithMultiRange(ctx context.Context, ivfReader *vector.IVF
 		}
 	}
 
-	var results []vector.IVFSearchResult
-
 	// Process small clusters in batch
 	if len(smallRanges) > 0 {
 		fetcher := NewMultiRangeClusterDataFetcher(r.store, r.diskCache, clusterDataKey)
 		clusterData, err := fetcher.FetchRanges(ctx, smallRanges)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch cluster data: %w", err)
+			return fmt.Errorf("failed to fetch cluster data: %w", err)
 		}
 
 		for clusterID, data := range clusterData {
-			clusterResults, err := searchClusterData(data, query, clusterID, ivfReader.Dims, ivfReader.DType, ivfReader.Metric)
-			if err != nil {
-				return nil, fmt.Errorf("failed to search cluster %d: %w", clusterID, err)
+			if err := searchClusterDataInto(data, query, clusterID, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap, collector); err != nil {
+				return fmt.Errorf("failed to search cluster %d: %w", clusterID, err)
 			}
-			results = append(results, clusterResults...)
 		}
 	}
 
 	// Stream large clusters one at a time
 	for _, rng := range largeRanges {
-		clusterResults, err := r.searchClusterStreaming(ctx, clusterDataKey, rng, query, topK, ivfReader.Dims, ivfReader.DType, ivfReader.Metric)
-		if err != nil {
+		if err := r.searchClusterStreaming(ctx, clusterDataKey, rng, query, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap, collector); err != nil {
 			continue // Skip failed clusters
 		}
-		results = append(results, clusterResults...)
 	}
 
-	// Sort by distance and return top K
-	sortResultsByDistance(results)
-	if len(results) > topK {
-		results = results[:topK]
-	}
-
-	return results, nil
+	return nil
 }
 
 // searchClusterStreaming searches a large cluster by streaming data in chunks.
-func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey string, rng vector.ByteRange, query []float32, topK, dims int, dtype vector.DType, metric vector.DistanceMetric) ([]vector.IVFSearchResult, error) {
+func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey string, rng vector.ByteRange, query []float32, dims int, dtype vector.DType, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
 	// Each vector entry is: 8 bytes (docID) + dims*4 bytes (float32 vector)
 	entrySize := 8 + dims*4
 
@@ -475,7 +547,6 @@ func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey stri
 	// Round to entry boundary
 	chunkSize = (chunkSize / entrySize) * entrySize
 
-	var results []vector.IVFSearchResult
 	offset := rng.Offset
 	remaining := rng.Length
 
@@ -494,7 +565,7 @@ func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey stri
 
 		reader, _, err := r.store.Get(ctx, clusterDataKey, opts)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch cluster chunk: %w", err)
+			return fmt.Errorf("failed to fetch cluster chunk: %w", err)
 		}
 
 		// Use LimitReader to only read the expected amount (minio may return more than requested)
@@ -502,27 +573,19 @@ func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey stri
 		data, err := readAllWithContext(ctx, limitedReader)
 		reader.Close()
 		if err != nil {
-			return nil, fmt.Errorf("failed to read cluster chunk: %w", err)
+			return fmt.Errorf("failed to read cluster chunk: %w", err)
 		}
 
 		// Search this chunk
-		chunkResults, err := searchClusterData(data, query, rng.ClusterID, dims, dtype, metric)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, chunkResults...)
-
-		// Keep only top results to limit memory
-		if len(results) > topK*10 {
-			sortResultsByDistance(results)
-			results = results[:topK*2]
+		if err := searchClusterDataInto(data, query, rng.ClusterID, dims, dtype, metric, filterBitmap, collector); err != nil {
+			return err
 		}
 
 		offset += fetchLen
 		remaining -= fetchLen
 	}
 
-	return results, nil
+	return nil
 }
 
 // findNearestCentroids finds the nProbe nearest centroids to the query vector.
@@ -564,49 +627,54 @@ func findNearestCentroids(ivfReader *vector.IVFReader, query []float32, nProbe i
 	return result
 }
 
-// searchClusterData searches a cluster's data and computes exact distances.
-func searchClusterData(data []byte, query []float32, clusterID int, dims int, dtype vector.DType, metric vector.DistanceMetric) ([]vector.IVFSearchResult, error) {
+// searchClusterDataInto searches a cluster's data and computes exact distances.
+func searchClusterDataInto(data []byte, query []float32, clusterID int, dims int, dtype vector.DType, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
 	if len(data) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	reader := bytes.NewReader(data)
 	entrySize := 8 + dims*vectorBytesPerElement(dtype)
 	numEntries := len(data) / entrySize
 
-	results := make([]vector.IVFSearchResult, 0, numEntries)
+	docIDBuf := make([]byte, 8)
+	vec := make([]float32, dims)
 
 	for i := 0; i < numEntries; i++ {
 		// Read docID
-		docIDBuf := make([]byte, 8)
 		if _, err := io.ReadFull(reader, docIDBuf); err != nil {
 			if err == io.EOF {
 				break
 			}
-			return nil, err
+			return err
 		}
 		docID := uint64(docIDBuf[0]) | uint64(docIDBuf[1])<<8 | uint64(docIDBuf[2])<<16 | uint64(docIDBuf[3])<<24 |
 			uint64(docIDBuf[4])<<32 | uint64(docIDBuf[5])<<40 | uint64(docIDBuf[6])<<48 | uint64(docIDBuf[7])<<56
 
 		// Read vector
-		vec := make([]float32, dims)
 		if err := readVectorElements(reader, vec, dtype); err != nil {
 			if err == io.EOF {
 				break
 			}
-			return nil, err
+			return err
+		}
+
+		if filterBitmap != nil && !filterBitmap.Contains(uint32(docID)) {
+			continue
 		}
 
 		// Compute exact distance
 		dist := computeDistance(query, vec, metric)
-		results = append(results, vector.IVFSearchResult{
-			DocID:     docID,
-			Distance:  dist,
-			ClusterID: clusterID,
-		})
+		if collector != nil {
+			collector.consider(vector.IVFSearchResult{
+				DocID:     docID,
+				Distance:  dist,
+				ClusterID: clusterID,
+			})
+		}
 	}
 
-	return results, nil
+	return nil
 }
 
 // computeDistance calculates the distance between two vectors.
@@ -858,90 +926,8 @@ func evaluateLeafBitmap(f *filter.Filter, indexes map[string]*filter.FilterIndex
 // SearchWithFilter performs ANN search with a filter bitmap constraint.
 // Only vectors whose docIDs are in the filter bitmap are considered.
 func (r *Reader) SearchWithFilter(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, query []float32, topK, nProbe int, filterBitmap *roaring.Bitmap) ([]vector.IVFSearchResult, error) {
-	if ivfReader == nil {
-		return nil, nil
-	}
-
-	// Find nearest centroids
-	nearestClusters := findNearestCentroids(ivfReader, query, nProbe)
-
-	// Get byte ranges for all selected clusters
-	ranges := ivfReader.GetClusterRanges(nearestClusters)
-
-	// Fetch all cluster data using multi-range optimization
-	fetcher := NewMultiRangeClusterDataFetcher(r.store, r.diskCache, clusterDataKey)
-	clusterData, err := fetcher.FetchRanges(ctx, ranges)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch cluster data: %w", err)
-	}
-
-	// Search each cluster with filter applied
-	var results []vector.IVFSearchResult
-	for clusterID, data := range clusterData {
-		clusterResults, err := searchClusterDataWithFilter(data, query, clusterID, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap)
-		if err != nil {
-			return nil, fmt.Errorf("failed to search cluster %d: %w", clusterID, err)
-		}
-		results = append(results, clusterResults...)
-	}
-
-	// Sort by distance and return top K
-	sortResultsByDistance(results)
-	if len(results) > topK {
-		results = results[:topK]
-	}
-
-	return results, nil
-}
-
-// searchClusterDataWithFilter searches a cluster's data with a filter bitmap.
-func searchClusterDataWithFilter(data []byte, query []float32, clusterID int, dims int, dtype vector.DType, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap) ([]vector.IVFSearchResult, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-
-	reader := bytes.NewReader(data)
-	entrySize := 8 + dims*vectorBytesPerElement(dtype)
-	numEntries := len(data) / entrySize
-
-	results := make([]vector.IVFSearchResult, 0, numEntries)
-
-	for i := 0; i < numEntries; i++ {
-		// Read docID
-		docIDBuf := make([]byte, 8)
-		if _, err := io.ReadFull(reader, docIDBuf); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		docID := uint64(docIDBuf[0]) | uint64(docIDBuf[1])<<8 | uint64(docIDBuf[2])<<16 | uint64(docIDBuf[3])<<24 |
-			uint64(docIDBuf[4])<<32 | uint64(docIDBuf[5])<<40 | uint64(docIDBuf[6])<<48 | uint64(docIDBuf[7])<<56
-
-		// Read vector
-		vec := make([]float32, dims)
-		if err := readVectorElements(reader, vec, dtype); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-
-		// Apply filter if present
-		if filterBitmap != nil && !filterBitmap.Contains(uint32(docID)) {
-			continue
-		}
-
-		// Compute exact distance
-		dist := computeDistance(query, vec, metric)
-		results = append(results, vector.IVFSearchResult{
-			DocID:     docID,
-			Distance:  dist,
-			ClusterID: clusterID,
-		})
-	}
-
-	return results, nil
+	results, _, err := r.searchANN(ctx, ivfReader, clusterDataKey, query, topK, nProbe, filterBitmap)
+	return results, err
 }
 
 // GetManifestSegments returns all segments from the manifest with their filter keys.

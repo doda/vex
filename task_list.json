@@ -3152,7 +3152,7 @@
       "internal/index/reader.go",
       "internal/query/vector_ann_test.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "vector-query-parallel-range-fetch",
