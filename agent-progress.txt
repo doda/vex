@@ -1661,3 +1661,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-03T20:53:02Z] Completed id-normalization-preserve-string: PASS
+- Updated string ID parsing to keep numeric strings as string IDs instead of coercing to u64.
+- Added tests asserting numeric string IDs remain distinct from numeric IDs and updated normalization expectations.
+- Key files changed: internal/document/id.go.
+- Key files changed: internal/document/id_test.go.
+- Key files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/document -run ID (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

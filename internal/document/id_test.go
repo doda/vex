@@ -24,9 +24,6 @@ func TestParseU64IDs(t *testing.T) {
 		{"uint regular", uint(12345), 12345},
 		{"float64 whole", float64(12345), 12345},
 		{"float64 zero", float64(0), 0},
-		{"string numeric", "12345", 12345},
-		{"string zero", "0", 0},
-		{"string large", "18446744073709551615", 18446744073709551615},
 		{"json.Number", json.Number("12345"), 12345},
 		{"json.Number max u64", json.Number("18446744073709551615"), 18446744073709551615},
 	}
@@ -87,6 +84,9 @@ func TestParseStringIDs(t *testing.T) {
 		{"string with special chars", "user@example.com", "user@example.com"},
 		{"string 64 bytes", strings.Repeat("a", 64), strings.Repeat("a", 64)},
 		{"alphanumeric", "abc123", "abc123"},
+		{"numeric string", "42", "42"},
+		{"numeric zero", "0", "0"},
+		{"numeric large", "18446744073709551615", "18446744073709551615"},
 		{"with underscores", "user_123", "user_123"},
 		{"with dashes", "user-123", "user-123"},
 		{"uuid-like but invalid", "not-a-real-uuid-format", "not-a-real-uuid-format"},
@@ -186,7 +186,7 @@ func TestIDNormalization(t *testing.T) {
 		{"int64 to u64", int64(42), IDTypeU64},
 		{"float64 whole to u64", float64(42), IDTypeU64},
 		{"json.Number to u64", json.Number("42"), IDTypeU64},
-		{"string numeric to u64", "42", IDTypeU64},
+		{"string numeric to string", "42", IDTypeString},
 
 		// UUID inputs normalize to UUID
 		{"uuid.UUID to uuid", uuid.MustParse("550e8400-e29b-41d4-a716-446655440000"), IDTypeUUID},
@@ -207,6 +207,26 @@ func TestIDNormalization(t *testing.T) {
 				t.Errorf("ParseID(%v).Type() = %v, want %v", tt.input, id.Type(), tt.wantType)
 			}
 		})
+	}
+}
+
+func TestIDNumericStringDistinctFromNumber(t *testing.T) {
+	stringID, err := ParseID("42")
+	if err != nil {
+		t.Fatalf("ParseID(\"42\") returned error: %v", err)
+	}
+	numberID, err := ParseID(float64(42))
+	if err != nil {
+		t.Fatalf("ParseID(42) returned error: %v", err)
+	}
+	if stringID.Type() != IDTypeString {
+		t.Fatalf("ParseID(\"42\").Type() = %v, want %v", stringID.Type(), IDTypeString)
+	}
+	if numberID.Type() != IDTypeU64 {
+		t.Fatalf("ParseID(42).Type() = %v, want %v", numberID.Type(), IDTypeU64)
+	}
+	if stringID.Equal(numberID) {
+		t.Fatalf("string and numeric IDs should not be equal")
 	}
 }
 
