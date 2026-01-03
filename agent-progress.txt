@@ -1594,3 +1594,18 @@ KEY DEPENDENCIES:
 - Resolution: temporarily stashed reader.go wiring, ran test to confirm failure, then restored changes.
 - Follow-ups: none.
 [2026-01-03T19:48:06.887Z] Audit (codex): FAIL, 6 area(s), 13 new, lens=spec.
+[2026-01-04T00:00:00Z] Completed api-objectstore-failure-503: PASS
+- Updated API error mapping to return 503 for list namespaces, metadata, warm-cache, delete namespace, and recall object-store/state failures.
+- Added failing object store test helper and new endpoint tests to assert 503 error envelopes on storage failures.
+- Files changed: pkg/api/router.go.
+- Files changed: pkg/api/store_failure_test.go.
+- Files changed: pkg/api/list_namespaces_test.go.
+- Files changed: pkg/api/metadata_test.go.
+- Files changed: pkg/api/warm_cache_test.go.
+- Files changed: pkg/api/delete_namespace_test.go.
+- Files changed: pkg/api/recall_debug_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./pkg/api -run ObjectStoreFailure -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: python not available.
+- Resolution: used python3 for task_list.json update.

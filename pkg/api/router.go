@@ -450,7 +450,7 @@ func (r *Router) handleListNamespaces(w http.ResponseWriter, req *http.Request) 
 	if r.store != nil {
 		namespaces, nextCursor, err := listNamespacesFromStore(req.Context(), r.store, cursor, prefix, pageSize)
 		if err != nil {
-			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
 			return
 		}
 
@@ -491,7 +491,7 @@ func (r *Router) handleGetMetadata(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrNamespaceDeleted(ns))
 				return
 			}
-			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
 			return
 		}
 
@@ -609,7 +609,7 @@ func (r *Router) handleWarmCache(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrNamespaceDeleted(ns))
 				return
 			}
-			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
 			return
 		}
 	} else {
@@ -1218,7 +1218,7 @@ func (r *Router) handleDeleteNamespace(w http.ResponseWriter, req *http.Request)
 				r.writeAPIError(w, ErrNamespaceDeleted(ns))
 				return
 			}
-			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
 			return
 		}
 		r.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -1288,7 +1288,7 @@ func (r *Router) handleDebugRecall(w http.ResponseWriter, req *http.Request) {
 				r.writeAPIError(w, ErrNamespaceDeleted(ns))
 				return
 			}
-			r.writeAPIError(w, ErrInternalServer(err.Error()))
+			r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
 			return
 		}
 

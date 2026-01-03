@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/namespace"
@@ -454,6 +456,25 @@ func TestDeleteNamespace_ObjectStoreUnavailable(t *testing.T) {
 	resp := w.Result()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("expected status 503, got %d", resp.StatusCode)
+	}
+}
+
+// TestDeleteNamespace_ObjectStoreFailure tests 503 when object store delete fails.
+func TestDeleteNamespace_ObjectStoreFailure(t *testing.T) {
+	cfg := testConfig()
+	store := newFailingStore(objectstore.NewMemoryStore(), errors.New("object store failure"))
+	store.failGet = true
+
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	req := httptest.NewRequest("DELETE", "/v2/namespaces/test-ns", nil)
+	w := httptest.NewRecorder()
+	router.ServeAuthed(w, req)
+
+	msg := parseErrorResponse(t, w.Result(), http.StatusServiceUnavailable)
+	if !strings.Contains(msg, "object store") {
+		t.Errorf("expected error to mention object store, got %q", msg)
 	}
 }
 

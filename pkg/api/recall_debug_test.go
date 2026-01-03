@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -143,6 +145,25 @@ func TestRecallDebugEndpoint_NamespaceNotFound(t *testing.T) {
 	resp := w.Result()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected status 404, got %d", resp.StatusCode)
+	}
+}
+
+// TestRecallDebugEndpoint_ObjectStoreFailure tests 503 when object store recall fails.
+func TestRecallDebugEndpoint_ObjectStoreFailure(t *testing.T) {
+	cfg := testConfig()
+	store := newFailingStore(objectstore.NewMemoryStore(), errors.New("object store failure"))
+	store.failGet = true
+
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	req := httptest.NewRequest("POST", "/v1/namespaces/test-recall/_debug/recall", nil)
+	w := httptest.NewRecorder()
+	router.ServeAuthed(w, req)
+
+	msg := parseErrorResponse(t, w.Result(), http.StatusServiceUnavailable)
+	if !strings.Contains(msg, "object store") {
+		t.Errorf("expected error to mention object store, got %q", msg)
 	}
 }
 

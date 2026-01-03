@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -470,6 +472,25 @@ func TestListNamespaces_ObjectStoreUnavailable(t *testing.T) {
 	resp := w.Result()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("expected status 503, got %d", resp.StatusCode)
+	}
+}
+
+// TestListNamespaces_ObjectStoreFailure tests 503 when the object store list fails.
+func TestListNamespaces_ObjectStoreFailure(t *testing.T) {
+	cfg := testConfig()
+	store := newFailingStore(objectstore.NewMemoryStore(), errors.New("object store failure"))
+	store.failList = true
+
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	req := httptest.NewRequest("GET", "/v1/namespaces", nil)
+	w := httptest.NewRecorder()
+	router.ServeAuthed(w, req)
+
+	msg := parseErrorResponse(t, w.Result(), http.StatusServiceUnavailable)
+	if !strings.Contains(msg, "object store") {
+		t.Errorf("expected error to mention object store, got %q", msg)
 	}
 }
 
