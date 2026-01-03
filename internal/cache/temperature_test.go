@@ -382,6 +382,8 @@ func TestExtractNamespaceFromKey(t *testing.T) {
 		key      string
 		expected string
 	}{
+		{"vex/namespaces/alpha/wal/00000000000000000001.wal.zst", "alpha"},
+		{"/vex/namespaces/beta/index/segments/001.json", "beta"},
 		{"namespace/wal/00000000000000000001.wal.zst", "namespace"},
 		{"/namespace/manifest/001.json", "namespace"},
 		{"ns", "ns"},

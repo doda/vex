@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/vexsearch/vex/internal/metrics"
 )
 
 func TestNewDiskCache(t *testing.T) {
@@ -152,6 +155,63 @@ func TestDiskCache_Miss(t *testing.T) {
 	_, err = dc.Get(key)
 	if err != ErrCacheMiss {
 		t.Errorf("Get nonexistent = %v, want ErrCacheMiss", err)
+	}
+}
+
+func TestDiskCache_MetricsNamespaceLabels(t *testing.T) {
+	metrics.CacheHits.Reset()
+	metrics.CacheMisses.Reset()
+
+	tmpDir := t.TempDir()
+	dc, err := NewDiskCache(DiskCacheConfig{
+		RootPath: tmpDir,
+		MaxBytes: 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("NewDiskCache failed: %v", err)
+	}
+
+	data := []byte("payload")
+	keyA := CacheKey{ObjectKey: "vex/namespaces/ns-a/wal/00000000000000000001.wal.zst", ETag: "a"}
+	keyB := CacheKey{ObjectKey: "vex/namespaces/ns-b/wal/00000000000000000002.wal.zst", ETag: "b"}
+
+	if _, err := dc.PutBytes(keyA, data); err != nil {
+		t.Fatalf("PutBytes keyA failed: %v", err)
+	}
+	if _, err := dc.PutBytes(keyB, data); err != nil {
+		t.Fatalf("PutBytes keyB failed: %v", err)
+	}
+
+	if _, err := dc.Get(keyA); err != nil {
+		t.Fatalf("Get keyA failed: %v", err)
+	}
+	if _, err := dc.Get(keyB); err != nil {
+		t.Fatalf("Get keyB failed: %v", err)
+	}
+
+	if _, err := dc.Get(CacheKey{ObjectKey: "vex/namespaces/ns-a/manifest/001.json", ETag: "missing"}); err != ErrCacheMiss {
+		t.Fatalf("Get miss ns-a = %v, want ErrCacheMiss", err)
+	}
+	if _, err := dc.Get(CacheKey{ObjectKey: "vex/namespaces/ns-b/manifest/002.json", ETag: "missing"}); err != ErrCacheMiss {
+		t.Fatalf("Get miss ns-b = %v, want ErrCacheMiss", err)
+	}
+
+	hitsA := testutil.ToFloat64(metrics.CacheHits.WithLabelValues("disk", "ns-a"))
+	hitsB := testutil.ToFloat64(metrics.CacheHits.WithLabelValues("disk", "ns-b"))
+	missesA := testutil.ToFloat64(metrics.CacheMisses.WithLabelValues("disk", "ns-a"))
+	missesB := testutil.ToFloat64(metrics.CacheMisses.WithLabelValues("disk", "ns-b"))
+
+	if hitsA != 1 {
+		t.Errorf("expected ns-a disk hits 1, got %f", hitsA)
+	}
+	if hitsB != 1 {
+		t.Errorf("expected ns-b disk hits 1, got %f", hitsB)
+	}
+	if missesA != 1 {
+		t.Errorf("expected ns-a disk misses 1, got %f", missesA)
+	}
+	if missesB != 1 {
+		t.Errorf("expected ns-b disk misses 1, got %f", missesB)
 	}
 }
 

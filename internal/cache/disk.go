@@ -3,12 +3,13 @@ package cache
 import (
 	"container/list"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,10 +89,10 @@ type entry struct {
 type DiskCache struct {
 	mu sync.RWMutex
 
-	rootPath   string
-	maxBytes   int64
-	usedBytes  int64
-	budgetPct  int
+	rootPath  string
+	maxBytes  int64
+	usedBytes int64
+	budgetPct int
 
 	entries map[string]*entry // hash -> entry
 	lruList *list.List        // LRU list (front = most recently used)
@@ -186,7 +187,7 @@ func (dc *DiskCache) loadExisting() error {
 
 		ent := &entry{
 			key:        key,
-			hash:       hash,       // Store hash for proper eviction
+			hash:       hash, // Store hash for proper eviction
 			path:       path,
 			size:       info.Size(),
 			accessTime: accessTime,
@@ -236,16 +237,23 @@ func extractNamespaceFromKey(objectKey string) string {
 	if objectKey == "" {
 		return ""
 	}
-	// Strip leading slash if present
-	key := objectKey
-	if key[0] == '/' {
-		key = key[1:]
-	}
-	// Get first path component
-	for i := 0; i < len(key); i++ {
-		if key[i] == '/' {
-			return key[:i]
+	key := strings.TrimPrefix(objectKey, "/")
+	const prefix = "vex/namespaces/"
+	if strings.HasPrefix(key, prefix) {
+		rest := strings.TrimPrefix(key, prefix)
+		if rest == "" {
+			return ""
 		}
+		if idx := strings.Index(rest, "/"); idx >= 0 {
+			if idx == 0 {
+				return ""
+			}
+			return rest[:idx]
+		}
+		return rest
+	}
+	if idx := strings.Index(key, "/"); idx >= 0 {
+		return key[:idx]
 	}
 	return key
 }
@@ -486,11 +494,11 @@ func (dc *DiskCache) Stats() CacheStats {
 	defer dc.mu.RUnlock()
 
 	return CacheStats{
-		UsedBytes:    dc.usedBytes,
-		MaxBytes:     dc.maxBytes,
-		EntryCount:   len(dc.entries),
-		PinnedCount:  len(dc.pinned),
-		BudgetPct:    dc.budgetPct,
+		UsedBytes:   dc.usedBytes,
+		MaxBytes:    dc.maxBytes,
+		EntryCount:  len(dc.entries),
+		PinnedCount: len(dc.pinned),
+		BudgetPct:   dc.budgetPct,
 	}
 }
 
