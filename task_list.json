@@ -3251,7 +3251,7 @@
     "scope": [
       "pkg/objectstore/s3.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "patch-missing-id-snapshot-required",
