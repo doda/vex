@@ -291,6 +291,7 @@ type MultiRangeClusterDataFetcher struct {
 	store          objectstore.Store
 	diskCache      *cache.DiskCache
 	clusterDataKey string
+	maxParallel    int
 }
 
 // NewMultiRangeClusterDataFetcher creates a new multi-range fetcher.
@@ -299,6 +300,7 @@ func NewMultiRangeClusterDataFetcher(store objectstore.Store, diskCache *cache.D
 		store:          store,
 		diskCache:      diskCache,
 		clusterDataKey: clusterDataKey,
+		maxParallel:    4,
 	}
 }
 
@@ -338,63 +340,103 @@ func (f *MultiRangeClusterDataFetcher) FetchRanges(ctx context.Context, ranges [
 	// Use a 4KB gap tolerance for merging
 	merged := vector.MergeAdjacentRanges(uncached, 4096)
 
-	// Fetch each merged range
+	maxParallel := f.maxParallel
+	if maxParallel <= 0 {
+		maxParallel = 1
+	}
+	if maxParallel > len(merged) {
+		maxParallel = len(merged)
+	}
+
+	fetchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var firstErr error
+	var once sync.Once
+	sem := make(chan struct{}, maxParallel)
+
 	for _, mr := range merged {
-		opts := &objectstore.GetOptions{
-			Range: &objectstore.ByteRange{
-				Start: int64(mr.Offset),
-				End:   int64(mr.Offset + mr.Length - 1),
-			},
-		}
+		mr := mr
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		reader, _, err := f.store.Get(ctx, f.clusterDataKey, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch range [%d, %d): %w", mr.Offset, mr.Offset+mr.Length, err)
-		}
+			opts := &objectstore.GetOptions{
+				Range: &objectstore.ByteRange{
+					Start: int64(mr.Offset),
+					End:   int64(mr.Offset + mr.Length - 1),
+				},
+			}
 
-		// Use LimitReader to only read the expected amount (minio may return more than requested)
-		limitedReader := io.LimitReader(reader, int64(mr.Length))
-		data, err := readAllWithContext(ctx, limitedReader)
-		reader.Close()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read range data: %w", err)
-		}
+			reader, _, err := f.store.Get(fetchCtx, f.clusterDataKey, opts)
+			if err != nil {
+				once.Do(func() {
+					firstErr = fmt.Errorf("failed to fetch range [%d, %d): %w", mr.Offset, mr.Offset+mr.Length, err)
+					cancel()
+				})
+				return
+			}
 
-		// If this is a merged range covering multiple clusters, we need to split it
-		if mr.ClusterID == -1 {
-			// Find which original ranges are covered by this merged range
-			for _, orig := range uncached {
-				if orig.Offset >= mr.Offset && orig.Offset+orig.Length <= mr.Offset+mr.Length {
-					// Extract this cluster's data from the merged result
-					start := orig.Offset - mr.Offset
-					end := start + orig.Length
-					if end <= uint64(len(data)) {
-						clusterData := make([]byte, orig.Length)
-						copy(clusterData, data[start:end])
-						result[orig.ClusterID] = clusterData
+			// Use LimitReader to only read the expected amount (minio may return more than requested)
+			limitedReader := io.LimitReader(reader, int64(mr.Length))
+			data, err := readAllWithContext(fetchCtx, limitedReader)
+			reader.Close()
+			if err != nil {
+				once.Do(func() {
+					firstErr = fmt.Errorf("failed to read range data: %w", err)
+					cancel()
+				})
+				return
+			}
 
-						// Cache the individual cluster data
-						if f.diskCache != nil {
-							cacheKey := cache.CacheKey{
-								ObjectKey: fmt.Sprintf("%s#%d-%d", f.clusterDataKey, orig.Offset, orig.Length),
+			mu.Lock()
+			defer mu.Unlock()
+
+			// If this is a merged range covering multiple clusters, we need to split it
+			if mr.ClusterID == -1 {
+				// Find which original ranges are covered by this merged range
+				for _, orig := range uncached {
+					if orig.Offset >= mr.Offset && orig.Offset+orig.Length <= mr.Offset+mr.Length {
+						// Extract this cluster's data from the merged result
+						start := orig.Offset - mr.Offset
+						end := start + orig.Length
+						if end <= uint64(len(data)) {
+							clusterData := make([]byte, orig.Length)
+							copy(clusterData, data[start:end])
+							result[orig.ClusterID] = clusterData
+
+							// Cache the individual cluster data
+							if f.diskCache != nil {
+								cacheKey := cache.CacheKey{
+									ObjectKey: fmt.Sprintf("%s#%d-%d", f.clusterDataKey, orig.Offset, orig.Length),
+								}
+								f.diskCache.PutBytes(cacheKey, clusterData)
 							}
-							f.diskCache.PutBytes(cacheKey, clusterData)
 						}
 					}
 				}
-			}
-		} else {
-			// Single cluster range
-			result[mr.ClusterID] = data
+			} else {
+				// Single cluster range
+				result[mr.ClusterID] = data
 
-			// Cache it
-			if f.diskCache != nil {
-				cacheKey := cache.CacheKey{
-					ObjectKey: fmt.Sprintf("%s#%d-%d", f.clusterDataKey, mr.Offset, mr.Length),
+				// Cache it
+				if f.diskCache != nil {
+					cacheKey := cache.CacheKey{
+						ObjectKey: fmt.Sprintf("%s#%d-%d", f.clusterDataKey, mr.Offset, mr.Length),
+					}
+					f.diskCache.PutBytes(cacheKey, data)
 				}
-				f.diskCache.PutBytes(cacheKey, data)
 			}
-		}
+		}()
+	}
+
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
 	return result, nil

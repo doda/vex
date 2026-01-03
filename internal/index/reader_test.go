@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"io"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -774,6 +778,237 @@ func TestMultiRangeFetcher(t *testing.T) {
 	}
 	if !bytes.Equal(result[2], cluster2) {
 		t.Errorf("cluster 2 data mismatch")
+	}
+}
+
+type rangeBlock struct {
+	started chan struct{}
+	unblock chan struct{}
+	once    sync.Once
+}
+
+type rangeStore struct {
+	inner  objectstore.Store
+	mu     sync.Mutex
+	blocks map[string]*rangeBlock
+	counts map[string]int
+}
+
+func newRangeStore(inner objectstore.Store) *rangeStore {
+	return &rangeStore{
+		inner:  inner,
+		blocks: make(map[string]*rangeBlock),
+		counts: make(map[string]int),
+	}
+}
+
+func rangeKey(key string, opts *objectstore.GetOptions) string {
+	if opts == nil || opts.Range == nil {
+		return key
+	}
+	return fmt.Sprintf("%s#%d-%d", key, opts.Range.Start, opts.Range.End)
+}
+
+func rangeKeyWithRange(key string, start, end int64) string {
+	return fmt.Sprintf("%s#%d-%d", key, start, end)
+}
+
+func (s *rangeStore) BlockRange(key string, start, end int64) (<-chan struct{}, chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	s.blocks[rangeKeyWithRange(key, start, end)] = &rangeBlock{
+		started: started,
+		unblock: unblock,
+	}
+	return started, unblock
+}
+
+func (s *rangeStore) GetCount(key string, start, end int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[rangeKeyWithRange(key, start, end)]
+}
+
+func (s *rangeStore) Get(ctx context.Context, key string, opts *objectstore.GetOptions) (io.ReadCloser, *objectstore.ObjectInfo, error) {
+	rKey := rangeKey(key, opts)
+	s.mu.Lock()
+	s.counts[rKey]++
+	block := s.blocks[rKey]
+	s.mu.Unlock()
+
+	if block != nil {
+		block.once.Do(func() {
+			close(block.started)
+		})
+		select {
+		case <-block.unblock:
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+	}
+
+	return s.inner.Get(ctx, key, opts)
+}
+
+func (s *rangeStore) Head(ctx context.Context, key string) (*objectstore.ObjectInfo, error) {
+	return s.inner.Head(ctx, key)
+}
+
+func (s *rangeStore) Put(ctx context.Context, key string, body io.Reader, size int64, opts *objectstore.PutOptions) (*objectstore.ObjectInfo, error) {
+	return s.inner.Put(ctx, key, body, size, opts)
+}
+
+func (s *rangeStore) PutIfAbsent(ctx context.Context, key string, body io.Reader, size int64, opts *objectstore.PutOptions) (*objectstore.ObjectInfo, error) {
+	return s.inner.PutIfAbsent(ctx, key, body, size, opts)
+}
+
+func (s *rangeStore) PutIfMatch(ctx context.Context, key string, body io.Reader, size int64, etag string, opts *objectstore.PutOptions) (*objectstore.ObjectInfo, error) {
+	return s.inner.PutIfMatch(ctx, key, body, size, etag, opts)
+}
+
+func (s *rangeStore) Delete(ctx context.Context, key string) error {
+	return s.inner.Delete(ctx, key)
+}
+
+func (s *rangeStore) List(ctx context.Context, opts *objectstore.ListOptions) (*objectstore.ListResult, error) {
+	return s.inner.List(ctx, opts)
+}
+
+func TestMultiRangeFetcherParallel(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	ctx := context.Background()
+
+	dims := 4
+	cluster0 := createClusterDocsData(t, dims, []struct {
+		docID uint64
+		vec   []float32
+	}{{1, []float32{1, 0, 0, 0}}})
+	cluster1 := createClusterDocsData(t, dims, []struct {
+		docID uint64
+		vec   []float32
+	}{{2, []float32{0, 1, 0, 0}}})
+
+	gap := 8192
+	padding := make([]byte, gap)
+	allData := append(cluster0, padding...)
+	offset1 := len(allData)
+	allData = append(allData, cluster1...)
+
+	clusterDataKey := "test-cluster-data-parallel.pack"
+	store.Put(ctx, clusterDataKey, bytes.NewReader(allData), int64(len(allData)), nil)
+
+	rangeStore := newRangeStore(store)
+	start0, unblock0 := rangeStore.BlockRange(clusterDataKey, 0, int64(len(cluster0)-1))
+	start1, unblock1 := rangeStore.BlockRange(clusterDataKey, int64(offset1), int64(offset1+len(cluster1)-1))
+
+	fetcher := NewMultiRangeClusterDataFetcher(rangeStore, nil, clusterDataKey)
+	fetcher.maxParallel = 2
+
+	ranges := []vector.ByteRange{
+		{Offset: 0, Length: uint64(len(cluster0)), ClusterID: 0},
+		{Offset: uint64(offset1), Length: uint64(len(cluster1)), ClusterID: 1},
+	}
+
+	type fetchResult struct {
+		data map[int][]byte
+		err  error
+	}
+	done := make(chan fetchResult, 1)
+	go func() {
+		data, err := fetcher.FetchRanges(ctx, ranges)
+		done <- fetchResult{data: data, err: err}
+	}()
+
+	waitForStart := func(ch <-chan struct{}, label string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("expected %s range fetch to start in parallel", label)
+		}
+	}
+
+	waitForStart(start0, "first")
+	waitForStart(start1, "second")
+
+	close(unblock0)
+	close(unblock1)
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("FetchRanges() error = %v", res.err)
+		}
+		if !bytes.Equal(res.data[0], cluster0) {
+			t.Errorf("cluster 0 data mismatch")
+		}
+		if !bytes.Equal(res.data[1], cluster1) {
+			t.Errorf("cluster 1 data mismatch")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FetchRanges() did not complete")
+	}
+}
+
+func TestMultiRangeFetcherCache(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	ctx := context.Background()
+
+	dims := 4
+	cluster0 := createClusterDocsData(t, dims, []struct {
+		docID uint64
+		vec   []float32
+	}{{1, []float32{1, 0, 0, 0}}})
+	cluster1 := createClusterDocsData(t, dims, []struct {
+		docID uint64
+		vec   []float32
+	}{{2, []float32{0, 1, 0, 0}}})
+
+	allData := append(cluster0, cluster1...)
+	clusterDataKey := "test-cluster-data-cache.pack"
+	store.Put(ctx, clusterDataKey, bytes.NewReader(allData), int64(len(allData)), nil)
+
+	diskCache, err := cache.NewDiskCache(cache.DiskCacheConfig{
+		RootPath: t.TempDir(),
+		MaxBytes: int64(len(allData)) * 2,
+	})
+	if err != nil {
+		t.Fatalf("failed to create disk cache: %v", err)
+	}
+
+	cacheKey := cache.CacheKey{
+		ObjectKey: fmt.Sprintf("%s#%d-%d", clusterDataKey, 0, len(cluster0)),
+	}
+	diskCache.PutBytes(cacheKey, cluster0)
+
+	rangeStore := newRangeStore(store)
+	fetcher := NewMultiRangeClusterDataFetcher(rangeStore, diskCache, clusterDataKey)
+
+	ranges := []vector.ByteRange{
+		{Offset: 0, Length: uint64(len(cluster0)), ClusterID: 0},
+		{Offset: uint64(len(cluster0)), Length: uint64(len(cluster1)), ClusterID: 1},
+	}
+
+	result, err := fetcher.FetchRanges(ctx, ranges)
+	if err != nil {
+		t.Fatalf("FetchRanges() error = %v", err)
+	}
+
+	if !bytes.Equal(result[0], cluster0) {
+		t.Errorf("cluster 0 data mismatch")
+	}
+	if !bytes.Equal(result[1], cluster1) {
+		t.Errorf("cluster 1 data mismatch")
+	}
+
+	if got := rangeStore.GetCount(clusterDataKey, 0, int64(len(cluster0)-1)); got != 0 {
+		t.Errorf("expected cached range to avoid store fetch, got %d", got)
+	}
+	if got := rangeStore.GetCount(clusterDataKey, int64(len(cluster0)), int64(len(allData)-1)); got != 1 {
+		t.Errorf("expected uncached range to fetch once, got %d", got)
 	}
 }
 
