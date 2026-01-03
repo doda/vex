@@ -109,7 +109,7 @@ func (e *ValidationError) Error() string {
 // ParseID parses and normalizes a document ID from any supported input type.
 // Supported input types:
 //   - uint64, int64, int, uint: parsed as u64
-//   - string: checked for UUID format, then numeric, otherwise treated as string
+//   - string: checked for UUID format, otherwise treated as string
 //   - json.Number: parsed as u64 or rejected if not valid u64
 //   - uuid.UUID: used directly
 //   - float64: converted to u64 if it represents a whole number
@@ -216,7 +216,7 @@ func ParseIDKey(s string) (ID, error) {
 }
 
 // parseStringID parses a string value and normalizes it to the appropriate ID type.
-// It tries to parse as UUID first, then as u64, and falls back to string.
+// It tries to parse as UUID first, and falls back to string.
 func parseStringID(s string) (ID, error) {
 	if len(s) == 0 {
 		return ID{}, &ValidationError{
@@ -239,28 +239,8 @@ func parseStringID(s string) (ID, error) {
 		}
 	}
 
-	// Try to parse as u64 (only pure numeric strings)
-	if isNumericString(s) {
-		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
-			return NewU64ID(u), nil
-		}
-	}
-
 	// Otherwise, treat as string ID
 	return NewStringID(s)
-}
-
-// isNumericString checks if a string contains only ASCII digits.
-func isNumericString(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // MarshalJSON implements json.Marshaler for ID.
