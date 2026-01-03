@@ -546,7 +546,7 @@ func rebuildArtifactKey(seg index.Segment, kind, attribute string) string {
 			}
 		}
 	case "fts":
-		suffix := "/fts/" + attribute + ".idx"
+		suffix := "/fts." + attribute + ".bm25"
 		for _, key := range seg.FTSKeys {
 			if strings.HasSuffix(key, suffix) {
 				return key

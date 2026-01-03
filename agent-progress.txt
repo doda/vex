@@ -1694,3 +1694,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: indexer tests failed due to typed ID expectations and tail refresh pruning.
 - Resolution: aligned tests with typed ID keys and refreshed tail with afterSeq=0 to keep unindexed WAL.
+[2026-01-03T21:38:45Z] Completed fts-artifact-key-format: PASS
+- Updated FTS artifact keys to use fts.<field>.bm25 across segment writer/builder, reader extraction, and rebuild readiness checks.
+- Adjusted FTS integration/indexer/manifest/segment tests to expect the new key format and added explicit format assertions.
+- Key files changed: internal/index/segment.go; internal/fts/segment.go; internal/index/reader.go; internal/indexer/indexer.go.
+- Key files changed: internal/indexer/fts_segments_test.go; internal/fts/integration_test.go; internal/index/manifest_test.go; internal/index/segment_test.go; internal/index/publisher_test.go.
+- Verification: /usr/local/go/bin/go test ./internal/fts -count=1 (pass).
+- Verification: /usr/local/go/bin/go test ./internal/indexer -run FTS -count=1 (pass).
+- Verification: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

@@ -147,7 +147,7 @@ func TestSegmentsArray(t *testing.T) {
 			"vex/namespaces/test-ns/index/segments/seg_01H123/filters/category.bitmap",
 		},
 		FTSKeys: []string{
-			"vex/namespaces/test-ns/index/segments/seg_01H123/fts/title.idx",
+			"vex/namespaces/test-ns/index/segments/seg_01H123/fts.title.bm25",
 		},
 		Stats: SegmentStats{
 			RowCount:       1000,
@@ -457,7 +457,7 @@ func TestAllObjectKeys(t *testing.T) {
 		DocsKey:    "docs1.col.zst",
 		VectorsKey: "vectors1.ivf.zst",
 		FilterKeys: []string{"filter1.bitmap", "filter2.bitmap"},
-		FTSKeys:    []string{"fts1.idx"},
+		FTSKeys:    []string{"fts.title.bm25"},
 	})
 	m.AddSegment(Segment{
 		ID:         "seg_002",
@@ -471,7 +471,7 @@ func TestAllObjectKeys(t *testing.T) {
 		"vectors1.ivf.zst",
 		"filter1.bitmap",
 		"filter2.bitmap",
-		"fts1.idx",
+		"fts.title.bm25",
 		"docs2.col.zst",
 		"filter3.bitmap",
 	}
@@ -562,7 +562,7 @@ func TestManifestRoundtrip(t *testing.T) {
 		DocsKey:     "path/to/docs.col.zst",
 		VectorsKey:  "path/to/vectors.ivf.zst",
 		FilterKeys:  []string{"path/to/filter1.bitmap"},
-		FTSKeys:     []string{"path/to/fts.idx"},
+		FTSKeys:     []string{"path/to/fts.title.bm25"},
 		Stats: SegmentStats{
 			RowCount:       5000,
 			LogicalBytes:   250000,

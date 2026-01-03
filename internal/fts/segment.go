@@ -298,7 +298,7 @@ func (sb *SegmentBuilder) WriteToObjectStore(ctx context.Context, store objectst
 			return nil, fmt.Errorf("serializing FTS index for %q: %w", attrName, err)
 		}
 
-		key := fmt.Sprintf("%s/fts/%s.idx", segmentKey, attrName)
+		key := fmt.Sprintf("%s/fts.%s.bm25", segmentKey, attrName)
 
 		_, err = store.PutIfAbsent(ctx, key, bytes.NewReader(data), int64(len(data)), nil)
 		if err != nil {

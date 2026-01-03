@@ -79,12 +79,15 @@ func TestIndexerPublishesFTSSegments(t *testing.T) {
 	}
 
 	expected := map[string]bool{
-		"fts/title.idx": false,
-		"fts/body.idx":  false,
+		"fts.title.bm25": false,
+		"fts.body.bm25":  false,
 	}
 	for _, key := range segment.FTSKeys {
 		if _, err := store.Head(ctx, key); err != nil {
 			t.Fatalf("expected FTS object to exist: %v", err)
+		}
+		if !strings.Contains(key, "/fts.") || !strings.HasSuffix(key, ".bm25") {
+			t.Fatalf("unexpected FTS key format: %s", key)
 		}
 		for suffix := range expected {
 			if strings.Contains(key, suffix) {
