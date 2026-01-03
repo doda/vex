@@ -1629,3 +1629,14 @@ KEY DEPENDENCIES:
 - Tests: /usr/local/go/bin/go test ./tests/integration -run WalCAS -count=1 (pass).
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
+[2026-01-04T00:45:00Z] Completed patch-missing-id-snapshot-required: PASS
+- Enforced snapshot requirement for patch_rows/patch_columns; missing tail now returns ErrPatchRequiresTail and validates patch rows before skipping.
+- Refactored patch row prep to validate/canonicalize without applying, avoiding vector patches slipping through when docs are missing.
+- Required tail store in snapshot load helper for filter/conditional ops; aligned no-tail filter tests to expect ErrFilterOpRequiresTail.
+- Updated tests to use tail stores and seed data; fixed copy_from_namespace vector test by advancing WAL state.
+- Files changed: internal/write/handler.go; internal/write/batcher.go; internal/write/snapshot.go; pkg/api/router.go.
+- Files changed: internal/write/handler_test.go; internal/write/batcher_test.go; internal/write/ordering_test.go.
+- Files changed: internal/write/delete_by_filter_test.go; internal/write/patch_by_filter_test.go; internal/write/copy_from_namespace_test.go.
+- Verification: /usr/local/go/bin/go test ./internal/write -count=1 (pass).
+- Verification: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: conflicting tail-store expectations in filter tests; resolved by standardizing on errors without tail store.

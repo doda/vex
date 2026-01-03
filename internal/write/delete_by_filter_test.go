@@ -481,7 +481,7 @@ func TestHandler_DeleteByFilter_InvalidFilter(t *testing.T) {
 	}
 }
 
-// --- Test: delete_by_filter without tail store is a no-op ---
+// --- Test: delete_by_filter without tail store fails ---
 
 func TestHandler_DeleteByFilter_NoTailStore(t *testing.T) {
 	ctx := context.Background()
@@ -497,7 +497,7 @@ func TestHandler_DeleteByFilter_NoTailStore(t *testing.T) {
 
 	ns := "test-delete-no-tail"
 
-	// delete_by_filter should silently be a no-op when no tail store is configured
+	// delete_by_filter should fail when no tail store is configured
 	deleteReq := &WriteRequest{
 		RequestID: "delete-no-tail",
 		DeleteByFilter: &DeleteByFilterRequest{
@@ -505,14 +505,12 @@ func TestHandler_DeleteByFilter_NoTailStore(t *testing.T) {
 		},
 	}
 
-	resp, err := handler.Handle(ctx, ns, deleteReq)
-	if err != nil {
-		t.Fatalf("delete_by_filter without tail store should not fail: %v", err)
+	_, err = handler.Handle(ctx, ns, deleteReq)
+	if err == nil {
+		t.Fatal("expected error without tail store, got nil")
 	}
-
-	// Should delete 0 documents (no tail store to evaluate)
-	if resp.RowsDeleted != 0 {
-		t.Errorf("expected 0 rows deleted without tail store, got %d", resp.RowsDeleted)
+	if !errors.Is(err, ErrFilterOpRequiresTail) {
+		t.Fatalf("expected ErrFilterOpRequiresTail, got %v", err)
 	}
 }
 

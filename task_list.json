@@ -3267,7 +3267,7 @@
       "internal/write/handler.go",
       "internal/write/batcher.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "eventual-consistency-ttl-enforcement",
