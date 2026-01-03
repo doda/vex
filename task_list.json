@@ -3219,7 +3219,7 @@
     "scope": [
       "pkg/api/router.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "metadata-approx-stats-nonzero",

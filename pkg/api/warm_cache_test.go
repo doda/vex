@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +140,25 @@ func TestWarmCacheEndpoint_ObjectStoreUnavailable(t *testing.T) {
 	resp := w.Result()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("expected status 503, got %d", resp.StatusCode)
+	}
+}
+
+// TestWarmCacheEndpoint_ObjectStoreFailure tests 503 when object store state load fails.
+func TestWarmCacheEndpoint_ObjectStoreFailure(t *testing.T) {
+	cfg := testConfig()
+	store := newFailingStore(objectstore.NewMemoryStore(), errors.New("object store failure"))
+	store.failGet = true
+
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	req := httptest.NewRequest("GET", "/v1/namespaces/test-ns/hint_cache_warm", nil)
+	w := httptest.NewRecorder()
+	router.ServeAuthed(w, req)
+
+	msg := parseErrorResponse(t, w.Result(), http.StatusServiceUnavailable)
+	if !strings.Contains(msg, "object store") {
+		t.Errorf("expected error to mention object store, got %q", msg)
 	}
 }
 
