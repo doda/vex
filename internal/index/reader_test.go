@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -443,6 +445,128 @@ func TestANNTopKHeapBoundsStreaming(t *testing.T) {
 	}
 }
 
+func TestStreamingChunkedRangesAligned(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	ctx := context.Background()
+
+	dims := 32
+	topK := 5
+	nProbe := 1
+
+	entrySize := 8 + dims*4
+	docsPerCluster := (MaxClusterSizeForBatch / entrySize) + 128
+	if docsPerCluster < topK*4 {
+		docsPerCluster = topK * 4
+	}
+
+	clusterData, topIDs := createStreamingClusterData(dims, docsPerCluster, topK)
+	centroid := make([]float32, dims)
+	centroid[0] = 1
+	centroidsData := createTestCentroidsFileWithCentroids(t, dims, [][]float32{centroid}, vector.MetricCosineDistance)
+	offsets := []vector.ClusterOffset{
+		{Offset: 0, Length: uint64(len(clusterData)), DocCount: uint32(docsPerCluster)},
+	}
+	offsetsData := createTestOffsetsFile(t, offsets)
+
+	manifest := &Manifest{
+		FormatVersion: 1,
+		Namespace:     "test-ns",
+		GeneratedAt:   time.Now().UTC(),
+		IndexedWALSeq: 10,
+		Segments: []Segment{
+			{
+				ID:          "seg_001",
+				Level:       0,
+				StartWALSeq: 1,
+				EndWALSeq:   10,
+				IVFKeys: &IVFKeys{
+					CentroidsKey:      "vex/namespaces/test-ns/index/segments/seg_001/vectors.centroids.bin",
+					ClusterOffsetsKey: "vex/namespaces/test-ns/index/segments/seg_001/vectors.cluster_offsets.bin",
+					ClusterDataKey:    "vex/namespaces/test-ns/index/segments/seg_001/vectors.clusters.pack",
+					NClusters:         1,
+					VectorCount:       docsPerCluster,
+				},
+			},
+		},
+	}
+
+	manifestData, _ := json.Marshal(manifest)
+	manifestKey := ManifestKey("test-ns", 1)
+
+	store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.CentroidsKey, bytes.NewReader(centroidsData), int64(len(centroidsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterOffsetsKey, bytes.NewReader(offsetsData), int64(len(offsetsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterDataKey, bytes.NewReader(clusterData), int64(len(clusterData)), nil)
+
+	rangeStore := newRangeStore(store)
+	chunkBytes := entrySize*37 + 13
+	reader := NewReaderWithOptions(rangeStore, nil, nil, ReaderOptions{LargeClusterChunkBytes: chunkBytes})
+	ivfReader, clusterDataKey, err := reader.GetIVFReader(ctx, "test-ns", manifestKey, 1)
+	if err != nil {
+		t.Fatalf("GetIVFReader() error = %v", err)
+	}
+
+	queryVec := make([]float32, dims)
+	queryVec[0] = 1
+
+	results, err := reader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, queryVec, topK, nProbe)
+	if err != nil {
+		t.Fatalf("SearchWithMultiRange() error = %v", err)
+	}
+	if len(results) != topK {
+		t.Fatalf("expected %d results, got %d", topK, len(results))
+	}
+
+	expectedIDs := make(map[uint64]struct{}, len(topIDs))
+	for _, id := range topIDs {
+		expectedIDs[id] = struct{}{}
+	}
+	for _, res := range results {
+		if _, ok := expectedIDs[res.DocID]; !ok {
+			t.Fatalf("unexpected docID %d in top-k results", res.DocID)
+		}
+		if res.Distance > 0.0001 {
+			t.Fatalf("expected top-k distance near zero, got %.4f", res.Distance)
+		}
+	}
+
+	alignedChunk := (chunkBytes / entrySize) * entrySize
+	if alignedChunk == 0 {
+		alignedChunk = entrySize
+	}
+	expectedRanges := make(map[string]struct{})
+	for offset := 0; offset < len(clusterData); offset += alignedChunk {
+		end := offset + alignedChunk - 1
+		if end >= len(clusterData) {
+			end = len(clusterData) - 1
+		}
+		expectedRanges[rangeKeyWithRange(clusterDataKey, int64(offset), int64(end))] = struct{}{}
+	}
+
+	var rangeCalls []string
+	for _, call := range rangeStore.Calls() {
+		if strings.HasPrefix(call, clusterDataKey+"#") {
+			rangeCalls = append(rangeCalls, call)
+		}
+	}
+	if len(rangeCalls) != len(expectedRanges) {
+		t.Fatalf("expected %d range calls, got %d", len(expectedRanges), len(rangeCalls))
+	}
+
+	for call := range expectedRanges {
+		start, end := parseRangeBounds(t, call, clusterDataKey)
+		if rangeStore.GetCount(clusterDataKey, start, end) != 1 {
+			t.Fatalf("expected range call %s to occur once", call)
+		}
+		if start%int64(entrySize) != 0 {
+			t.Fatalf("range start %d not aligned to entry size %d", start, entrySize)
+		}
+		if (end+1)%int64(entrySize) != 0 {
+			t.Fatalf("range end %d not aligned to entry size %d", end, entrySize)
+		}
+	}
+}
+
 func TestSearchWithMultiRangeF16(t *testing.T) {
 	store := objectstore.NewMemoryStore()
 	ctx := context.Background()
@@ -792,6 +916,7 @@ type rangeStore struct {
 	mu     sync.Mutex
 	blocks map[string]*rangeBlock
 	counts map[string]int
+	calls  []string
 }
 
 func newRangeStore(inner objectstore.Store) *rangeStore {
@@ -836,6 +961,7 @@ func (s *rangeStore) Get(ctx context.Context, key string, opts *objectstore.GetO
 	rKey := rangeKey(key, opts)
 	s.mu.Lock()
 	s.counts[rKey]++
+	s.calls = append(s.calls, rKey)
 	block := s.blocks[rKey]
 	s.mu.Unlock()
 
@@ -851,6 +977,36 @@ func (s *rangeStore) Get(ctx context.Context, key string, opts *objectstore.GetO
 	}
 
 	return s.inner.Get(ctx, key, opts)
+}
+
+func (s *rangeStore) Calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	calls := make([]string, len(s.calls))
+	copy(calls, s.calls)
+	return calls
+}
+
+func parseRangeBounds(t *testing.T, call, key string) (int64, int64) {
+	t.Helper()
+	prefix := key + "#"
+	if !strings.HasPrefix(call, prefix) {
+		t.Fatalf("unexpected range call %s for key %s", call, key)
+	}
+	rangePart := strings.TrimPrefix(call, prefix)
+	parts := strings.SplitN(rangePart, "-", 2)
+	if len(parts) != 2 {
+		t.Fatalf("invalid range call %s", call)
+	}
+	start, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		t.Fatalf("invalid range start %s: %v", parts[0], err)
+	}
+	end, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		t.Fatalf("invalid range end %s: %v", parts[1], err)
+	}
+	return start, end
 }
 
 func (s *rangeStore) Head(ctx context.Context, key string) (*objectstore.ObjectInfo, error) {
@@ -1135,4 +1291,40 @@ func createUniformClusterData(dims, docs int, startID int, value float32) []byte
 	}
 
 	return data
+}
+
+func createStreamingClusterData(dims, docs, topK int) ([]byte, []uint64) {
+	entrySize := 8 + dims*4
+	data := make([]byte, entrySize*docs)
+	pos := 0
+	topIDs := make([]uint64, 0, topK)
+
+	for i := 0; i < docs; i++ {
+		docID := uint64(i + 1)
+		binary.LittleEndian.PutUint64(data[pos:], docID)
+		pos += 8
+
+		isTop := i >= docs-topK
+		if isTop {
+			topIDs = append(topIDs, docID)
+		}
+
+		for j := 0; j < dims; j++ {
+			var v float32
+			switch j {
+			case 0:
+				if isTop {
+					v = 1
+				}
+			case 1:
+				if !isTop {
+					v = 1
+				}
+			}
+			binary.LittleEndian.PutUint32(data[pos:], math.Float32bits(v))
+			pos += 4
+		}
+	}
+
+	return data, topIDs
 }
