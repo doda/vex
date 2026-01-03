@@ -30,3 +30,5 @@ node_modules/
 
 # Looper
 .looper-init.log
+
+vex-linux

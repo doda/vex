@@ -263,6 +263,8 @@ func (i *Indexer) discoverNamespaces() {
 	ctx, cancel := context.WithTimeout(i.ctx, 30*time.Second)
 	defer cancel()
 
+	fmt.Println("[indexer] Discovering namespaces...")
+
 	// List namespace state files - look for meta/state.json files
 	prefix := "vex/namespaces/"
 	var marker string
@@ -275,16 +277,21 @@ func (i *Indexer) discoverNamespaces() {
 			MaxKeys: 1000,
 		})
 		if err != nil {
-			// Log error but continue
+			fmt.Printf("[indexer] Error listing namespaces: %v\n", err)
 			return
 		}
 
+		fmt.Printf("[indexer] Found %d objects with prefix %s\n", len(result.Objects), prefix)
+
 		// Extract namespace names from object keys
 		for _, obj := range result.Objects {
+			fmt.Printf("[indexer] Object key: %s\n", obj.Key)
 			// Key is like "vex/namespaces/my-ns/meta/state.json"
 			ns := extractNamespaceFromKey(obj.Key)
+			fmt.Printf("[indexer] Extracted namespace: %q from key %s\n", ns, obj.Key)
 			if ns != "" && !seen[ns] {
 				seen[ns] = true
+				fmt.Printf("[indexer] Watching namespace: %s\n", ns)
 				i.WatchNamespace(ns)
 			}
 		}
@@ -297,16 +304,24 @@ func (i *Indexer) discoverNamespaces() {
 }
 
 // extractNamespaceFromKey extracts namespace name from a key like "vex/namespaces/my-ns/meta/state.json"
+// or a directory marker like "vex/namespaces/my-ns/"
 func extractNamespaceFromKey(key string) string {
 	const base = "vex/namespaces/"
 	if !strings.HasPrefix(key, base) {
 		return ""
 	}
 	rest := strings.TrimPrefix(key, base)
-	// rest is like "my-ns/meta/state.json" or "my-ns/wal/<zero-padded seq>.wal.zst"
+	// rest is like "my-ns/meta/state.json" or "my-ns/wal/<seq>.wal.zst" or "my-ns/"
+
+	// Handle directory markers (keys ending with namespace/)
+	if strings.Count(rest, "/") == 1 && strings.HasSuffix(rest, "/") {
+		return strings.TrimSuffix(rest, "/")
+	}
+
+	// Handle specific files
 	if idx := strings.Index(rest, "/"); idx > 0 {
 		ns := rest[:idx]
-		// Only return namespaces that have a state.json file
+		// Accept state.json or any other file under the namespace
 		if strings.HasSuffix(key, "/meta/state.json") {
 			return ns
 		}
@@ -355,7 +370,8 @@ func (w *namespaceWatcher) run() {
 }
 
 func (w *namespaceWatcher) checkAndProcess() {
-	ctx, cancel := context.WithTimeout(w.ctx, 60*time.Second)
+	// Use a longer timeout for large WAL ranges (10 minutes)
+	ctx, cancel := context.WithTimeout(w.ctx, 10*time.Minute)
 	defer cancel()
 
 	// Load namespace state
@@ -366,7 +382,7 @@ func (w *namespaceWatcher) checkAndProcess() {
 			w.indexer.UnwatchNamespace(w.namespace)
 			return
 		}
-		// Other error, will retry next tick
+		fmt.Printf("[indexer] Error loading state for %s: %v\n", w.namespace, err)
 		return
 	}
 
@@ -381,15 +397,21 @@ func (w *namespaceWatcher) checkAndProcess() {
 		return
 	}
 
+	fmt.Printf("[indexer] Processing %s: WAL range (%d, %d]\n", w.namespace, startSeq, endSeq)
+
 	// Process WAL range
 	result, err := w.indexer.processor(ctx, w.namespace, startSeq, endSeq, state, loaded.ETag)
 	if err != nil {
-		// Error processing, will retry next tick
+		fmt.Printf("[indexer] Error processing %s: %v\n", w.namespace, err)
 		return
 	}
 	if result == nil {
+		fmt.Printf("[indexer] Processor returned nil result for %s\n", w.namespace)
 		return
 	}
+
+	fmt.Printf("[indexer] Processor completed for %s: bytes=%d, manifestWritten=%v\n",
+		w.namespace, result.BytesIndexed, result.ManifestWritten)
 
 	// If the processor already updated state (wrote manifest and called AdvanceIndex),
 	// we don't need to call AdvanceIndex again.
@@ -548,12 +570,16 @@ func (i *Indexer) ProcessWALRange(ctx context.Context, ns string, startSeq, endS
 	}
 	defer decoder.Close()
 
+	total := int(endSeq - startSeq)
+	fmt.Printf("[indexer] Reading %d WAL entries for %s...\n", total, ns)
+
 	for seq := startSeq + 1; seq <= endSeq; seq++ {
 		entry, bytes, err := i.readWALEntry(ctx, ns, seq, decoder)
 		if err != nil {
 			if objectstore.IsNotFoundError(err) {
 				// WAL entry doesn't exist yet - possible race condition
 				// Return what we have so far
+				fmt.Printf("[indexer] WAL entry %d not found for %s, stopping at %d entries\n", seq, ns, len(entries))
 				break
 			}
 			return nil, 0, startSeq, fmt.Errorf("failed to read WAL entry %d: %w", seq, err)
@@ -561,8 +587,14 @@ func (i *Indexer) ProcessWALRange(ctx context.Context, ns string, startSeq, endS
 		entries = append(entries, entry)
 		totalBytes += bytes
 		lastSeq = seq
+
+		// Log progress every 50 entries
+		if len(entries)%50 == 0 {
+			fmt.Printf("[indexer] Read %d/%d WAL entries for %s (%.1f MB)\n", len(entries), total, ns, float64(totalBytes)/(1024*1024))
+		}
 	}
 
+	fmt.Printf("[indexer] Finished reading %d WAL entries for %s (%.1f MB)\n", len(entries), ns, float64(totalBytes)/(1024*1024))
 	return entries, totalBytes, lastSeq, nil
 }
 

@@ -152,7 +152,7 @@ type ParsedRankBy struct {
 }
 
 // DefaultNProbe is the default number of centroids to probe in ANN search.
-const DefaultNProbe = 16
+const DefaultNProbe = 8
 
 // Handler handles query operations.
 type Handler struct {
@@ -630,7 +630,7 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 		ivfReader, clusterDataKey, err := h.indexReader.GetIVFReader(ctx, ns, loaded.State.Index.ManifestKey, loaded.State.Index.ManifestSeq)
 		if err != nil {
 			// Log error but fall back to exhaustive search
-			_ = err
+			fmt.Printf("[DEBUG] GetIVFReader error: %v\n", err)
 		} else if ivfReader != nil {
 			nProbe := DefaultNProbe
 			candidates := req.Limit
@@ -639,13 +639,20 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 				// No filter - use standard ANN search
 				indexResults, err = h.indexReader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe)
 				if err != nil {
+					fmt.Printf("[DEBUG] SearchWithMultiRange error: %v\n", err)
 					indexResults = nil
+				} else {
+					fmt.Printf("[DEBUG] SearchWithMultiRange returned %d results\n", len(indexResults))
 				}
 			} else {
 				// Filter present - try to use filter bitmap indexes
 				indexResults = h.searchIndexWithFilter(ctx, ns, loaded, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe, f)
 			}
+		} else {
+			fmt.Printf("[DEBUG] ivfReader is nil\n")
 		}
+	} else {
+		fmt.Printf("[DEBUG] useIndex=false manifestKey=%q\n", loaded.State.Index.ManifestKey)
 	}
 
 	// Get results from tail (unindexed data)
@@ -679,42 +686,73 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 
 	// Merge index results with tail results
 	// Tail results are authoritative for deduplication (newer data)
+	// Only load the specific documents we need, not all documents
 	var indexDocIDs map[uint64]document.ID
-	if len(indexResults) > 0 && h.indexReader != nil {
-		indexedDocs, err := h.indexReader.LoadIVFSegmentDocs(ctx, loaded.State.Index.ManifestKey)
-		if err == nil && len(indexedDocs) > 0 {
-			indexDocIDs = make(map[uint64]document.ID, len(indexedDocs))
-			for _, idoc := range indexedDocs {
-				if idoc.NumericID == 0 {
-					continue
-				}
-				docID, ok := indexedDocumentID(idoc)
-				if !ok {
-					continue
-				}
-				indexDocIDs[idoc.NumericID] = docID
+	var indexDocAttrs map[uint64]map[string]any
+	var segmentStates map[string]segmentDocState
+
+	// Optimization: skip expensive doc loading when safe
+	// We can skip if:
+	// 1. No tail results to dedupe against
+	// 2. Only 1 segment (no cross-segment tombstones)
+	// 3. All data is indexed (bytes_unindexed_est == 0)
+	// This is critical for large indices where docs.col.zst can be gigabytes
+	// Note: We disable this optimization and always load docs because:
+	// - LoadDocsForIDs only loads specific result docs, not all 191k docs
+	// - Users almost always need attributes returned
+	var skipDocLoad bool
+	if false && len(tailResults) == 0 && h.indexReader != nil {
+		// Check if there's unindexed data
+		bytesUnindexed := loaded.State.WAL.BytesUnindexedEst
+		if bytesUnindexed == 0 {
+			segments, err := h.indexReader.GetManifestSegments(ctx, loaded.State.Index.ManifestKey)
+			if err == nil && len(segments) == 1 {
+				// Single segment with no unindexed data - safe to skip doc loading
+				// Results will use numeric IDs instead of string document IDs
+				skipDocLoad = true
 			}
 		}
 	}
-	var segmentStates map[string]segmentDocState
-	if len(indexResults) > 0 && h.indexReader != nil {
-		indexedDocs, err := h.indexReader.LoadSegmentDocs(ctx, loaded.State.Index.ManifestKey)
+
+	if len(indexResults) > 0 && h.indexReader != nil && !skipDocLoad {
+		// Extract the numeric IDs from index results
+		resultIDs := make([]uint64, 0, len(indexResults))
+		for _, res := range indexResults {
+			resultIDs = append(resultIDs, res.DocID)
+		}
+
+		// Load only the documents we need (not all docs in the segment)
+		indexedDocs, err := h.indexReader.LoadDocsForIDs(ctx, loaded.State.Index.ManifestKey, resultIDs)
 		if err == nil && len(indexedDocs) > 0 {
+			indexDocIDs = make(map[uint64]document.ID, len(indexedDocs))
+			indexDocAttrs = make(map[uint64]map[string]any, len(indexedDocs))
 			segmentStates = make(map[string]segmentDocState, len(indexedDocs))
-			for _, doc := range indexedDocs {
-				if doc.ID == "" {
-					continue
+
+			for _, idoc := range indexedDocs {
+				// Build numericID -> document.ID mapping
+				if idoc.NumericID != 0 {
+					if docID, ok := indexedDocumentID(idoc); ok {
+						indexDocIDs[idoc.NumericID] = docID
+					}
+					// Build numericID -> attributes mapping
+					if idoc.Attributes != nil {
+						indexDocAttrs[idoc.NumericID] = idoc.Attributes
+					}
 				}
-				if existing, ok := segmentStates[doc.ID]; !ok || doc.WALSeq > existing.walSeq {
-					segmentStates[doc.ID] = segmentDocState{
-						walSeq:  doc.WALSeq,
-						deleted: doc.Deleted,
+
+				// Build docID -> segmentDocState mapping
+				if idoc.ID != "" {
+					if existing, ok := segmentStates[idoc.ID]; !ok || idoc.WALSeq > existing.walSeq {
+						segmentStates[idoc.ID] = segmentDocState{
+							walSeq:  idoc.WALSeq,
+							deleted: idoc.Deleted,
+						}
 					}
 				}
 			}
 		}
 	}
-	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq, indexDocIDs, segmentStates)
+	rows := h.mergeVectorResults(ctx, ns, indexResults, tailResults, req.Limit, vectorMetric, indexedWALSeq, indexDocIDs, indexDocAttrs, segmentStates)
 	return rows, nil
 }
 
@@ -806,7 +844,7 @@ type segmentDocState struct {
 	deleted bool
 }
 
-func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64, indexDocIDs map[uint64]document.ID, segmentStates map[string]segmentDocState) []Row {
+func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResults []vector.IVFSearchResult, tailResults []tail.VectorScanResult, limit int, metric vector.DistanceMetric, indexedWALSeq uint64, indexDocIDs map[uint64]document.ID, indexDocAttrs map[uint64]map[string]any, segmentStates map[string]segmentDocState) []Row {
 	// Use deduplicator to track tail documents for proper deduplication.
 	// Tail always has the authoritative version (higher WAL seq than index).
 	dedup := NewDeduplicator()
@@ -874,10 +912,14 @@ func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResult
 		}
 
 		// Add to results - doc not in tail so index version is current
+		var attrs map[string]any
+		if indexDocAttrs != nil {
+			attrs = indexDocAttrs[res.DocID]
+		}
 		docDistances[idStr] = scoredDoc{
 			docID:      docIDToAny(docID),
 			dist:       float64(res.Distance),
-			attributes: nil, // No attributes from index
+			attributes: attrs,
 		}
 	}
 

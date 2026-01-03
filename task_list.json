@@ -3136,5 +3136,70 @@
       "tests/integration/object_store_test.go"
     ],
     "completed": true
+  },
+  {
+    "id": "vector-query-topk-heap",
+    "category": "performance",
+    "description": "Use a bounded top-k heap during ANN cluster scans to avoid materializing all candidate vectors in memory.",
+    "steps": [
+      "Add tests that assert ANN search does not retain more than O(top_k) results in memory",
+      "Implement a top-k heap collector for IVF search and large-cluster streaming paths",
+      "Verify ANN results remain correct with heap pruning",
+      "Run `go test ./internal/index -run ANN`"
+    ],
+    "scope": [
+      "internal/index/reader.go",
+      "internal/query/vector_ann_test.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "vector-query-parallel-range-fetch",
+    "category": "performance",
+    "description": "Parallelize multi-range cluster fetches to reduce latency on cold cache ANN queries.",
+    "steps": [
+      "Add tests that simulate slow object store reads and assert parallel fetch completion order",
+      "Implement bounded parallel fetching for merged ranges with error propagation",
+      "Ensure per-range caching semantics remain correct",
+      "Run `go test ./internal/index -run MultiRange`"
+    ],
+    "scope": [
+      "internal/index/reader.go",
+      "internal/index/reader_test.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "vector-query-large-cluster-streaming",
+    "category": "performance",
+    "description": "Improve large-cluster streaming to reduce tail latency and allow configurable chunk sizing.",
+    "steps": [
+      "Add tests that cover streaming large clusters with chunked range reads",
+      "Make chunk size configurable and validate boundary alignment",
+      "Verify streaming search returns correct top-k results",
+      "Run `go test ./internal/index -run Streaming`"
+    ],
+    "scope": [
+      "internal/index/reader.go",
+      "internal/index/reader_test.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "vector-query-cache-verification",
+    "category": "performance",
+    "description": "Verify disk cache effectiveness for ANN cluster ranges across repeated queries.",
+    "steps": [
+      "Add tests that run identical ANN queries twice and assert cache hit metrics increase",
+      "Expose cache hit/miss counters for ANN cluster range reads",
+      "Confirm cold query uses object store and warm query uses cache",
+      "Run `go test ./internal/index -run Cache`"
+    ],
+    "scope": [
+      "internal/index/reader.go",
+      "internal/cache",
+      "internal/metrics"
+    ],
+    "completed": false
   }
 ]

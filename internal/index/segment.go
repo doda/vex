@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -31,6 +32,8 @@ var (
 	// ErrMissingDocsKey is returned when docs_key is missing.
 	ErrMissingDocsKey = errors.New("docs_key is required for a complete segment")
 )
+
+var segmentIDSeq uint64
 
 // SegmentBuilder constructs an immutable Segment.
 // Once Build() is called, the segment becomes sealed and immutable.
@@ -600,7 +603,8 @@ func (w *SegmentWriter) WrittenKeys() map[string]string {
 
 // GenerateSegmentID generates a unique segment ID.
 func GenerateSegmentID() string {
-	return fmt.Sprintf("seg_%d", time.Now().UnixNano())
+	seq := atomic.AddUint64(&segmentIDSeq, 1)
+	return fmt.Sprintf("seg_%d_%d", time.Now().UnixNano(), seq)
 }
 
 // DocsObjectKey returns the standard object key for docs data.
