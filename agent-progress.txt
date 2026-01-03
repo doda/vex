@@ -1704,3 +1704,13 @@ KEY DEPENDENCIES:
 - Verification: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-03T21:50:59Z] Completed fts-language-stemming-options: PASS
+- Implemented config-driven tokenization with language-specific stopwords, stemming, and ascii folding support.
+- Added stemming and non-English stopword coverage in tokenizer tests; applied ascii folding to all tokenizers.
+- Updated FTS indexing/query tokenization to rely on the configured pipeline.
+- Files changed: internal/fts/tokenizer.go, internal/fts/tokenizer_test.go, internal/fts/index.go, internal/fts/index_test.go, internal/fts/segment_test.go, internal/fts/test_helpers_test.go, internal/query/handler.go, internal/query/rank_clause.go, go.mod, go.sum, task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/fts -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenge: default stemming altered term expectations in FTS tests.
+- Resolution: centralized no-stemming test config helpers and added explicit tokenizer stemming coverage.
+- Follow-ups: none.

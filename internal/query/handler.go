@@ -1222,9 +1222,6 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 	// Tokenize the query
 	tokenizer := fts.NewTokenizer(ftsCfg)
 	queryTokens := tokenizer.Tokenize(parsed.QueryText)
-	if ftsCfg.RemoveStopwords {
-		queryTokens = fts.RemoveStopwords(queryTokens)
-	}
 
 	// If query produces no tokens, return empty results
 	if len(queryTokens) == 0 {

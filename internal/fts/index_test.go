@@ -5,7 +5,7 @@ import (
 )
 
 func TestIndex_AddDocument(t *testing.T) {
-	idx := NewIndex("content", DefaultConfig())
+	idx := NewIndex("content", testConfigNoStemming())
 
 	idx.AddDocument(1, "hello world")
 	idx.AddDocument(2, "world peace")
@@ -51,7 +51,7 @@ func TestIndex_AddDocument(t *testing.T) {
 }
 
 func TestIndex_WithStopwords(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfigNoStemming()
 	cfg.RemoveStopwords = true
 	idx := NewIndex("content", cfg)
 
@@ -74,7 +74,7 @@ func TestIndex_WithStopwords(t *testing.T) {
 }
 
 func TestIndex_WithoutStopwords(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfigNoStemming()
 	cfg.RemoveStopwords = false
 	idx := NewIndex("content", cfg)
 
@@ -92,7 +92,7 @@ func TestIndex_WithoutStopwords(t *testing.T) {
 }
 
 func TestIndex_SerializeDeserialize(t *testing.T) {
-	idx := NewIndex("content", DefaultConfig())
+	idx := NewIndex("content", testConfigNoStemming())
 	idx.AddDocument(1, "hello world")
 	idx.AddDocument(2, "world peace")
 	idx.AddDocument(3, "hello peace hello") // "hello" appears twice
@@ -142,8 +142,8 @@ func TestIndexBuilder(t *testing.T) {
 	builder := NewIndexBuilder()
 
 	ftsConfigs := map[string]*Config{
-		"title":   DefaultConfig(),
-		"content": DefaultConfig(),
+		"title":   testConfigNoStemming(),
+		"content": testConfigNoStemming(),
 	}
 
 	builder.AddDocument(1, map[string]any{
@@ -184,7 +184,7 @@ func TestIndexBuilder_SkipsNonFTSAttributes(t *testing.T) {
 
 	// Only content has FTS config
 	ftsConfigs := map[string]*Config{
-		"content": DefaultConfig(),
+		"content": testConfigNoStemming(),
 	}
 
 	builder.AddDocument(1, map[string]any{
@@ -211,8 +211,8 @@ func TestIndexBuilder_SkipsNonStringValues(t *testing.T) {
 	builder := NewIndexBuilder()
 
 	ftsConfigs := map[string]*Config{
-		"content": DefaultConfig(),
-		"count":   DefaultConfig(),
+		"content": testConfigNoStemming(),
+		"count":   testConfigNoStemming(),
 	}
 
 	builder.AddDocument(1, map[string]any{
@@ -229,7 +229,7 @@ func TestIndexBuilder_SkipsNonStringValues(t *testing.T) {
 }
 
 func TestIndex_EmptyDocument(t *testing.T) {
-	idx := NewIndex("content", DefaultConfig())
+	idx := NewIndex("content", testConfigNoStemming())
 
 	// Add a document with only stopwords
 	idx.AddDocument(1, "the a an")
@@ -242,11 +242,11 @@ func TestIndex_EmptyDocument(t *testing.T) {
 }
 
 func TestIndex_AvgDocLength(t *testing.T) {
-	idx := NewIndex("content", DefaultConfig())
+	idx := NewIndex("content", testConfigNoStemming())
 
 	// Add documents with different lengths
-	idx.AddDocument(1, "one two")           // 2 tokens
-	idx.AddDocument(2, "one two three")     // 3 tokens (stopword removed)
+	idx.AddDocument(1, "one two")            // 2 tokens
+	idx.AddDocument(2, "one two three")      // 3 tokens (stopword removed)
 	idx.AddDocument(3, "one two three four") // 4 tokens (stopwords removed)
 
 	// Average should be (2 + 3 + 4) / 3 = 3.0
@@ -273,7 +273,7 @@ func TestDeserialize_TooShort(t *testing.T) {
 }
 
 func TestIndex_RepeatedUpsert(t *testing.T) {
-	idx := NewIndex("content", DefaultConfig())
+	idx := NewIndex("content", testConfigNoStemming())
 
 	// Add a document
 	idx.AddDocument(1, "hello world")
@@ -319,7 +319,7 @@ func TestIndex_RepeatedUpsert(t *testing.T) {
 }
 
 func TestIndex_RepeatedUpsertWithOverlappingTerms(t *testing.T) {
-	idx := NewIndex("content", DefaultConfig())
+	idx := NewIndex("content", testConfigNoStemming())
 
 	// Add documents
 	idx.AddDocument(1, "apple banana cherry")
@@ -365,7 +365,7 @@ func TestIndex_RepeatedUpsertWithOverlappingTerms(t *testing.T) {
 }
 
 func TestIndex_RepeatedUpsertToEmptyContent(t *testing.T) {
-	idx := NewIndex("content", DefaultConfig())
+	idx := NewIndex("content", testConfigNoStemming())
 
 	// Add a document
 	idx.AddDocument(1, "hello world")
@@ -395,7 +395,7 @@ func TestIndex_RepeatedUpsertToEmptyContent(t *testing.T) {
 }
 
 func TestIndex_RepeatedUpsertBM25Stats(t *testing.T) {
-	idx := NewIndex("content", DefaultConfig())
+	idx := NewIndex("content", testConfigNoStemming())
 
 	// Add documents
 	idx.AddDocument(1, "one two three")
