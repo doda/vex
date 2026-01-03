@@ -1558,3 +1558,14 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
 - Challenges: go not on PATH for test runs.
 - Resolution: used /usr/local/go/bin/go for go test.
+[2026-01-03T20:05:00Z] Completed vector-query-parallel-range-fetch: PASS
+- Added parallel multi-range fetch coverage with blocking range store to assert concurrent range GETs and cache behavior.
+- Implemented bounded parallel fetching for merged ranges with cancellation on first error.
+- Verified per-range cache hits avoid object store GETs when cached.
+- Files changed: internal/index/reader.go.
+- Files changed: internal/index/reader_test.go.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/index -run MultiRange (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
