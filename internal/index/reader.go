@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -257,6 +260,7 @@ func (r *Reader) loadObject(ctx context.Context, key string) ([]byte, error) {
 
 // createClusterDataFetcher creates a ClusterDataFetcher that uses range reads.
 func (r *Reader) createClusterDataFetcher(ctx context.Context, clusterDataKey string) vector.ClusterDataFetcher {
+	ns := namespaceFromClusterDataKey(clusterDataKey)
 	return func(fetchCtx context.Context, offset, length uint64) ([]byte, error) {
 		// Create a cache key specific to this range
 		cacheKey := cache.CacheKey{
@@ -266,11 +270,14 @@ func (r *Reader) createClusterDataFetcher(ctx context.Context, clusterDataKey st
 		// Try cache first
 		if r.diskCache != nil {
 			if reader, err := r.diskCache.GetReader(cacheKey); err == nil {
+				metrics.IncANNClusterRangeCacheHit(ns)
 				data, err := readAllWithContext(ctx, reader)
 				reader.Close()
 				if err == nil {
 					return data, nil
 				}
+			} else if errors.Is(err, cache.ErrCacheMiss) {
+				metrics.IncANNClusterRangeCacheMiss(ns)
 			}
 		}
 
@@ -309,6 +316,7 @@ type MultiRangeClusterDataFetcher struct {
 	diskCache      *cache.DiskCache
 	clusterDataKey string
 	maxParallel    int
+	namespace      string
 }
 
 // NewMultiRangeClusterDataFetcher creates a new multi-range fetcher.
@@ -318,6 +326,7 @@ func NewMultiRangeClusterDataFetcher(store objectstore.Store, diskCache *cache.D
 		diskCache:      diskCache,
 		clusterDataKey: clusterDataKey,
 		maxParallel:    4,
+		namespace:      namespaceFromClusterDataKey(clusterDataKey),
 	}
 }
 
@@ -338,12 +347,15 @@ func (f *MultiRangeClusterDataFetcher) FetchRanges(ctx context.Context, ranges [
 		}
 		if f.diskCache != nil {
 			if reader, err := f.diskCache.GetReader(cacheKey); err == nil {
+				metrics.IncANNClusterRangeCacheHit(f.namespace)
 				data, err := readAllWithContext(ctx, reader)
 				reader.Close()
 				if err == nil {
 					result[r.ClusterID] = data
 					continue
 				}
+			} else if errors.Is(err, cache.ErrCacheMiss) {
+				metrics.IncANNClusterRangeCacheMiss(f.namespace)
 			}
 		}
 		uncached = append(uncached, r)
@@ -457,6 +469,36 @@ func (f *MultiRangeClusterDataFetcher) FetchRanges(ctx context.Context, ranges [
 	}
 
 	return result, nil
+}
+
+func namespaceFromClusterDataKey(key string) string {
+	const marker = "/namespaces/"
+	if idx := strings.Index(key, marker); idx != -1 {
+		start := idx + len(marker)
+		if start >= len(key) {
+			return ""
+		}
+		rest := key[start:]
+		if slash := strings.IndexByte(rest, '/'); slash != -1 {
+			return rest[:slash]
+		}
+		return rest
+	}
+	if strings.HasPrefix(key, "namespaces/") {
+		rest := strings.TrimPrefix(key, "namespaces/")
+		if slash := strings.IndexByte(rest, '/'); slash != -1 {
+			return rest[:slash]
+		}
+		return rest
+	}
+	if strings.HasPrefix(key, "/namespaces/") {
+		rest := strings.TrimPrefix(key, "/namespaces/")
+		if slash := strings.IndexByte(rest, '/'); slash != -1 {
+			return rest[:slash]
+		}
+		return rest
+	}
+	return ""
 }
 
 // MaxClusterSizeForBatch is the max cluster size to load into memory.

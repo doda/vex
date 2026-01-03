@@ -1581,3 +1581,15 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: needed to assert chunk alignment without impacting existing range tests.
 - Resolution: added rangeStore call tracking plus helper to parse range boundaries.
+[2026-01-03T19:37:46Z] Completed vector-query-cache-verification: PASS
+- Added ANN cluster range cache hit/miss metrics and wired them into range cache reads for multi-range fetcher and per-range fetcher.
+- Added ANN cache verification test that runs identical ANN queries twice and asserts miss/hit metrics plus range GET behavior.
+- Key files changed: internal/metrics/metrics.go.
+- Key files changed: internal/index/reader.go.
+- Key files changed: internal/index/reader_test.go.
+- Key files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/index -run Cache (fail before wiring: expected 2 cache misses, got 0).
+- Tests: /usr/local/go/bin/go test ./internal/index -run Cache (pass).
+- Challenges: needed pre-fix failing run without breaking compilation.
+- Resolution: temporarily stashed reader.go wiring, ran test to confirm failure, then restored changes.
+- Follow-ups: none.
