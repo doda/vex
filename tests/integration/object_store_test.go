@@ -1419,11 +1419,11 @@ func TestObjectStoreWarmCacheHint(t *testing.T) {
 		t.Fatalf("expected filter keys for warm cache prefetch")
 	}
 
-	expectedKeys := []string{segment.IVFKeys.CentroidsKey, segment.IVFKeys.ClusterOffsetsKey, segment.DocsKey}
-	expectedKeys = append(expectedKeys, segment.FilterKeys...)
+	expectedDiskKeys := []string{segment.IVFKeys.CentroidsKey, segment.IVFKeys.ClusterOffsetsKey}
+	expectedDiskKeys = append(expectedDiskKeys, segment.FilterKeys...)
 
-	cacheKeys := make(map[string]cache.CacheKey, len(expectedKeys))
-	for _, key := range expectedKeys {
+	cacheKeys := make(map[string]cache.CacheKey, len(expectedDiskKeys))
+	for _, key := range expectedDiskKeys {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		info, err := store.Head(ctx, key)
 		cancel()
@@ -1434,7 +1434,7 @@ func TestObjectStoreWarmCacheHint(t *testing.T) {
 	}
 
 	missingBefore := false
-	for _, key := range expectedKeys {
+	for _, key := range expectedDiskKeys {
 		if _, err := diskCache.Get(cacheKeys[key]); err != nil {
 			if errors.Is(err, cache.ErrCacheMiss) {
 				missingBefore = true
@@ -1485,13 +1485,13 @@ func TestObjectStoreWarmCacheHint(t *testing.T) {
 		}
 	}
 
-	waitForRAM := func(key string) {
+	waitForRAM := func(key string, itemType cache.CacheItemType) {
 		t.Helper()
 		memKey := cache.MemoryCacheKey{
 			Namespace: ns,
 			ShardID:   "warm",
 			ItemID:    key,
-			ItemType:  cache.TypeCentroid,
+			ItemType:  itemType,
 		}
 		deadline := time.Now().Add(10 * time.Second)
 		for {
@@ -1507,11 +1507,12 @@ func TestObjectStoreWarmCacheHint(t *testing.T) {
 		}
 	}
 
-	for _, key := range expectedKeys {
+	for _, key := range expectedDiskKeys {
 		waitForDisk(key)
 	}
-	waitForRAM(segment.IVFKeys.CentroidsKey)
-	waitForRAM(segment.IVFKeys.ClusterOffsetsKey)
+	waitForRAM(segment.IVFKeys.CentroidsKey, cache.TypeCentroid)
+	waitForRAM(segment.IVFKeys.ClusterOffsetsKey, cache.TypeCentroid)
+	waitForRAM(segment.DocsKey, cache.TypeDocColumn)
 
 	deadline = time.Now().Add(5 * time.Second)
 	for diskCache.IsPinned(prefix) {
