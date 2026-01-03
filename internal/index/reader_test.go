@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/vexsearch/vex/internal/cache"
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -289,6 +291,131 @@ func TestSearchWithMultiRange(t *testing.T) {
 			t.Errorf("results not sorted: result[%d].Distance (%f) < result[%d].Distance (%f)",
 				i, results[i].Distance, i-1, results[i-1].Distance)
 		}
+	}
+}
+
+func TestSearchWithMultiRangeCacheMetrics(t *testing.T) {
+	metrics.ANNClusterRangeCacheHits.Reset()
+	metrics.ANNClusterRangeCacheMisses.Reset()
+
+	store := objectstore.NewMemoryStore()
+	rangeStore := newRangeStore(store)
+	ctx := context.Background()
+
+	dims := 4
+	nClusters := 2
+
+	centroidsData := createTestCentroidsFile(t, dims, nClusters, vector.MetricCosineDistance)
+
+	cluster0Docs := []struct {
+		docID uint64
+		vec   []float32
+	}{
+		{1, []float32{1, 0, 0, 0}},
+		{2, []float32{0.95, 0.05, 0, 0}},
+	}
+	cluster1Docs := []struct {
+		docID uint64
+		vec   []float32
+	}{
+		{3, []float32{0, 1, 0, 0}},
+		{4, []float32{0.05, 0.95, 0, 0}},
+	}
+
+	cluster0Data := createClusterDocsData(t, dims, cluster0Docs)
+	cluster1Data := createClusterDocsData(t, dims, cluster1Docs)
+	allClusterData := append(cluster0Data, cluster1Data...)
+
+	offsets := []vector.ClusterOffset{
+		{Offset: 0, Length: uint64(len(cluster0Data)), DocCount: uint32(len(cluster0Docs))},
+		{Offset: uint64(len(cluster0Data)), Length: uint64(len(cluster1Data)), DocCount: uint32(len(cluster1Docs))},
+	}
+	offsetsData := createTestOffsetsFile(t, offsets)
+
+	clusterDataKey := "vex/namespaces/test-ns/index/segments/seg_001/vectors.clusters.pack"
+	manifest := &Manifest{
+		FormatVersion: 1,
+		Namespace:     "test-ns",
+		GeneratedAt:   time.Now().UTC(),
+		IndexedWALSeq: 10,
+		Segments: []Segment{
+			{
+				ID:          "seg_001",
+				Level:       0,
+				StartWALSeq: 1,
+				EndWALSeq:   10,
+				IVFKeys: &IVFKeys{
+					CentroidsKey:      "vex/namespaces/test-ns/index/segments/seg_001/vectors.centroids.bin",
+					ClusterOffsetsKey: "vex/namespaces/test-ns/index/segments/seg_001/vectors.cluster_offsets.bin",
+					ClusterDataKey:    clusterDataKey,
+					NClusters:         nClusters,
+					VectorCount:       4,
+				},
+			},
+		},
+	}
+
+	manifestData, _ := json.Marshal(manifest)
+	manifestKey := ManifestKey("test-ns", 1)
+
+	store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.CentroidsKey, bytes.NewReader(centroidsData), int64(len(centroidsData)), nil)
+	store.Put(ctx, manifest.Segments[0].IVFKeys.ClusterOffsetsKey, bytes.NewReader(offsetsData), int64(len(offsetsData)), nil)
+	store.Put(ctx, clusterDataKey, bytes.NewReader(allClusterData), int64(len(allClusterData)), nil)
+
+	diskCache, err := cache.NewDiskCache(cache.DiskCacheConfig{
+		RootPath: t.TempDir(),
+		MaxBytes: int64(len(allClusterData)) * 2,
+	})
+	if err != nil {
+		t.Fatalf("failed to create disk cache: %v", err)
+	}
+
+	reader := NewReader(rangeStore, diskCache, nil)
+	ivfReader, dataKey, err := reader.GetIVFReader(ctx, "test-ns", manifestKey, 1)
+	if err != nil {
+		t.Fatalf("GetIVFReader() error = %v", err)
+	}
+
+	queryVec := []float32{1, 0, 0, 0}
+	topK := 2
+	nProbe := 2
+
+	_, err = reader.SearchWithMultiRange(ctx, ivfReader, dataKey, queryVec, topK, nProbe)
+	if err != nil {
+		t.Fatalf("SearchWithMultiRange() cold error = %v", err)
+	}
+
+	missVal := testutil.ToFloat64(metrics.ANNClusterRangeCacheMisses.WithLabelValues("test-ns"))
+	hitVal := testutil.ToFloat64(metrics.ANNClusterRangeCacheHits.WithLabelValues("test-ns"))
+	if missVal != 2 {
+		t.Fatalf("expected 2 cache misses on cold query, got %f", missVal)
+	}
+	if hitVal != 0 {
+		t.Fatalf("expected 0 cache hits on cold query, got %f", hitVal)
+	}
+
+	rangeStart := int64(0)
+	rangeEnd := int64(len(allClusterData) - 1)
+	if got := rangeStore.GetCount(clusterDataKey, rangeStart, rangeEnd); got != 1 {
+		t.Fatalf("expected cold query to fetch range once, got %d", got)
+	}
+
+	_, err = reader.SearchWithMultiRange(ctx, ivfReader, dataKey, queryVec, topK, nProbe)
+	if err != nil {
+		t.Fatalf("SearchWithMultiRange() warm error = %v", err)
+	}
+
+	missVal = testutil.ToFloat64(metrics.ANNClusterRangeCacheMisses.WithLabelValues("test-ns"))
+	hitVal = testutil.ToFloat64(metrics.ANNClusterRangeCacheHits.WithLabelValues("test-ns"))
+	if missVal != 2 {
+		t.Fatalf("expected cache misses to remain 2 after warm query, got %f", missVal)
+	}
+	if hitVal != 2 {
+		t.Fatalf("expected cache hits to reach 2 after warm query, got %f", hitVal)
+	}
+	if got := rangeStore.GetCount(clusterDataKey, rangeStart, rangeEnd); got != 1 {
+		t.Fatalf("expected warm query to use cache without new range fetches, got %d", got)
 	}
 }
 

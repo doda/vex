@@ -49,6 +49,26 @@ var (
 		[]string{"cache_type", "namespace"}, // cache_type: "disk" or "ram"
 	)
 
+	// ANNClusterRangeCacheHits tracks cache hits for ANN cluster range reads.
+	ANNClusterRangeCacheHits = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "ann_cluster_range_cache_hits_total",
+			Help:      "Total ANN cluster range cache hits",
+		},
+		[]string{"namespace"},
+	)
+
+	// ANNClusterRangeCacheMisses tracks cache misses for ANN cluster range reads.
+	ANNClusterRangeCacheMisses = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "ann_cluster_range_cache_misses_total",
+			Help:      "Total ANN cluster range cache misses",
+		},
+		[]string{"namespace"},
+	)
+
 	// IndexLag tracks the lag between WAL head and indexed WAL seq per namespace.
 	IndexLag = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -186,6 +206,16 @@ func IncCacheHit(cacheType, ns string) {
 // IncCacheMiss increments the cache miss counter.
 func IncCacheMiss(cacheType, ns string) {
 	CacheMisses.WithLabelValues(cacheType, ns).Inc()
+}
+
+// IncANNClusterRangeCacheHit increments the ANN cluster range cache hit counter.
+func IncANNClusterRangeCacheHit(ns string) {
+	ANNClusterRangeCacheHits.WithLabelValues(ns).Inc()
+}
+
+// IncANNClusterRangeCacheMiss increments the ANN cluster range cache miss counter.
+func IncANNClusterRangeCacheMiss(ns string) {
+	ANNClusterRangeCacheMisses.WithLabelValues(ns).Inc()
 }
 
 // SetIndexLag sets the index lag for a namespace.
