@@ -280,9 +280,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Wrap body with a size limiter
-	req.Body = http.MaxBytesReader(lw, req.Body, MaxRequestBodySize)
+	// Decompress first so size enforcement applies to inflated bytes.
 	req.Body = r.decompressBody(req)
+	req.Body = http.MaxBytesReader(lw, req.Body, MaxRequestBodySize)
 
 	acceptsGzip := strings.Contains(req.Header.Get("Accept-Encoding"), "gzip")
 	if acceptsGzip {

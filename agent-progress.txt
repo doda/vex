@@ -1747,3 +1747,13 @@ KEY DEPENDENCIES:
 - Challenges: go binary not on PATH.
 - Resolution: used /usr/local/go/bin/go for test execution.
 - Follow-ups: none.
+[2026-01-03T22:21:57Z] Completed enforce-post-gzip-size-limit: PASS
+- Moved request size enforcement to wrap decompressed bodies so gzip inflation is capped at 256MB.
+- Added gzip inflation regression test that builds a small gzip body expanding beyond 256MB.
+- Files changed: pkg/api/router.go.
+- Files changed: pkg/api/status_codes_test.go.
+- Tests: /usr/local/go/bin/go test ./pkg/api -run Write -count=1 (pass).
+- Tests: /usr/local/go/bin/go test ./pkg/api -run Status413PayloadTooLarge -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
