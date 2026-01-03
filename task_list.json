@@ -3297,7 +3297,7 @@
     "scope": [
       "internal/query/handler.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "id-normalization-preserve-string",
