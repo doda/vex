@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -499,13 +500,32 @@ func TestBatcherClosedRejectsWrites(t *testing.T) {
 func TestBatcherSubBatchesPreserved(t *testing.T) {
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
+	ctx := context.Background()
+
+	seedHandler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	if _, err := seedHandler.Handle(ctx, "subbatch-test", &WriteRequest{
+		RequestID: "subbatch-seed",
+		UpsertRows: []map[string]any{
+			{"id": uint64(10), "name": "seed"},
+		},
+	}); err != nil {
+		seedHandler.Close()
+		t.Fatalf("failed to seed docs: %v", err)
+	}
+	if err := seedHandler.Close(); err != nil {
+		t.Fatalf("failed to close seed handler: %v", err)
+	}
 
 	cfg := BatcherConfig{
 		BatchWindow:  5 * time.Second,
 		MaxBatchSize: 100 * 1024 * 1024,
 	}
 
-	batcher, err := NewBatcherWithConfig(store, stateMan, nil, cfg)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	batcher, err := NewBatcherWithConfig(store, stateMan, tailStore, cfg)
 	if err != nil {
 		t.Fatalf("failed to create batcher: %v", err)
 	}
@@ -573,8 +593,8 @@ func TestBatcherSubBatchesPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
 	}
-	if state.State.WAL.HeadSeq != 1 {
-		t.Errorf("expected HeadSeq=1, got %d", state.State.WAL.HeadSeq)
+	if state.State.WAL.HeadSeq != 2 {
+		t.Errorf("expected HeadSeq=2, got %d", state.State.WAL.HeadSeq)
 	}
 
 	committer, err := wal.NewCommitter(store, stateMan)
@@ -583,7 +603,7 @@ func TestBatcherSubBatchesPreserved(t *testing.T) {
 	}
 	defer committer.Close()
 
-	entry, err := committer.ReadWAL(context.Background(), ns, 1)
+	entry, err := committer.ReadWAL(context.Background(), ns, 2)
 	if err != nil {
 		t.Fatalf("failed to read WAL entry: %v", err)
 	}

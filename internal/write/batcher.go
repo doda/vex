@@ -636,14 +636,9 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 		}
 	} else {
 		patchSnapshotAvailable := false
-		if handler.tailStore != nil && len(dedupedPatches) > 0 {
-			if err := handler.tailStore.Refresh(ctx, ns, 0, state.WAL.HeadSeq); err == nil {
-				patchSnapshotAvailable = true
-			}
-		}
-
-		for _, row := range dedupedPatches {
-			if patchSnapshotAvailable {
+		if len(dedupedPatches) > 0 {
+			needsSnapshot := false
+			for _, row := range dedupedPatches {
 				rawID, ok := row["id"]
 				if !ok {
 					return nil, nil, nil, 0, fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
@@ -652,6 +647,29 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 				if err != nil {
 					return nil, nil, nil, 0, fmt.Errorf("%w: %v", ErrInvalidID, err)
 				}
+				if subBatch.HasPendingUpsert(docID) || subBatch.HasPendingDelete(docID) {
+					continue
+				}
+				needsSnapshot = true
+				break
+			}
+			if needsSnapshot {
+				if handler.tailStore == nil {
+					return nil, nil, nil, 0, ErrPatchRequiresTail
+				}
+				if err := handler.tailStore.Refresh(ctx, ns, 0, state.WAL.HeadSeq); err != nil {
+					return nil, nil, nil, 0, err
+				}
+				patchSnapshotAvailable = true
+			}
+		}
+
+		for _, row := range dedupedPatches {
+			docID, attrs, canonAttrs, err := handler.preparePatchRow(row)
+			if err != nil {
+				return nil, nil, nil, 0, err
+			}
+			if patchSnapshotAvailable {
 				if !subBatch.HasPendingUpsert(docID) {
 					if subBatch.HasPendingDelete(docID) {
 						continue
@@ -665,10 +683,12 @@ func (b *Batcher) processWrite(ctx context.Context, ns string, state *namespace.
 					}
 				}
 			}
-
-			if err := handler.processPatchRow(row, subBatch, schemaCollector); err != nil {
-				return nil, nil, nil, 0, err
+			if schemaCollector != nil {
+				if err := schemaCollector.ObserveAttributes(attrs); err != nil {
+					return nil, nil, nil, 0, err
+				}
 			}
+			subBatch.AddPatch(wal.DocumentIDFromID(docID), canonAttrs)
 		}
 	}
 
@@ -866,6 +886,11 @@ func (p *writeProcessor) processUpsertRow(row map[string]any, batch *wal.WriteSu
 func (p *writeProcessor) processPatchRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{canon: p.canon}
 	return h.processPatchRow(row, batch, schemaCollector)
+}
+
+func (p *writeProcessor) preparePatchRow(row map[string]any) (document.ID, map[string]any, map[string]*wal.AttributeValue, error) {
+	h := &Handler{canon: p.canon}
+	return h.preparePatchRow(row)
 }
 
 func (p *writeProcessor) processDelete(rawID any, batch *wal.WriteSubBatch) error {

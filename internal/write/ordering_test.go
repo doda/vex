@@ -314,7 +314,8 @@ func TestHandler_WriteOrdering_DeleteAfterPatch(t *testing.T) {
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
 
-	handler, err := NewHandler(store, stateMan)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}

@@ -1008,7 +1008,8 @@ func TestHandler_PatchRowsUpdatesOnlySpecifiedAttributes(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
-	handler, err := NewHandler(store, stateMan)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
@@ -1092,11 +1093,40 @@ func TestHandler_PatchToMissingIDSilentlyIgnored(t *testing.T) {
 	}
 }
 
-func TestHandler_VectorCannotBePatched(t *testing.T) {
+func TestHandler_PatchMissingIDWithoutSnapshotFails(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
 	handler, err := NewHandler(store, stateMan)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+	defer handler.Close()
+
+	ns := "test-patch-missing-no-snapshot-ns"
+
+	req := &WriteRequest{
+		RequestID: "test-patch-missing-no-snapshot",
+		PatchRows: []map[string]any{
+			{"id": 999, "name": "patched-nonexistent"},
+		},
+	}
+
+	_, err = handler.Handle(ctx, ns, req)
+	if err == nil {
+		t.Fatal("expected error when patching without snapshot, got nil")
+	}
+	if !errors.Is(err, ErrPatchRequiresTail) {
+		t.Fatalf("expected ErrPatchRequiresTail, got %v", err)
+	}
+}
+
+func TestHandler_VectorCannotBePatched(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
@@ -1126,7 +1156,8 @@ func TestHandler_PatchRowsDuplicateIDsLastWriteWins(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
-	handler, err := NewHandler(store, stateMan)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
@@ -1173,7 +1204,8 @@ func TestHandler_PatchRowsNormalizedIDDeduplication(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
-	handler, err := NewHandler(store, stateMan)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
@@ -1245,7 +1277,8 @@ func TestHandler_PatchWithUpsertAndDelete(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
-	handler, err := NewHandler(store, stateMan)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
@@ -1518,7 +1551,8 @@ func TestHandler_PatchColumnsIntegration(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
-	handler, err := NewHandler(store, stateMan)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
@@ -1609,11 +1643,24 @@ func TestHandler_PatchColumnsWithPatchRows(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
-	handler, err := NewHandler(store, stateMan)
+	tailStore := tail.New(tail.DefaultConfig(), store, nil, nil)
+	handler, err := NewHandlerWithTail(store, stateMan, tailStore)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 	defer handler.Close()
+
+	seedReq := &WriteRequest{
+		RequestID: "test-mixed-patch-seed",
+		UpsertRows: []map[string]any{
+			{"id": 1, "name": "seed1"},
+			{"id": 2, "name": "seed2"},
+			{"id": 3, "name": "seed3"},
+		},
+	}
+	if _, err := handler.Handle(ctx, "test-ns-mixed-patch", seedReq); err != nil {
+		t.Fatalf("unexpected seed error: %v", err)
+	}
 
 	// Combine patch_rows and patch_columns in one request
 	body := map[string]any{

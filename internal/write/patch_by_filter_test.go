@@ -487,7 +487,7 @@ func TestHandler_PatchByFilter_InvalidFilter(t *testing.T) {
 	}
 }
 
-// --- Test: patch_by_filter without tail store is a no-op ---
+// --- Test: patch_by_filter without tail store fails ---
 
 func TestHandler_PatchByFilter_NoTailStore(t *testing.T) {
 	ctx := context.Background()
@@ -503,7 +503,7 @@ func TestHandler_PatchByFilter_NoTailStore(t *testing.T) {
 
 	ns := "test-patch-no-tail"
 
-	// patch_by_filter should silently be a no-op when no tail store is configured
+	// patch_by_filter should fail when no tail store is configured
 	patchReq := &WriteRequest{
 		RequestID: "patch-no-tail",
 		PatchByFilter: &PatchByFilterRequest{
@@ -512,14 +512,12 @@ func TestHandler_PatchByFilter_NoTailStore(t *testing.T) {
 		},
 	}
 
-	resp, err := handler.Handle(ctx, ns, patchReq)
-	if err != nil {
-		t.Fatalf("patch_by_filter without tail store should not fail: %v", err)
+	_, err = handler.Handle(ctx, ns, patchReq)
+	if err == nil {
+		t.Fatal("expected error without tail store, got nil")
 	}
-
-	// Should patch 0 documents (no tail store to evaluate)
-	if resp.RowsPatched != 0 {
-		t.Errorf("expected 0 rows patched without tail store, got %d", resp.RowsPatched)
+	if !errors.Is(err, ErrFilterOpRequiresTail) {
+		t.Fatalf("expected ErrFilterOpRequiresTail, got %v", err)
 	}
 }
 

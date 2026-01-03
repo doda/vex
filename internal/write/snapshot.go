@@ -18,11 +18,11 @@ func (h *Handler) loadSnapshotDocMap(ctx context.Context, ns string, snapshotSeq
 		indexedSeq = snapshotSeq
 	}
 
-	if snapshotSeq > indexedSeq && h.tailStore == nil {
+	if h.tailStore == nil {
 		return nil, tailErr
 	}
 
-	if snapshotSeq > indexedSeq && h.tailStore != nil {
+	if snapshotSeq > indexedSeq {
 		if err := h.tailStore.Refresh(ctx, ns, indexedSeq, snapshotSeq); err != nil {
 			return nil, fmt.Errorf("failed to refresh tail: %w", err)
 		}

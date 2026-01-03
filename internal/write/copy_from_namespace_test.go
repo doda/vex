@@ -325,9 +325,12 @@ func TestHandler_CopyFromNamespace_WithVectors(t *testing.T) {
 	tailStore.AddWALEntry(sourceNs, walEntry)
 
 	// Create the namespace state so it can be loaded
-	_, err = stateMan.LoadOrCreate(ctx, sourceNs)
+	sourceLoaded, err := stateMan.LoadOrCreate(ctx, sourceNs)
 	if err != nil {
 		t.Fatalf("failed to create source namespace: %v", err)
+	}
+	if _, err := stateMan.AdvanceWAL(ctx, sourceNs, sourceLoaded.ETag, wal.KeyForSeq(1), 0, nil); err != nil {
+		t.Fatalf("failed to advance WAL for source namespace: %v", err)
 	}
 
 	// Copy from source with vectors

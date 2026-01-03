@@ -44,6 +44,7 @@ var (
 	ErrSourceNamespaceNotFound = errors.New("source namespace not found")
 	ErrFilterOpRequiresTail    = errors.New("filter operation requires tail store")
 	ErrConditionalRequiresTail = errors.New("conditional write requires tail snapshot")
+	ErrPatchRequiresTail       = errors.New("patch requires tail snapshot")
 	ErrSchemaTypeChange        = errors.New("changing attribute type is not allowed")
 	ErrInvalidSchema           = errors.New("invalid schema")
 	ErrBackpressure            = errors.New("write rejected: unindexed data exceeds 2GB threshold")
@@ -321,14 +322,9 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		}
 	} else {
 		patchSnapshotAvailable := false
-		if h.tailStore != nil && len(dedupedPatches) > 0 {
-			if err := h.tailStore.Refresh(ctx, ns, 0, loaded.State.WAL.HeadSeq); err == nil {
-				patchSnapshotAvailable = true
-			}
-		}
-
-		for _, row := range dedupedPatches {
-			if patchSnapshotAvailable {
+		if len(dedupedPatches) > 0 {
+			needsSnapshot := false
+			for _, row := range dedupedPatches {
 				rawID, ok := row["id"]
 				if !ok {
 					err := fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
@@ -341,6 +337,33 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 					releaseOnError(err)
 					return nil, err
 				}
+				if subBatch.HasPendingUpsert(docID) || subBatch.HasPendingDelete(docID) {
+					continue
+				}
+				needsSnapshot = true
+				break
+			}
+			if needsSnapshot {
+				if h.tailStore == nil {
+					releaseOnError(ErrPatchRequiresTail)
+					return nil, ErrPatchRequiresTail
+				}
+				if err := h.tailStore.Refresh(ctx, ns, 0, loaded.State.WAL.HeadSeq); err != nil {
+					releaseOnError(err)
+					return nil, err
+				}
+				patchSnapshotAvailable = true
+			}
+		}
+
+		for _, row := range dedupedPatches {
+			docID, attrs, canonAttrs, err := h.preparePatchRow(row)
+			if err != nil {
+				releaseOnError(err)
+				return nil, err
+			}
+
+			if patchSnapshotAvailable {
 				if !subBatch.HasPendingUpsert(docID) {
 					if subBatch.HasPendingDelete(docID) {
 						continue
@@ -356,10 +379,13 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 				}
 			}
 
-			if err := h.processPatchRow(row, subBatch, schemaCollector); err != nil {
-				releaseOnError(err)
-				return nil, err
+			if schemaCollector != nil {
+				if err := schemaCollector.ObserveAttributes(attrs); err != nil {
+					releaseOnError(err)
+					return nil, err
+				}
 			}
+			subBatch.AddPatch(wal.DocumentIDFromID(docID), canonAttrs)
 		}
 	}
 
@@ -1071,20 +1097,36 @@ func (h *Handler) processDelete(rawID any, batch *wal.WriteSubBatch) error {
 // Patches update only specified attributes - they do not include vectors.
 // If the document does not exist, the patch is silently ignored when evaluated against a snapshot.
 func (h *Handler) processPatchRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
+	docID, attrs, canonAttrs, err := h.preparePatchRow(row)
+	if err != nil {
+		return err
+	}
+
+	if schemaCollector != nil {
+		if err := schemaCollector.ObserveAttributes(attrs); err != nil {
+			return err
+		}
+	}
+
+	batch.AddPatch(wal.DocumentIDFromID(docID), canonAttrs)
+	return nil
+}
+
+func (h *Handler) preparePatchRow(row map[string]any) (document.ID, map[string]any, map[string]*wal.AttributeValue, error) {
 	// Extract and validate ID
 	rawID, ok := row["id"]
 	if !ok {
-		return fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
+		return document.ID{}, nil, nil, fmt.Errorf("%w: missing 'id' field", ErrInvalidRequest)
 	}
 
-	docID, err := h.canon.CanonicalizeID(rawID)
+	docID, err := document.ParseID(rawID)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidID, err)
+		return document.ID{}, nil, nil, fmt.Errorf("%w: %v", ErrInvalidID, err)
 	}
 
 	// Vector attribute cannot be patched - return 400
 	if _, hasVector := row["vector"]; hasVector {
-		return ErrVectorPatchForbidden
+		return document.ID{}, nil, nil, ErrVectorPatchForbidden
 	}
 
 	// Process other attributes (excluding id)
@@ -1095,23 +1137,17 @@ func (h *Handler) processPatchRow(row map[string]any, batch *wal.WriteSubBatch, 
 		}
 		// Validate attribute name
 		if err := schema.ValidateAttributeName(k); err != nil {
-			return fmt.Errorf("%w: %s: %v", ErrInvalidAttribute, k, err)
+			return document.ID{}, nil, nil, fmt.Errorf("%w: %s: %v", ErrInvalidAttribute, k, err)
 		}
 		attrs[k] = v
 	}
 
-	if schemaCollector != nil {
-		if err := schemaCollector.ObserveAttributes(attrs); err != nil {
-			return err
-		}
-	}
 	canonAttrs, err := h.canon.CanonicalizeAttributes(attrs)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidAttribute, err)
+		return document.ID{}, nil, nil, fmt.Errorf("%w: %v", ErrInvalidAttribute, err)
 	}
 
-	batch.AddPatch(docID, canonAttrs)
-	return nil
+	return docID, attrs, canonAttrs, nil
 }
 
 // deduplicatePatchRows removes duplicate IDs from the patch_rows array,
