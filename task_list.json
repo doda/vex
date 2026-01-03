@@ -3328,7 +3328,7 @@
       "internal/filter/filter.go",
       "internal/filter"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "segment-docs-columnar-zstd",

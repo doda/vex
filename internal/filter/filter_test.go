@@ -267,8 +267,8 @@ func TestParseAndEval_NestedBoolean(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "Double Not",
-			filter: []any{"Not", []any{"Not", []any{"a", "Eq", float64(1)}}},
+			name:     "Double Not",
+			filter:   []any{"Not", []any{"Not", []any{"a", "Eq", float64(1)}}},
 			doc:      Document{"a": float64(1)},
 			expected: true,
 		},
@@ -342,10 +342,10 @@ func TestParseAndEval_Comparison(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Eq null matches nil value",
+			name:     "Eq null doesn't match explicit null",
 			filter:   []any{"a", "Eq", nil},
 			doc:      Document{"a": nil},
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "Eq null doesn't match present",
@@ -371,6 +371,12 @@ func TestParseAndEval_Comparison(t *testing.T) {
 			name:     "NotEq null matches present",
 			filter:   []any{"a", "NotEq", nil},
 			doc:      Document{"a": float64(1)},
+			expected: true,
+		},
+		{
+			name:     "NotEq null matches explicit null",
+			filter:   []any{"a", "NotEq", nil},
+			doc:      Document{"a": nil},
 			expected: true,
 		},
 		{
@@ -656,8 +662,8 @@ func TestEqNotEq_TaskVerification(t *testing.T) {
 		if !f.Eval(Document{"other": "value"}) {
 			t.Error("Eq null should match when attribute is missing")
 		}
-		if !f.Eval(Document{"optional_field": nil}) {
-			t.Error("Eq null should match when attribute is nil")
+		if f.Eval(Document{"optional_field": nil}) {
+			t.Error("Eq null should not match when attribute is explicit null")
 		}
 		if f.Eval(Document{"optional_field": "exists"}) {
 			t.Error("Eq null should not match when attribute has a value")
@@ -697,8 +703,8 @@ func TestEqNotEq_TaskVerification(t *testing.T) {
 		if f.Eval(Document{"other": "value"}) {
 			t.Error("NotEq null should not match when attribute is missing")
 		}
-		if f.Eval(Document{"required_field": nil}) {
-			t.Error("NotEq null should not match when attribute is nil")
+		if !f.Eval(Document{"required_field": nil}) {
+			t.Error("NotEq null should match when attribute is explicit null")
 		}
 	})
 }

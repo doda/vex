@@ -578,9 +578,9 @@ func TestNullSemantics(t *testing.T) {
 			t.Fatalf("Parse failed: %v", err)
 		}
 
-		// Should match when field is nil
-		if !f.Eval(docWithField) {
-			t.Error("Eq null should match when field is nil")
+		// Should NOT match when field is explicitly nil
+		if f.Eval(docWithField) {
+			t.Error("Eq null should not match when field is explicit nil")
 		}
 	})
 
@@ -607,9 +607,9 @@ func TestNullSemantics(t *testing.T) {
 			t.Fatalf("Parse failed: %v", err)
 		}
 
-		// Should NOT match when field is nil
-		if f.Eval(docWithField) {
-			t.Error("NotEq null should not match when field is nil")
+		// Should match when field is explicitly nil
+		if !f.Eval(docWithField) {
+			t.Error("NotEq null should match when field is explicit nil")
 		}
 	})
 
@@ -623,7 +623,7 @@ func TestNullSemantics(t *testing.T) {
 		}
 		docEmpty := Document{}
 
-		// Test that Eq null only matches missing or nil
+		// Test that Eq null only matches missing attributes
 		tests := []struct {
 			attr     string
 			expected bool
@@ -632,7 +632,7 @@ func TestNullSemantics(t *testing.T) {
 			{"present_int", false},
 			{"present_bool", false},
 			{"present_array", false},
-			{"nil_value", true},
+			{"nil_value", false},
 			{"nonexistent", true},
 		}
 
@@ -652,7 +652,7 @@ func TestNullSemantics(t *testing.T) {
 	})
 
 	t.Run("null_in_complex_filters", func(t *testing.T) {
-		doc := Document{"name": "alice", "deleted_at": nil}
+		doc := Document{"name": "alice"}
 		docActive := Document{"name": "bob", "deleted_at": nil}
 		docDeleted := Document{"name": "charlie", "deleted_at": "2024-01-01"}
 
@@ -663,7 +663,10 @@ func TestNullSemantics(t *testing.T) {
 		}})
 
 		if !f.Eval(doc) {
-			t.Error("Should match alice with null deleted_at")
+			t.Error("Should match alice with missing deleted_at")
+		}
+		if f.Eval(docActive) {
+			t.Error("Should not match bob with explicit null deleted_at")
 		}
 		if f.Eval(docDeleted) {
 			t.Error("Should not match charlie with set deleted_at")
@@ -674,8 +677,11 @@ func TestNullSemantics(t *testing.T) {
 		if !f2.Eval(docDeleted) {
 			t.Error("NotEq null should match when deleted_at is set")
 		}
-		if f2.Eval(docActive) {
-			t.Error("NotEq null should not match when deleted_at is nil")
+		if !f2.Eval(docActive) {
+			t.Error("NotEq null should match when deleted_at is explicit null")
+		}
+		if f2.Eval(doc) {
+			t.Error("NotEq null should not match when deleted_at is missing")
 		}
 	})
 }

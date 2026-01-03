@@ -163,10 +163,21 @@ func TestIndexBuilder_NullValues(t *testing.T) {
 		t.Fatalf("failed to deserialize: %v", err)
 	}
 
-	// Eq null should match both nil and missing
+	// Eq null should match only missing attributes
 	bm := idx.Eq(nil)
-	if bm.GetCardinality() != 2 {
-		t.Errorf("expected 2 null rows, got %d", bm.GetCardinality())
+	if bm.GetCardinality() != 1 {
+		t.Errorf("expected 1 missing row, got %d", bm.GetCardinality())
+	}
+	if !bm.Contains(2) {
+		t.Error("expected missing row 2")
+	}
+
+	nullBm := idx.NullBitmap()
+	if nullBm.GetCardinality() != 1 {
+		t.Errorf("expected 1 explicit null row, got %d", nullBm.GetCardinality())
+	}
+	if !nullBm.Contains(1) {
+		t.Error("expected explicit null row 1")
 	}
 }
 
