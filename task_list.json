@@ -3044,7 +3044,7 @@
   {
     "id": "integration-bm25-fts",
     "category": "test",
-    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer \u2192 manifest \u2192 query.",
+    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer → manifest → query.",
     "steps": [
       "Add end-to-end tests that enable FTS, index data, and run BM25 queries while validating 202 gating until ready",
       "Run `go test ./tests/integration -run BM25`",
@@ -3216,10 +3216,10 @@
       "Add or update endpoint-level tests to assert 503 on object store failures",
       "Re-run the endpoint tests and verify 503 responses"
     ],
+    "completed": true,
     "scope": [
       "pkg/api/router.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "metadata-approx-stats-nonzero",
@@ -3231,12 +3231,12 @@
       "Add a test that writes data, indexes, and validates metadata stats are non-zero",
       "Re-run the test to confirm stats reflect stored values"
     ],
+    "completed": true,
     "scope": [
       "pkg/api/router.go",
       "internal/namespace",
       "internal/index"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "s3-conditional-put-atomic",
@@ -3248,10 +3248,10 @@
       "Add or update object store tests to simulate concurrent writers and assert no duplicate WAL seqs",
       "Run the object store tests to confirm CAS behavior"
     ],
+    "completed": true,
     "scope": [
       "pkg/objectstore/s3.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "patch-missing-id-snapshot-required",
@@ -3263,11 +3263,11 @@
       "Add a regression test that disables tail/snapshot and patches a missing ID expecting a failure or no-op per spec",
       "Run the write tests to confirm patches do not create missing docs"
     ],
+    "completed": true,
     "scope": [
       "internal/write/handler.go",
       "internal/write/batcher.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "eventual-consistency-ttl-enforcement",
@@ -3278,11 +3278,11 @@
       "Add a test that advances time beyond TTL and verifies eventual queries refresh state/tail",
       "Run the query consistency tests to confirm behavior"
     ],
+    "completed": true,
     "scope": [
       "internal/query/handler.go",
       "internal/tail"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "tail-index-dedup-walseq-compare",
@@ -3294,10 +3294,10 @@
       "Add a regression test with stale tail vs newer indexed doc to verify last-write-wins",
       "Run the query tests to confirm correct dedup"
     ],
+    "completed": true,
     "scope": [
       "internal/query/handler.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "id-normalization-preserve-string",
@@ -3308,11 +3308,11 @@
       "Add tests for string \"42\" and numeric 42 to ensure they remain distinct IDs",
       "Run document ID tests to confirm separation"
     ],
+    "completed": true,
     "scope": [
       "internal/document/id.go",
       "internal/document"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "filter-null-vs-missing-distinction",
@@ -3324,11 +3324,11 @@
       "Add tests that distinguish missing vs explicit null behavior",
       "Run filter tests to confirm updated semantics"
     ],
+    "completed": true,
     "scope": [
       "internal/filter/filter.go",
       "internal/filter"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "segment-docs-columnar-zstd",
@@ -3340,11 +3340,11 @@
       "Add a test that writes and reads a segment and validates format and compression",
       "Run indexer/segment tests to confirm compatibility"
     ],
+    "completed": true,
     "scope": [
       "internal/indexer/l0_builder.go",
       "internal/index/segment.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fts-artifact-key-format",
@@ -3356,11 +3356,11 @@
       "Add a test to assert manifest fts_keys use fts.<field>.bm25",
       "Run FTS/indexer tests to confirm behavior"
     ],
+    "completed": true,
     "scope": [
       "internal/index/segment.go",
       "internal/fts"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fts-language-stemming-options",
@@ -3372,11 +3372,11 @@
       "Add tests for non-English language and stemming toggles",
       "Run FTS tests to confirm option effects"
     ],
+    "completed": true,
     "scope": [
       "internal/fts/tokenizer.go",
       "internal/fts"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "disk-cache-namespace-metrics-fix",
@@ -3387,11 +3387,11 @@
       "Add a test that records cache events for multiple namespaces and verifies labels",
       "Run cache metrics tests to confirm per-namespace attribution"
     ],
+    "completed": true,
     "scope": [
       "internal/cache/disk.go",
       "internal/metrics"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "warm-cache-prefetch-bounds",
@@ -3403,9 +3403,228 @@
       "Add a test to assert warm hint does not read full docs/bitmaps",
       "Run warm-cache tests to confirm bounded prefetch"
     ],
+    "completed": true,
     "scope": [
       "internal/warmer/warmer.go"
+    ]
+  },
+  {
+    "id": "secure-disable-test-state-endpoint",
+    "category": "security",
+    "description": "Remove or admin-gate the unauthenticated POST /_test/state endpoint so it cannot mutate state in production builds.",
+    "steps": [
+      "Locate the /_test/state route and either remove it or guard it behind admin auth",
+      "Add a test that unauthenticated requests to /_test/state return 401/403",
+      "Run the relevant API tests and confirm the endpoint is no longer publicly accessible"
     ],
-    "completed": true
+    "scope": [
+      "pkg/api/router.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "enforce-post-gzip-size-limit",
+    "category": "api",
+    "description": "Enforce the 256MB request size limit after gzip decompression to prevent oversized writes from bypassing limits.",
+    "steps": [
+      "Move size enforcement to wrap the decompressed reader and reject when inflated size exceeds 256MB",
+      "Add a test that sends a small gzip body that inflates beyond 256MB and expects 413",
+      "Run the write API tests and verify both compressed and uncompressed limits are enforced"
+    ],
+    "scope": [
+      "pkg/api/router.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "server-timeouts-from-config",
+    "category": "reliability",
+    "description": "Honor configured read/write timeouts when creating the HTTP server instead of hard-coded 30s values.",
+    "steps": [
+      "Update server construction to use config read/write timeouts for both serve and query modes",
+      "Add a config-focused test or integration check that asserts timeouts match config defaults",
+      "Run the server startup tests and verify no regressions"
+    ],
+    "scope": [
+      "cmd/vex/serve/serve.go",
+      "cmd/vex/query/query.go",
+      "internal/config/config.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-idempotency-persisted",
+    "category": "bug",
+    "description": "Persist write idempotency by consulting WAL-sub-batch request_id history so retries across restarts or nodes return original responses.",
+    "steps": [
+      "Extend idempotency logic to consult WAL history (or a persisted index) for recent request_id entries",
+      "Add a test that writes with a request_id, restarts the server, replays the request, and verifies the original response is returned",
+      "Run the write/idempotency tests and confirm duplicate requests do not re-apply mutations"
+    ],
+    "scope": [
+      "internal/write/idempotency.go",
+      "internal/wal"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-repair-task-wireup",
+    "category": "reliability",
+    "description": "Wire the WAL repair task into runtime startup so partial WAL commits are automatically repaired.",
+    "steps": [
+      "Initialize and schedule the repair task at startup for query/serve modes",
+      "Add a test that simulates a WAL upload without state update and verifies repair advances state",
+      "Run WAL repair tests and confirm state catches up automatically"
+    ],
+    "scope": [
+      "internal/wal/repair.go",
+      "cmd/vex/serve/serve.go",
+      "cmd/vex/query/query.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "lsm-query-segment-iterator-implement",
+    "category": "bug",
+    "description": "Implement LSM QuerySegmentIterator so it iterates indexed segments after tail instead of returning nil.",
+    "steps": [
+      "Implement iteration across LSM segments in QuerySegmentIterator after tail is consumed",
+      "Add a unit test that asserts segments are visited in expected order and not skipped",
+      "Run index/query tests and confirm indexed segments are included in results"
+    ],
+    "scope": [
+      "internal/index/lsm.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "ann-debug-logging-remove",
+    "category": "observability",
+    "description": "Replace fmt.Printf debug prints in ANN query paths with structured logger calls or remove them entirely.",
+    "steps": [
+      "Remove fmt.Printf statements in the ANN hot path or gate them behind debug logging",
+      "Add a test (or log assertion) to ensure no raw stdout prints occur during queries",
+      "Run query tests and confirm logs remain structured"
+    ],
+    "scope": [
+      "internal/query/handler.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "ram-eviction-priority-enforce",
+    "category": "bug",
+    "description": "Respect cache item priority tiers when enforcing per-namespace RAM caps so tail data is evicted last.",
+    "steps": [
+      "Update per-namespace eviction to sort by priority before LRU when trimming to caps",
+      "Add a test that loads mixed-priority items and verifies tail data is retained longest",
+      "Run cache tests and confirm eviction order honors priority tiers"
+    ],
+    "scope": [
+      "internal/cache/memory.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "gossip-self-api-addr-config",
+    "category": "reliability",
+    "description": "Derive the gossip self API address from the actual listen address to avoid misrouting when ports differ.",
+    "steps": [
+      "Use the configured listen address when setting the self API address in gossip membership",
+      "Add a test with non-8080 listen ports to ensure self address matches actual server",
+      "Run membership/routing tests and confirm proxying selects the correct home node"
+    ],
+    "scope": [
+      "internal/membership/gossip.go",
+      "internal/config/config.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "disk-cache-missing-file-heal",
+    "category": "bug",
+    "description": "Handle missing disk cache files by treating them as cache misses and cleaning up metadata.",
+    "steps": [
+      "On cache Get, verify file existence and delete cache metadata if missing",
+      "Add a test that deletes cached files and verifies Get reports a miss and cleans metadata",
+      "Run cache tests and confirm no repeated hit accounting on missing files"
+    ],
+    "scope": [
+      "internal/cache/disk.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "delete-namespace-gc-trigger",
+    "category": "bug",
+    "description": "Trigger background GC after namespace deletion to remove namespace objects and catalog entries.",
+    "steps": [
+      "Wire delete handler to enqueue/trigger namespace GC after tombstone/state update",
+      "Add a test that deletes a namespace and verifies GC is invoked and keys are removed",
+      "Run delete/GC tests and confirm tombstoned namespaces are cleaned up"
+    ],
+    "scope": [
+      "pkg/api/router.go",
+      "internal/gc"
+    ],
+    "completed": false
+  },
+  {
+    "id": "validate-state-format-version",
+    "category": "bug",
+    "description": "Validate state.json format_version on load and reject unsupported versions with a clear error.",
+    "steps": [
+      "Add format_version checks in state loading logic with supported version bounds",
+      "Add a test that loads an unsupported version and expects a deterministic error",
+      "Run namespace/state tests and verify valid versions still load"
+    ],
+    "scope": [
+      "internal/namespace/manager.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "validate-index-manifest-version",
+    "category": "bug",
+    "description": "Validate index manifest format_version on load and error on unsupported versions.",
+    "steps": [
+      "Add format_version checks in manifest reader with supported version bounds",
+      "Add a test that loads an unsupported manifest version and expects an error",
+      "Run index reader tests and confirm supported manifests still load"
+    ],
+    "scope": [
+      "internal/index/reader.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-gzip-size-limit",
+    "category": "test",
+    "description": "Add integration coverage for gzip request bodies that inflate past the 256MB limit to confirm 413 responses.",
+    "steps": [
+      "Add an integration test that sends a gzip-compressed body which inflates past 256MB",
+      "Run `go test ./tests/integration -run GzipSizeLimit` and confirm it fails before fixes",
+      "Fix size enforcement and re-run the test to confirm 413 is returned"
+    ],
+    "scope": [
+      "tests/integration"
+    ],
+    "completed": false
+  },
+  {
+    "id": "integration-idempotency-restart",
+    "category": "test",
+    "description": "Add an integration test to verify request_id deduplication works across server restarts or different nodes.",
+    "steps": [
+      "Add an integration test that submits a write, restarts the server (or routes to another node), and replays the same request_id",
+      "Run `go test ./tests/integration -run IdempotencyRestart` and confirm it fails before fixes",
+      "Implement persisted idempotency and re-run the test to confirm original response reuse"
+    ],
+    "scope": [
+      "tests/integration",
+      "internal/write",
+      "internal/wal"
+    ],
+    "completed": false
   }
 ]
