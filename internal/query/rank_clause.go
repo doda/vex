@@ -12,11 +12,11 @@ import (
 type RankClauseType int
 
 const (
-	RankClauseBM25 RankClauseType = iota // ["field", "BM25", "query"]
-	RankClauseSum                        // ["Sum", [...clauses...]]
-	RankClauseMax                        // ["Max", [...clauses...]]
-	RankClauseProduct                    // ["Product", weight, clause]
-	RankClauseFilter                     // filter expression yields 1 or 0
+	RankClauseBM25    RankClauseType = iota // ["field", "BM25", "query"]
+	RankClauseSum                           // ["Sum", [...clauses...]]
+	RankClauseMax                           // ["Max", [...clauses...]]
+	RankClauseProduct                       // ["Product", weight, clause]
+	RankClauseFilter                        // filter expression yields 1 or 0
 )
 
 // RankClause represents a parsed rank_by clause that can be composed.
@@ -356,9 +356,6 @@ func (s *RankScorer) scoreBM25(c *RankClause, doc *tail.Document, internalDocID 
 	// Tokenize the query
 	tokenizer := fts.NewTokenizer(cfg)
 	queryTokens := tokenizer.Tokenize(c.QueryText)
-	if cfg.RemoveStopwords {
-		queryTokens = fts.RemoveStopwords(queryTokens)
-	}
 
 	if len(queryTokens) == 0 {
 		return 0

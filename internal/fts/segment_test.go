@@ -10,8 +10,8 @@ import (
 
 func TestSegmentBuilder_Basic(t *testing.T) {
 	ftsConfigs := map[string]*Config{
-		"title":   DefaultConfig(),
-		"content": DefaultConfig(),
+		"title":   testConfigNoStemming(),
+		"content": testConfigNoStemming(),
 	}
 
 	sb := NewSegmentBuilder("test-ns", ftsConfigs)
@@ -78,7 +78,7 @@ func TestSegmentBuilder_Basic(t *testing.T) {
 
 func TestSegmentBuilder_AppliesDeletes(t *testing.T) {
 	ftsConfigs := map[string]*Config{
-		"content": DefaultConfig(),
+		"content": testConfigNoStemming(),
 	}
 
 	sb := NewSegmentBuilder("test-ns", ftsConfigs)
@@ -117,7 +117,7 @@ func TestSegmentBuilder_AppliesDeletes(t *testing.T) {
 
 func TestSegmentBuilder_AppliesPatches(t *testing.T) {
 	ftsConfigs := map[string]*Config{
-		"content": DefaultConfig(),
+		"content": testConfigNoStemming(),
 	}
 
 	sb := NewSegmentBuilder("test-ns", ftsConfigs)
@@ -192,8 +192,8 @@ func TestSegmentBuilder_NoFTSConfig(t *testing.T) {
 
 func TestSegmentBuilder_WriteToObjectStore(t *testing.T) {
 	ftsConfigs := map[string]*Config{
-		"title":   DefaultConfig(),
-		"content": DefaultConfig(),
+		"title":   testConfigNoStemming(),
+		"content": testConfigNoStemming(),
 	}
 
 	sb := NewSegmentBuilder("test-ns", ftsConfigs)
@@ -243,7 +243,7 @@ func TestSegmentBuilder_WriteToObjectStore(t *testing.T) {
 
 func TestSegmentBuilder_DifferentDocIDTypes(t *testing.T) {
 	ftsConfigs := map[string]*Config{
-		"content": DefaultConfig(),
+		"content": testConfigNoStemming(),
 	}
 
 	sb := NewSegmentBuilder("test-ns", ftsConfigs)
@@ -302,8 +302,8 @@ func TestSegmentBuilder_DifferentDocIDTypes(t *testing.T) {
 
 func TestSegmentBuilder_NonStringAttributesSkipped(t *testing.T) {
 	ftsConfigs := map[string]*Config{
-		"content": DefaultConfig(),
-		"count":   DefaultConfig(), // FTS enabled on non-string field
+		"content": testConfigNoStemming(),
+		"count":   testConfigNoStemming(), // FTS enabled on non-string field
 	}
 
 	sb := NewSegmentBuilder("test-ns", ftsConfigs)

@@ -61,10 +61,6 @@ func (idx *Index) AddDocument(docID uint32, text string) {
 	tokenizer := NewTokenizer(idx.Config)
 	tokens := tokenizer.Tokenize(text)
 
-	if idx.Config.RemoveStopwords {
-		tokens = RemoveStopwords(tokens)
-	}
-
 	// Check if this document already exists (update case)
 	_, isUpdate := idx.DocLengths[docID]
 

@@ -3376,7 +3376,7 @@
       "internal/fts/tokenizer.go",
       "internal/fts"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "disk-cache-namespace-metrics-fix",
