@@ -1714,3 +1714,12 @@ KEY DEPENDENCIES:
 - Challenge: default stemming altered term expectations in FTS tests.
 - Resolution: centralized no-stemming test config helpers and added explicit tokenizer stemming coverage.
 - Follow-ups: none.
+[2026-01-04T01:15:00Z] Completed disk-cache-namespace-metrics-fix: PASS
+- Updated disk cache namespace parsing to honor vex/namespaces/<ns>/ prefix with fallback.
+- Added disk cache metrics test covering multi-namespace hits/misses using real object keys.
+- Expanded namespace extraction test cases for the new key format.
+- Files changed: internal/cache/disk.go; internal/cache/disk_test.go; internal/cache/temperature_test.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/cache -run MetricsNamespaceLabels -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

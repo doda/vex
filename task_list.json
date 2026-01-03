@@ -3391,7 +3391,7 @@
       "internal/cache/disk.go",
       "internal/metrics"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "warm-cache-prefetch-bounds",
