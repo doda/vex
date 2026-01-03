@@ -2,14 +2,33 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
 )
+
+type repeatReader struct {
+	remaining int64
+	b         byte
+}
+
+func (r *repeatReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = r.b
+	}
+	r.remaining -= int64(len(p))
+	return len(p), nil
+}
 
 // TestStatus200Success tests that 200 is returned for successful operations.
 func TestStatus200Success(t *testing.T) {
@@ -25,10 +44,10 @@ func TestStatus200Success(t *testing.T) {
 	})
 
 	testCases := []struct {
-		name     string
-		method   string
-		path     string
-		body     string
+		name   string
+		method string
+		path   string
+		body   string
 	}{
 		{"health endpoint", "GET", "/health", ""},
 		{"list namespaces", "GET", "/v1/namespaces", ""},
@@ -69,8 +88,8 @@ func TestStatus202IndexBuilding(t *testing.T) {
 	router.SetState(&ServerState{
 		Namespaces: map[string]*NamespaceState{
 			"building-ns": {
-				Exists:        true,
-				IndexBuilding: true,
+				Exists:         true,
+				IndexBuilding:  true,
 				UnindexedBytes: 1000,
 			},
 		},
@@ -343,6 +362,39 @@ func TestStatus413PayloadTooLarge(t *testing.T) {
 			t.Errorf("expected status 413 or 400, got %d", w.Result().StatusCode)
 		}
 	})
+
+	t.Run("gzip body inflates past limit", func(t *testing.T) {
+		prefix := []byte(`{"upsert_rows":[{"id":"1","payload":"`)
+		suffix := []byte(`"}]}`)
+		payloadSize := int64(MaxRequestBodySize+1) - int64(len(prefix)) - int64(len(suffix))
+		if payloadSize <= 0 {
+			t.Fatalf("payload size too small: %d", payloadSize)
+		}
+
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		_, err := io.Copy(gz, io.MultiReader(
+			bytes.NewReader(prefix),
+			&repeatReader{remaining: payloadSize, b: 'a'},
+			bytes.NewReader(suffix),
+		))
+		if err != nil {
+			t.Fatalf("gzip write failed: %v", err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatalf("gzip close failed: %v", err)
+		}
+
+		req := httptest.NewRequest("POST", "/v2/namespaces/test-ns", bytes.NewReader(buf.Bytes()))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		w := httptest.NewRecorder()
+		router.ServeAuthed(w, req)
+
+		if w.Result().StatusCode != http.StatusRequestEntityTooLarge {
+			t.Errorf("expected status 413, got %d", w.Result().StatusCode)
+		}
+	})
 }
 
 // TestStatus429Backpressure tests that 429 is returned for rate limiting/backpressure.
@@ -354,8 +406,8 @@ func TestStatus429Backpressure(t *testing.T) {
 	router.SetState(&ServerState{
 		Namespaces: map[string]*NamespaceState{
 			"backpressure-ns": {
-				Exists:         true,
-				UnindexedBytes: MaxUnindexedBytes + 1,
+				Exists:          true,
+				UnindexedBytes:  MaxUnindexedBytes + 1,
 				BackpressureOff: false,
 			},
 		},
@@ -388,8 +440,8 @@ func TestStatus429Backpressure(t *testing.T) {
 		router.SetState(&ServerState{
 			Namespaces: map[string]*NamespaceState{
 				"no-backpressure-ns": {
-					Exists:         true,
-					UnindexedBytes: MaxUnindexedBytes + 1,
+					Exists:          true,
+					UnindexedBytes:  MaxUnindexedBytes + 1,
 					BackpressureOff: true,
 				},
 			},
@@ -567,9 +619,9 @@ func TestErrorResponseFormatStatusCodes(t *testing.T) {
 // TestAllStatusCodeConstants verifies the constants are set correctly.
 func TestAllStatusCodeConstants(t *testing.T) {
 	testCases := []struct {
-		err           *APIError
-		expectedCode  int
-		expectedName  string
+		err          *APIError
+		expectedCode int
+		expectedName string
 	}{
 		{ErrBadRequest("test"), http.StatusBadRequest, "400"},
 		{ErrUnauthorized("test"), http.StatusUnauthorized, "401"},
