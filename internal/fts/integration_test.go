@@ -83,11 +83,11 @@ func TestFTSIntegration_FullFlow(t *testing.T) {
 
 	// Verify FTS keys format
 	for _, key := range result.FTSKeys {
-		if !strings.HasPrefix(key, segmentKey+"/fts/") {
+		if !strings.HasPrefix(key, segmentKey+"/fts.") {
 			t.Errorf("unexpected FTS key format: %s", key)
 		}
-		if !strings.HasSuffix(key, ".idx") {
-			t.Errorf("expected .idx suffix for FTS key: %s", key)
+		if !strings.HasSuffix(key, ".bm25") {
+			t.Errorf("expected .bm25 suffix for FTS key: %s", key)
 		}
 
 		// Verify objects exist in store
@@ -242,8 +242,8 @@ func TestFTSIntegration_SegmentKeysFormat(t *testing.T) {
 	}
 
 	// Verify key format matches the expected pattern from segment.go
-	// Expected: vex/namespaces/{ns}/index/segments/{segment_id}/fts/{attr}.idx
-	expectedKey := segmentKey + "/fts/body.idx"
+	// Expected: vex/namespaces/{ns}/index/segments/{segment_id}/fts.{attr}.bm25
+	expectedKey := segmentKey + "/fts.body.bm25"
 	found := false
 	for _, key := range result.FTSKeys {
 		if key == expectedKey {

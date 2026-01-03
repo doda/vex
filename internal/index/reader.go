@@ -1425,7 +1425,7 @@ func (r *Reader) LoadFTSIndexes(ctx context.Context, manifestKey string) (map[st
 				continue
 			}
 			// Extract attribute name from the key
-			// Format: <segmentKey>/fts/<attribute>.idx
+			// Format: <segmentKey>/fts.<attribute>.bm25
 			attrName := extractAttrNameFromFTSKey(ftsKey)
 			if attrName != "" {
 				result[attrName] = append(result[attrName], data)
@@ -1437,25 +1437,21 @@ func (r *Reader) LoadFTSIndexes(ctx context.Context, manifestKey string) (map[st
 }
 
 // extractAttrNameFromFTSKey extracts the attribute name from an FTS key.
-// Key format: .../fts/<attribute>.idx
+// Key format: .../fts.<attribute>.bm25
 func extractAttrNameFromFTSKey(key string) string {
-	// Find /fts/ in the key
-	idx := -1
-	for i := len(key) - 1; i >= 4; i-- {
-		if key[i-4:i+1] == "/fts/" {
-			idx = i + 1
-			break
-		}
-	}
-	if idx == -1 || idx >= len(key) {
+	lastSlash := strings.LastIndexByte(key, '/')
+	if lastSlash == -1 || lastSlash+1 >= len(key) {
 		return ""
 	}
-	// Extract attribute name (before .idx suffix)
-	rest := key[idx:]
-	if len(rest) > 4 && rest[len(rest)-4:] == ".idx" {
-		return rest[:len(rest)-4]
+	rest := key[lastSlash+1:]
+	if !strings.HasPrefix(rest, "fts.") || !strings.HasSuffix(rest, ".bm25") {
+		return ""
 	}
-	return ""
+	attrName := strings.TrimSuffix(strings.TrimPrefix(rest, "fts."), ".bm25")
+	if attrName == "" {
+		return ""
+	}
+	return attrName
 }
 
 // Clear removes cached readers for a namespace.

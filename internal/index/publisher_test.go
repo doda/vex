@@ -826,10 +826,10 @@ func TestPublisher_FTSData(t *testing.T) {
 	calls := store.getCalls()
 	var titleFTS, contentFTS bool
 	for _, call := range calls {
-		if strings.Contains(call, "fts/title.idx") {
+		if strings.Contains(call, "fts.title.bm25") {
 			titleFTS = true
 		}
-		if strings.Contains(call, "fts/content.idx") {
+		if strings.Contains(call, "fts.content.bm25") {
 			contentFTS = true
 		}
 	}

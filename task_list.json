@@ -3360,7 +3360,7 @@
       "internal/index/segment.go",
       "internal/fts"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "fts-language-stemming-options",

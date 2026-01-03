@@ -145,8 +145,8 @@ func TestSegmentsAreImmutableOnceWritten(t *testing.T) {
 		{"SetVectorsKey", func() error { return builder.SetVectorsKey("new/vectors.ivf.zst") }},
 		{"AddFilterKey", func() error { return builder.AddFilterKey("new/filter.bitmap") }},
 		{"SetFilterKeys", func() error { return builder.SetFilterKeys([]string{"new.bitmap"}) }},
-		{"AddFTSKey", func() error { return builder.AddFTSKey("new/fts.idx") }},
-		{"SetFTSKeys", func() error { return builder.SetFTSKeys([]string{"new.idx"}) }},
+		{"AddFTSKey", func() error { return builder.AddFTSKey("new/fts.title.bm25") }},
+		{"SetFTSKeys", func() error { return builder.SetFTSKeys([]string{"new.bm25"}) }},
 		{"SetStats", func() error { return builder.SetStats(SegmentStats{RowCount: 9999}) }},
 		{"SetCreatedAt", func() error { return builder.SetCreatedAt(time.Now()) }},
 	}
@@ -269,7 +269,7 @@ func TestSegmentIncludesDocsVectorsFilterKeys(t *testing.T) {
 		"vex/namespaces/test-ns/index/segments/seg_keys/filters/priority.bitmap",
 	}
 	ftsKeys := []string{
-		"vex/namespaces/test-ns/index/segments/seg_keys/fts/title.idx",
+		"vex/namespaces/test-ns/index/segments/seg_keys/fts.title.bm25",
 	}
 
 	if err := builder.SetDocsKey(docsKey); err != nil {
@@ -373,7 +373,7 @@ func TestImmutableSegment_AllObjectKeys(t *testing.T) {
 	if err := builder.SetFilterKeys([]string{"filter1.bitmap", "filter2.bitmap"}); err != nil {
 		t.Fatalf("SetFilterKeys failed: %v", err)
 	}
-	if err := builder.SetFTSKeys([]string{"fts1.idx"}); err != nil {
+	if err := builder.SetFTSKeys([]string{"fts.title.bm25"}); err != nil {
 		t.Fatalf("SetFTSKeys failed: %v", err)
 	}
 
@@ -394,7 +394,7 @@ func TestImmutableSegment_AllObjectKeys(t *testing.T) {
 		"vectors.ivf.zst": true,
 		"filter1.bitmap":  true,
 		"filter2.bitmap":  true,
-		"fts1.idx":        true,
+		"fts.title.bm25":  true,
 	}
 
 	if len(keys) != len(expected) {
@@ -527,7 +527,7 @@ func TestSegmentObjectKeyHelpers(t *testing.T) {
 	}
 
 	ftsKey := FTSObjectKey(namespace, segmentID, "title")
-	expected = "vex/namespaces/my-namespace/index/segments/seg_01H123/fts/title.idx"
+	expected = "vex/namespaces/my-namespace/index/segments/seg_01H123/fts.title.bm25"
 	if ftsKey != expected {
 		t.Errorf("FTSObjectKey: expected %s, got %s", expected, ftsKey)
 	}

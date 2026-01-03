@@ -545,7 +545,7 @@ func (w *SegmentWriter) WriteFTSData(ctx context.Context, attrName string, data 
 	}
 	w.mu.Unlock()
 
-	key := fmt.Sprintf("%s/fts/%s.idx", SegmentKey(w.namespace, w.segmentID), attrName)
+	key := fmt.Sprintf("%s/fts.%s.bm25", SegmentKey(w.namespace, w.segmentID), attrName)
 	etag, err := w.writeObject(ctx, key, data)
 	if err != nil {
 		return "", err
@@ -624,7 +624,7 @@ func FilterObjectKey(namespace, segmentID, attrName string) string {
 
 // FTSObjectKey returns the standard object key for a FTS index.
 func FTSObjectKey(namespace, segmentID, attrName string) string {
-	return fmt.Sprintf("%s/fts/%s.idx", SegmentKey(namespace, segmentID), attrName)
+	return fmt.Sprintf("%s/fts.%s.bm25", SegmentKey(namespace, segmentID), attrName)
 }
 
 // SegmentMetadata contains metadata about a segment stored in object storage.
