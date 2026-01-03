@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
@@ -252,6 +253,9 @@ func TestStrongQueryRefreshesCache(t *testing.T) {
 
 	t.Run("eventual consistency does NOT trigger refresh", func(t *testing.T) {
 		mockTail.refreshCalled = false
+		now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+		h.SetNowFunc(func() time.Time { return now })
+		h.MarkSnapshotRefreshed("test-ns", now)
 
 		req := &QueryRequest{
 			RankBy:      []any{"id", "asc"},
@@ -343,6 +347,9 @@ func TestStrongQueryFailsIfRefreshFails(t *testing.T) {
 	})
 
 	t.Run("eventual query succeeds even when refresh would fail", func(t *testing.T) {
+		now := time.Date(2026, 1, 2, 9, 0, 0, 0, time.UTC)
+		h.SetNowFunc(func() time.Time { return now })
+		h.MarkSnapshotRefreshed("test-ns", now)
 		mockTail.docs = []*tail.Document{
 			{ID: document.NewU64ID(1), Attributes: map[string]any{"name": "doc1"}},
 		}
@@ -582,6 +589,9 @@ func TestEventualConsistencyMayBeStale(t *testing.T) {
 	}
 
 	h := NewHandler(store, stateMan, mockTail)
+	now := time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC)
+	h.SetNowFunc(func() time.Time { return now })
+	h.MarkSnapshotRefreshed("test-ns", now.Add(-EventualSnapshotTTL/2))
 
 	t.Run("eventual query skips refresh allowing staleness", func(t *testing.T) {
 		mockTail.refreshCalled = false
@@ -620,6 +630,40 @@ func TestEventualConsistencyMayBeStale(t *testing.T) {
 			t.Error("expected Refresh to be called for strong consistency (no staleness)")
 		}
 	})
+}
+
+func TestEventualConsistencyRefreshesAfterTTL(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	stateMan := namespace.NewStateManager(store)
+	ctx := context.Background()
+
+	if err := writeTestState(ctx, store, "test-ns", 10, 5); err != nil {
+		t.Fatalf("failed to write test state: %v", err)
+	}
+
+	mockTail := &mockTailStoreWithRefresh{
+		docs: []*tail.Document{
+			{ID: document.NewU64ID(1), Attributes: map[string]any{"name": "doc1"}},
+		},
+	}
+
+	h := NewHandler(store, stateMan, mockTail)
+	now := time.Date(2026, 1, 4, 11, 0, 0, 0, time.UTC)
+	h.SetNowFunc(func() time.Time { return now })
+	h.MarkSnapshotRefreshed("test-ns", now.Add(-EventualSnapshotTTL-time.Second))
+
+	req := &QueryRequest{
+		RankBy:      []any{"id", "asc"},
+		Limit:       10,
+		Consistency: "eventual",
+	}
+	_, err := h.Handle(ctx, "test-ns", req)
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if !mockTail.refreshCalled {
+		t.Error("expected Refresh to be called after eventual snapshot TTL")
+	}
 }
 
 func TestEventualSearchesOnly128MiBOfTail(t *testing.T) {

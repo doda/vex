@@ -1640,3 +1640,13 @@ KEY DEPENDENCIES:
 - Verification: /usr/local/go/bin/go test ./internal/write -count=1 (pass).
 - Verification: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: conflicting tail-store expectations in filter tests; resolved by standardizing on errors without tail store.
+[2026-01-03T20:41:54Z] Completed eventual-consistency-ttl-enforcement: PASS
+- Implemented eventual snapshot TTL tracking with per-namespace refresh timestamps and refresh enforcement after 60s.
+- Added handler clock/TTL helpers and a snapshot refresh marker for tests.
+- Added TTL regression coverage and updated eventual consistency/fault tests to mark snapshots fresh.
+- Files changed: internal/query/handler.go; internal/query/consistency_test.go; tests/fault/fault_test.go; task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/query -run Consistency (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: eventual tests expected no refresh when refresh fails.
+- Resolution: marked snapshots refreshed in tests to keep within TTL window.
+- Follow-ups: none.
