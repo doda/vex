@@ -3142,9 +3142,10 @@
     "category": "performance",
     "description": "Use a bounded top-k heap during ANN cluster scans to avoid materializing all candidate vectors in memory.",
     "steps": [
-      "Add tests that assert ANN search does not retain more than O(top_k) results in memory",
+      "Add tests that fail with current behavior by asserting ANN search does not retain more than O(top_k) candidates",
+      "Run `go test ./internal/index -run ANN` and confirm the new tests fail",
       "Implement a top-k heap collector for IVF search and large-cluster streaming paths",
-      "Verify ANN results remain correct with heap pruning",
+      "Update tests to pass with heap pruning and verify result correctness",
       "Run `go test ./internal/index -run ANN`"
     ],
     "scope": [
@@ -3158,9 +3159,10 @@
     "category": "performance",
     "description": "Parallelize multi-range cluster fetches to reduce latency on cold cache ANN queries.",
     "steps": [
-      "Add tests that simulate slow object store reads and assert parallel fetch completion order",
+      "Add tests that fail with current behavior by simulating slow object store reads and asserting parallel fetch completion",
+      "Run `go test ./internal/index -run MultiRange` and confirm the new tests fail",
       "Implement bounded parallel fetching for merged ranges with error propagation",
-      "Ensure per-range caching semantics remain correct",
+      "Update tests to pass and verify per-range caching semantics remain correct",
       "Run `go test ./internal/index -run MultiRange`"
     ],
     "scope": [
@@ -3174,9 +3176,10 @@
     "category": "performance",
     "description": "Improve large-cluster streaming to reduce tail latency and allow configurable chunk sizing.",
     "steps": [
-      "Add tests that cover streaming large clusters with chunked range reads",
+      "Add tests that fail with current behavior by covering streaming large clusters with chunked range reads and top-k correctness",
+      "Run `go test ./internal/index -run Streaming` and confirm the new tests fail",
       "Make chunk size configurable and validate boundary alignment",
-      "Verify streaming search returns correct top-k results",
+      "Update tests to pass and verify streaming search returns correct top-k results",
       "Run `go test ./internal/index -run Streaming`"
     ],
     "scope": [
@@ -3190,9 +3193,10 @@
     "category": "performance",
     "description": "Verify disk cache effectiveness for ANN cluster ranges across repeated queries.",
     "steps": [
-      "Add tests that run identical ANN queries twice and assert cache hit metrics increase",
+      "Add tests that fail with current behavior by running identical ANN queries twice and asserting cache hit metrics increase",
+      "Run `go test ./internal/index -run Cache` and confirm the new tests fail",
       "Expose cache hit/miss counters for ANN cluster range reads",
-      "Confirm cold query uses object store and warm query uses cache",
+      "Update tests to pass and confirm cold query uses object store and warm query uses cache",
       "Run `go test ./internal/index -run Cache`"
     ],
     "scope": [
