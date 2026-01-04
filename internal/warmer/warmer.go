@@ -4,6 +4,7 @@ package warmer
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,9 +208,17 @@ func (w *Warmer) prefetchSegment(ctx context.Context, seg index.Segment) {
 		w.prefetchToCache(ctx, filterKey, false, cache.TypeFilterBitmap)
 	}
 
+	// Prefetch FTS indexes for BM25 queries
+	for _, ftsKey := range seg.FTSKeys {
+		w.prefetchToCache(ctx, ftsKey, false, cache.TypePostingDict)
+	}
+
 	// Prefetch docs key (column headers)
 	if seg.DocsKey != "" {
 		w.prefetchDocsHeader(ctx, seg.DocsKey)
+		if offsetsKey := docsOffsetsKey(seg.DocsKey); offsetsKey != "" {
+			w.prefetchToCache(ctx, offsetsKey, false, cache.TypeDocColumn)
+		}
 	}
 }
 
@@ -219,7 +228,7 @@ func (w *Warmer) prefetchToCache(ctx context.Context, key string, toRAM bool, it
 		return
 	}
 
-	reader, info, err := w.store.Get(ctx, key, nil)
+	reader, _, err := w.store.Get(ctx, key, nil)
 	if err != nil {
 		return
 	}
@@ -232,7 +241,6 @@ func (w *Warmer) prefetchToCache(ctx context.Context, key string, toRAM bool, it
 
 	diskCacheKey := cache.CacheKey{
 		ObjectKey: key,
-		ETag:      info.ETag,
 	}
 
 	// Cache to disk
@@ -331,6 +339,16 @@ func extractNamespace(key string) string {
 		}
 	}
 	return rest
+}
+
+func docsOffsetsKey(docsKey string) string {
+	if strings.HasSuffix(docsKey, "/docs.col.zst") {
+		return strings.TrimSuffix(docsKey, "/docs.col.zst") + "/docs.offsets.bin"
+	}
+	if strings.HasSuffix(docsKey, "docs.col.zst") {
+		return strings.TrimSuffix(docsKey, "docs.col.zst") + "docs.offsets.bin"
+	}
+	return ""
 }
 
 // QueueLen returns the current length of the task queue.

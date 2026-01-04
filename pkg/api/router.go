@@ -61,10 +61,10 @@ var gzipWriterPool = sync.Pool{
 
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	gz           *gzip.Writer
-	gzipEnabled  bool
-	compressing  bool
-	wroteHeader  bool
+	gz          *gzip.Writer
+	gzipEnabled bool
+	compressing bool
+	wroteHeader bool
 }
 
 func newGzipResponseWriter(w http.ResponseWriter, gzipEnabled bool) *gzipResponseWriter {
@@ -879,6 +879,12 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 	if r.queryHandler != nil {
 		queryStart := time.Now()
 		resp, err := r.queryHandler.Handle(req.Context(), ns, queryReq)
+		if err == nil && resp != nil {
+			resp.Performance.ServerTotalMs = float64(time.Since(queryStart).Microseconds()) / 1000.0
+			if temp := r.cacheTemperatureForNamespace(ns); temp != "" {
+				resp.Performance.CacheTemperature = temp
+			}
+		}
 		if metrics := logging.RequestMetricsFromContext(req.Context()); metrics != nil {
 			metrics.QueryExecMs = float64(time.Since(queryStart).Microseconds()) / 1000.0
 			if err == nil && resp != nil && resp.Performance.CacheTemperature != "" {
@@ -1024,6 +1030,35 @@ func (r *Router) handleQuery(w http.ResponseWriter, req *http.Request) {
 	}
 
 	r.writeJSON(w, http.StatusOK, fallbackResponse)
+}
+
+func (r *Router) cacheTemperatureForNamespace(namespace string) string {
+	var temp string
+	if r.ramCache != nil {
+		temp = hotterTemperature(temp, r.ramCache.NamespaceTemperature(namespace))
+	}
+	if r.diskCache != nil {
+		temp = hotterTemperature(temp, r.diskCache.NamespaceTemperature(namespace))
+	}
+	return temp
+}
+
+func hotterTemperature(current, candidate string) string {
+	if candidate == "" {
+		return current
+	}
+	if current == "" {
+		return candidate
+	}
+	rank := map[string]int{
+		"cold": 1,
+		"warm": 2,
+		"hot":  3,
+	}
+	if rank[candidate] > rank[current] {
+		return candidate
+	}
+	return current
 }
 
 // handleMultiQuery handles multi-query requests with snapshot isolation.

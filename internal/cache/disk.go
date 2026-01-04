@@ -244,7 +244,7 @@ func extractNamespaceFromKey(objectKey string) string {
 		if rest == "" {
 			return ""
 		}
-		if idx := strings.Index(rest, "/"); idx >= 0 {
+		if idx := strings.IndexByte(rest, '/'); idx >= 0 {
 			if idx == 0 {
 				return ""
 			}
@@ -252,7 +252,7 @@ func extractNamespaceFromKey(objectKey string) string {
 		}
 		return rest
 	}
-	if idx := strings.Index(key, "/"); idx >= 0 {
+	if idx := strings.IndexByte(key, '/'); idx >= 0 {
 		return key[:idx]
 	}
 	return key
