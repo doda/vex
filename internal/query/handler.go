@@ -2,6 +2,7 @@
 package query
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/fts"
 	"github.com/vexsearch/vex/internal/index"
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/vector"
@@ -272,6 +274,39 @@ func (h *Handler) shouldRefreshEventual(namespace string, now time.Time) bool {
 	return now.Sub(last) > ttl
 }
 
+func queryTypeForRequest(parsed *ParsedRankBy, aggregate bool) string {
+	if aggregate {
+		return "aggregate"
+	}
+	if parsed == nil {
+		return "attribute"
+	}
+	switch parsed.Type {
+	case RankByVector:
+		return "vector"
+	case RankByAttr:
+		return "attribute"
+	case RankByBM25:
+		return "bm25"
+	case RankByComposite:
+		if len(collectBM25Fields(parsed)) > 0 {
+			return "bm25"
+		}
+		return "attribute"
+	default:
+		return "attribute"
+	}
+}
+
+func (h *Handler) finalizeQueryResponse(start time.Time, ns string, queryType string, resp *QueryResponse) *QueryResponse {
+	if resp.Performance.CacheTemperature == "" {
+		resp.Performance.CacheTemperature = "cold"
+	}
+	resp.Performance.ServerTotalMs = float64(time.Since(start).Microseconds()) / 1000.0
+	metrics.ObserveQuery(ns, queryType, time.Since(start).Seconds(), nil)
+	return resp
+}
+
 func (h *Handler) refreshTailIfNeeded(ctx context.Context, ns string, loaded *namespace.LoadedState, strong bool) error {
 	if h.tailStore == nil {
 		return nil
@@ -304,6 +339,7 @@ func (h *Handler) refreshTailIfNeeded(ctx context.Context, ns string, loaded *na
 
 // Handle executes a query against the given namespace.
 func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*QueryResponse, error) {
+	start := time.Now()
 	// Validate the request
 	if err := h.validateRequest(req); err != nil {
 		return nil, err
@@ -378,6 +414,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 
 	// Check if this is an aggregation query
 	if req.AggregateBy != nil {
+		queryType := queryTypeForRequest(nil, true)
 		// Parse aggregations
 		aggregations, err := parseAggregateBy(req.AggregateBy)
 		if err != nil {
@@ -398,17 +435,14 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 				return nil, err
 			}
 
-			return &QueryResponse{
+			resp := &QueryResponse{
 				AggregationGroups: aggGroups,
 				Billing: BillingInfo{
 					BillableLogicalBytesQueried:  0,
 					BillableLogicalBytesReturned: 0,
 				},
-				Performance: PerformanceInfo{
-					CacheTemperature: "cold",
-					ServerTotalMs:    0,
-				},
-			}, nil
+			}
+			return h.finalizeQueryResponse(start, ns, queryType, resp), nil
 		}
 
 		// Execute non-grouped aggregation query
@@ -417,17 +451,14 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 			return nil, err
 		}
 
-		return &QueryResponse{
+		resp := &QueryResponse{
 			Aggregations: aggResults,
 			Billing: BillingInfo{
 				BillableLogicalBytesQueried:  0,
 				BillableLogicalBytesReturned: 0,
 			},
-			Performance: PerformanceInfo{
-				CacheTemperature: "cold",
-				ServerTotalMs:    0,
-			},
-		}, nil
+		}
+		return h.finalizeQueryResponse(start, ns, queryType, resp), nil
 	}
 
 	// Execute the query based on rank_by type
@@ -451,17 +482,15 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 	// Apply attribute filtering
 	rows = filterAttributes(rows, req.IncludeAttributes, req.ExcludeAttributes)
 
-	return &QueryResponse{
+	queryType := queryTypeForRequest(parsed, false)
+	resp := &QueryResponse{
 		Rows: rows,
 		Billing: BillingInfo{
 			BillableLogicalBytesQueried:  0,
 			BillableLogicalBytesReturned: 0,
 		},
-		Performance: PerformanceInfo{
-			CacheTemperature: "cold",
-			ServerTotalMs:    0,
-		},
-	}, nil
+	}
+	return h.finalizeQueryResponse(start, ns, queryType, resp), nil
 }
 
 // validateRequest validates the query request.
@@ -722,37 +751,45 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 	useIndex := loaded.State.Index.ManifestKey != "" && h.indexReader != nil
 
 	if useIndex {
+		t0 := time.Now()
 		ivfReader, clusterDataKey, err := h.indexReader.GetIVFReader(ctx, ns, loaded.State.Index.ManifestKey, loaded.State.Index.ManifestSeq)
+		getIVFReaderMs := time.Since(t0).Milliseconds()
 		if err != nil {
 			// Log error but fall back to exhaustive search
-			fmt.Printf("[DEBUG] GetIVFReader error: %v\n", err)
+			fmt.Printf("[TIMING] GetIVFReader error after %dms: %v\n", getIVFReaderMs, err)
 		} else if ivfReader != nil {
+			fmt.Printf("[TIMING] GetIVFReader: %dms (clusters=%d, vectors=%d)\n", getIVFReaderMs, ivfReader.NClusters, len(ivfReader.ClusterOffsets))
 			nProbe := DefaultNProbe
 			candidates := req.Limit
 
 			if f == nil {
 				// No filter - use standard ANN search
+				t1 := time.Now()
 				indexResults, err = h.indexReader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe)
+				searchMs := time.Since(t1).Milliseconds()
 				if err != nil {
-					fmt.Printf("[DEBUG] SearchWithMultiRange error: %v\n", err)
+					fmt.Printf("[TIMING] SearchWithMultiRange error after %dms: %v\n", searchMs, err)
 					indexResults = nil
 				} else {
-					fmt.Printf("[DEBUG] SearchWithMultiRange returned %d results\n", len(indexResults))
+					fmt.Printf("[TIMING] SearchWithMultiRange: %dms (nProbe=%d, candidates=%d, results=%d)\n", searchMs, nProbe, candidates, len(indexResults))
 				}
 			} else {
 				// Filter present - try to use filter bitmap indexes
+				t1 := time.Now()
 				indexResults = h.searchIndexWithFilter(ctx, ns, loaded, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe, f)
+				fmt.Printf("[TIMING] searchIndexWithFilter: %dms (results=%d)\n", time.Since(t1).Milliseconds(), len(indexResults))
 			}
 		} else {
-			fmt.Printf("[DEBUG] ivfReader is nil\n")
+			fmt.Printf("[TIMING] GetIVFReader: %dms - ivfReader is nil\n", getIVFReaderMs)
 		}
 	} else {
-		fmt.Printf("[DEBUG] useIndex=false manifestKey=%q\n", loaded.State.Index.ManifestKey)
+		fmt.Printf("[TIMING] useIndex=false manifestKey=%q\n", loaded.State.Index.ManifestKey)
 	}
 
 	// Get results from tail (unindexed data)
 	var tailResults []tail.VectorScanResult
 	if h.tailStore != nil {
+		t2 := time.Now()
 		var err error
 		// Only search tail for WAL entries after the indexed sequence
 		if tailByteCap > 0 {
@@ -760,6 +797,7 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 		} else {
 			tailResults, err = h.tailStore.VectorScan(ctx, ns, parsed.QueryVector, req.Limit, metric, f)
 		}
+		fmt.Printf("[TIMING] TailSearch: %dms (results=%d, byteCap=%d)\n", time.Since(t2).Milliseconds(), len(tailResults), tailByteCap)
 		if err != nil {
 			return nil, err
 		}
@@ -817,7 +855,9 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 		}
 
 		// Load only the documents we need (not all docs in the segment)
+		t3 := time.Now()
 		indexedDocs, err := h.indexReader.LoadDocsForIDs(ctx, loaded.State.Index.ManifestKey, resultIDs)
+		fmt.Printf("[TIMING] LoadDocsForIDs: %dms (requested=%d, loaded=%d)\n", time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs))
 		if err == nil && len(indexedDocs) > 0 {
 			indexDocIDs = make(map[uint64]document.ID, len(indexedDocs))
 			indexDocAttrs = make(map[uint64]map[string]any, len(indexedDocs))
@@ -1228,6 +1268,235 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 		return []Row{}, nil
 	}
 
+	// Prefer prebuilt FTS indexes when available.
+	if loaded.State.Index.ManifestKey != "" && h.indexReader != nil {
+		rows, ok, err := h.executeBM25QueryWithFTSIndexes(ctx, ns, loaded, parsed, f, req, tailByteCap, ftsCfg, queryTokens)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return rows, nil
+		}
+	}
+
+	return h.executeBM25QueryFullScan(ctx, ns, loaded, parsed, f, req, tailByteCap, ftsCfg, queryTokens)
+}
+
+func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64, ftsCfg *fts.Config, queryTokens []string) ([]Row, bool, error) {
+	ftsIndexes, err := h.indexReader.LoadFTSIndexesForField(ctx, loaded.State.Index.ManifestKey, parsed.Field)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(ftsIndexes) == 0 {
+		return nil, false, nil
+	}
+
+	tailLatest, tailScores, err := h.loadTailBM25Scores(ctx, ns, parsed, f, tailByteCap, ftsCfg, queryTokens)
+	if err != nil {
+		return nil, false, err
+	}
+
+	indexed := make(map[string]bm25Candidate)
+	if len(ftsIndexes) == 1 && f == nil {
+		seg := ftsIndexes[0]
+		target := req.Limit + len(tailLatest)
+		if target < req.Limit {
+			target = req.Limit
+		}
+		topRows := bm25TopRowScores(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg, target)
+		if len(topRows) > 0 {
+			rowIDs := make([]uint32, 0, len(topRows))
+			for _, row := range topRows {
+				rowIDs = append(rowIDs, row.rowID)
+			}
+
+			docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, seg.Segment, rowIDs)
+			if err != nil {
+				return nil, false, err
+			}
+
+			for _, row := range topRows {
+				idoc, ok := docsByRow[row.rowID]
+				if !ok {
+					continue
+				}
+				if row.score <= 0 {
+					continue
+				}
+
+				docID, ok := indexedDocumentID(idoc)
+				if !ok {
+					continue
+				}
+
+				doc := &tail.Document{
+					ID:         docID,
+					WalSeq:     idoc.WALSeq,
+					Attributes: idoc.Attributes,
+					Deleted:    idoc.Deleted,
+				}
+
+				key := doc.ID.String()
+				existing, ok := indexed[key]
+				if ok && doc.WalSeq < existing.doc.WalSeq {
+					continue
+				}
+				indexed[key] = bm25Candidate{
+					doc:         doc,
+					score:       row.score,
+					filterMatch: true,
+				}
+			}
+		}
+	} else {
+		for _, seg := range ftsIndexes {
+			scoresByRow := bm25ScoresForIndex(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg)
+			if len(scoresByRow) == 0 {
+				continue
+			}
+
+			rowIDs := make([]uint32, 0, len(scoresByRow))
+			for rowID := range scoresByRow {
+				rowIDs = append(rowIDs, rowID)
+			}
+
+			docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, seg.Segment, rowIDs)
+			if err != nil {
+				return nil, false, err
+			}
+
+			for rowID, idoc := range docsByRow {
+				score := scoresByRow[rowID]
+				if score <= 0 {
+					continue
+				}
+
+				docID, ok := indexedDocumentID(idoc)
+				if !ok {
+					continue
+				}
+
+				doc := &tail.Document{
+					ID:         docID,
+					WalSeq:     idoc.WALSeq,
+					Attributes: idoc.Attributes,
+					Deleted:    idoc.Deleted,
+				}
+
+				key := doc.ID.String()
+				existing, ok := indexed[key]
+				if ok && doc.WalSeq < existing.doc.WalSeq {
+					continue
+				}
+				indexed[key] = bm25Candidate{
+					doc:         doc,
+					score:       score,
+					filterMatch: filterMatches(f, doc),
+				}
+			}
+		}
+	}
+
+	for id, doc := range tailLatest {
+		if doc.Deleted {
+			delete(indexed, id)
+			continue
+		}
+		score := tailScores[id]
+		if score <= 0 {
+			delete(indexed, id)
+			continue
+		}
+		indexed[id] = bm25Candidate{
+			doc:         doc,
+			score:       score,
+			filterMatch: true,
+		}
+	}
+
+	scored := make([]bm25Candidate, 0, len(indexed))
+	for _, cand := range indexed {
+		if cand.doc == nil || cand.doc.Deleted || !cand.filterMatch || cand.score <= 0 {
+			continue
+		}
+		scored = append(scored, cand)
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	if len(scored) > req.Limit {
+		scored = scored[:req.Limit]
+	}
+
+	rows := make([]Row, 0, len(scored))
+	for _, sc := range scored {
+		dist := sc.score
+		rows = append(rows, Row{
+			ID:         docIDToAny(sc.doc.ID),
+			Dist:       &dist,
+			Attributes: sc.doc.Attributes,
+		})
+	}
+
+	return rows, true, nil
+}
+
+func (h *Handler) loadTailBM25Scores(ctx context.Context, ns string, parsed *ParsedRankBy, f *filter.Filter, tailByteCap int64, ftsCfg *fts.Config, queryTokens []string) (map[string]*tail.Document, map[string]float64, error) {
+	tailLatest := make(map[string]*tail.Document)
+	if h.tailStore == nil {
+		return tailLatest, map[string]float64{}, nil
+	}
+
+	tailDocs, err := h.scanTailForBM25(ctx, ns, f, tailByteCap)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for _, doc := range tailDocs {
+		key := doc.ID.String()
+		if existing, ok := tailLatest[key]; !ok || doc.WalSeq > existing.WalSeq {
+			tailLatest[key] = doc
+		}
+	}
+
+	if len(tailLatest) == 0 {
+		return tailLatest, map[string]float64{}, nil
+	}
+
+	index := fts.NewIndex(parsed.Field, ftsCfg)
+	docIDMap := make(map[uint32]*tail.Document)
+	i := uint32(0)
+	for _, doc := range tailLatest {
+		if doc.Deleted {
+			continue
+		}
+		text, ok := h.getDocTextValue(doc, parsed.Field)
+		if !ok || text == "" {
+			continue
+		}
+		index.AddDocument(i, text)
+		docIDMap[i] = doc
+		i++
+	}
+
+	scores := make(map[string]float64)
+	if index.TotalDocs == 0 {
+		return tailLatest, scores, nil
+	}
+
+	for docID, doc := range docIDMap {
+		score := computeBM25ScoreWithPrefixAndMatch(index, docID, queryTokens, parsed.LastAsPrefix, ftsCfg, false)
+		if score > 0 {
+			scores[doc.ID.String()] = score
+		}
+	}
+
+	return tailLatest, scores, nil
+}
+
+func (h *Handler) executeBM25QueryFullScan(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64, ftsCfg *fts.Config, queryTokens []string) ([]Row, error) {
 	// Collect all documents from both indexed segments and tail
 	var allDocs []*tail.Document
 	// Step 1: Load documents from indexed segments if available
@@ -1254,15 +1523,8 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 				}
 
 				// Apply filter if present
-				if f != nil {
-					filterDoc := make(map[string]any)
-					filterDoc["id"] = docIDToAny(doc.ID)
-					for k, v := range doc.Attributes {
-						filterDoc[k] = v
-					}
-					if !f.Eval(filterDoc) {
-						continue
-					}
+				if f != nil && !filterMatches(f, doc) {
+					continue
 				}
 
 				allDocs = append(allDocs, doc)
@@ -1485,6 +1747,10 @@ func computeBM25Score(idx *fts.Index, docID uint32, queryTokens []string) float6
 // - ALL matches are required for a non-zero score (consistent with ContainsAllTokens filter)
 // This supports typeahead/autocomplete scenarios where users type partial words.
 func computeBM25ScoreWithPrefix(idx *fts.Index, docID uint32, queryTokens []string, lastAsPrefix bool, ftsCfg *fts.Config) float64 {
+	return computeBM25ScoreWithPrefixAndMatch(idx, docID, queryTokens, lastAsPrefix, ftsCfg, false)
+}
+
+func computeBM25ScoreWithPrefixAndMatch(idx *fts.Index, docID uint32, queryTokens []string, lastAsPrefix bool, ftsCfg *fts.Config, prefixMatched bool) float64 {
 	if len(queryTokens) == 0 {
 		return 0
 	}
@@ -1532,7 +1798,9 @@ func computeBM25ScoreWithPrefix(idx *fts.Index, docID uint32, queryTokens []stri
 
 	// Handle the last token with prefix matching
 	lastToken := queryTokens[len(queryTokens)-1]
-	prefixMatched := docHasPrefixMatch(idx, docID, lastToken)
+	if !prefixMatched {
+		prefixMatched = docHasPrefixMatch(idx, docID, lastToken)
+	}
 	if !prefixMatched {
 		// Prefix token didn't match - no match for typeahead
 		return 0
@@ -1560,6 +1828,228 @@ func docHasPrefixMatch(idx *fts.Index, docID uint32, prefix string) bool {
 		}
 	}
 	return false
+}
+
+type bm25Candidate struct {
+	doc         *tail.Document
+	score       float64
+	filterMatch bool
+}
+
+type bm25RowScore struct {
+	rowID uint32
+	score float64
+}
+
+type bm25TermStat struct {
+	idf   float64
+	freqs map[uint32]uint32
+}
+
+type bm25RowScoreHeap []bm25RowScore
+
+func (h bm25RowScoreHeap) Len() int           { return len(h) }
+func (h bm25RowScoreHeap) Less(i, j int) bool { return h[i].score < h[j].score }
+func (h bm25RowScoreHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *bm25RowScoreHeap) Push(x any)        { *h = append(*h, x.(bm25RowScore)) }
+func (h *bm25RowScoreHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
+
+func buildBM25Stats(idx *fts.Index, queryTokens []string) []bm25TermStat {
+	if idx == nil || len(queryTokens) == 0 {
+		return nil
+	}
+	n := float64(idx.TotalDocs)
+	stats := make([]bm25TermStat, 0, len(queryTokens))
+	for _, term := range queryTokens {
+		freqs := idx.TermFreqs[term]
+		if len(freqs) == 0 {
+			continue
+		}
+		df := float64(len(freqs))
+		idf := math.Log((n-df+0.5)/(df+0.5) + 1)
+		stats = append(stats, bm25TermStat{
+			idf:   idf,
+			freqs: freqs,
+		})
+	}
+	return stats
+}
+
+func computeBM25ScoreWithStats(idx *fts.Index, docID uint32, stats []bm25TermStat) float64 {
+	if idx == nil || len(stats) == 0 {
+		return 0
+	}
+	k1 := idx.Config.K1
+	b := idx.Config.B
+	avgDL := idx.AvgDocLength
+	docLen := float64(idx.DocLengths[docID])
+	norm := k1 * (1 - b + b*(docLen/avgDL))
+	var score float64
+	for _, stat := range stats {
+		tf := float64(stat.freqs[docID])
+		if tf == 0 {
+			continue
+		}
+		denominator := tf + norm
+		if denominator > 0 {
+			score += stat.idf * (tf * (k1 + 1)) / denominator
+		}
+	}
+	return score
+}
+
+func bm25TopRowScores(idx *fts.Index, queryTokens []string, lastAsPrefix bool, ftsCfg *fts.Config, limit int) []bm25RowScore {
+	if limit <= 0 {
+		return nil
+	}
+	candidates := bm25CandidateBitmap(idx, queryTokens, lastAsPrefix)
+	if candidates == nil || candidates.IsEmpty() {
+		return nil
+	}
+
+	top := make(bm25RowScoreHeap, 0, limit)
+	stats := []bm25TermStat(nil)
+	if !lastAsPrefix {
+		stats = buildBM25Stats(idx, queryTokens)
+		if len(stats) == 0 {
+			return nil
+		}
+	}
+	iter := candidates.Iterator()
+	for iter.HasNext() {
+		docID := iter.Next()
+		var score float64
+		if lastAsPrefix {
+			score = computeBM25ScoreWithPrefixAndMatch(idx, docID, queryTokens, lastAsPrefix, ftsCfg, lastAsPrefix)
+		} else {
+			score = computeBM25ScoreWithStats(idx, docID, stats)
+		}
+		if score <= 0 {
+			continue
+		}
+		if len(top) < limit {
+			heap.Push(&top, bm25RowScore{rowID: docID, score: score})
+			continue
+		}
+		if score > top[0].score {
+			top[0] = bm25RowScore{rowID: docID, score: score}
+			heap.Fix(&top, 0)
+		}
+	}
+	if len(top) == 0 {
+		return nil
+	}
+
+	rows := make([]bm25RowScore, len(top))
+	copy(rows, top)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].score > rows[j].score })
+	return rows
+}
+
+func bm25CandidateBitmap(idx *fts.Index, queryTokens []string, lastAsPrefix bool) *roaring.Bitmap {
+	if idx == nil || len(queryTokens) == 0 {
+		return nil
+	}
+
+	if !lastAsPrefix {
+		union := roaring.New()
+		for _, term := range queryTokens {
+			posting := idx.TermPostings[term]
+			if posting == nil {
+				continue
+			}
+			union.Or(posting)
+		}
+		if union.IsEmpty() {
+			return nil
+		}
+		return union
+	}
+
+	normalTokens := queryTokens[:len(queryTokens)-1]
+	var required *roaring.Bitmap
+	for _, term := range normalTokens {
+		posting := idx.TermPostings[term]
+		if posting == nil {
+			return nil
+		}
+		if required == nil {
+			required = posting.Clone()
+		} else {
+			required.And(posting)
+		}
+	}
+
+	prefixToken := queryTokens[len(queryTokens)-1]
+	prefixMatches := roaring.New()
+	for term, posting := range idx.TermPostings {
+		if strings.HasPrefix(term, prefixToken) {
+			prefixMatches.Or(posting)
+		}
+	}
+	if prefixMatches.IsEmpty() {
+		return nil
+	}
+
+	if required == nil {
+		return prefixMatches
+	}
+	required.And(prefixMatches)
+	if required.IsEmpty() {
+		return nil
+	}
+	return required
+}
+
+func bm25ScoresForIndex(idx *fts.Index, queryTokens []string, lastAsPrefix bool, ftsCfg *fts.Config) map[uint32]float64 {
+	candidates := bm25CandidateBitmap(idx, queryTokens, lastAsPrefix)
+	if candidates == nil || candidates.IsEmpty() {
+		return nil
+	}
+
+	scores := make(map[uint32]float64, int(candidates.GetCardinality()))
+	stats := []bm25TermStat(nil)
+	if !lastAsPrefix {
+		stats = buildBM25Stats(idx, queryTokens)
+		if len(stats) == 0 {
+			return nil
+		}
+	}
+	iter := candidates.Iterator()
+	for iter.HasNext() {
+		docID := iter.Next()
+		var score float64
+		if lastAsPrefix {
+			score = computeBM25ScoreWithPrefixAndMatch(idx, docID, queryTokens, lastAsPrefix, ftsCfg, lastAsPrefix)
+		} else {
+			score = computeBM25ScoreWithStats(idx, docID, stats)
+		}
+		if score > 0 {
+			scores[docID] = score
+		}
+	}
+	if len(scores) == 0 {
+		return nil
+	}
+	return scores
+}
+
+func filterMatches(f *filter.Filter, doc *tail.Document) bool {
+	if f == nil {
+		return true
+	}
+	filterDoc := make(map[string]any, len(doc.Attributes)+1)
+	filterDoc["id"] = docIDToAny(doc.ID)
+	for k, v := range doc.Attributes {
+		filterDoc[k] = v
+	}
+	return f.Eval(filterDoc)
 }
 
 // executeCompositeQuery executes a composite rank_by query.

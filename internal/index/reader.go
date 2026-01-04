@@ -11,15 +11,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/klauspost/compress/zstd"
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/fts"
 	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -35,8 +38,11 @@ type Reader struct {
 	largeClusterChunkBytes int
 
 	// Per-namespace IVF reader cache
-	mu      sync.RWMutex
-	readers map[string]*cachedIVFReader
+	mu       sync.RWMutex
+	readers  map[string]*cachedIVFReader
+	ftsCache map[string]*fts.Index
+
+	docOffsetsCache map[string][]uint64
 }
 
 // ReaderOptions configures index reader behavior.
@@ -69,6 +75,8 @@ func NewReaderWithOptions(store objectstore.Store, diskCache *cache.DiskCache, r
 		ramCache:               ramCache,
 		largeClusterChunkBytes: opts.LargeClusterChunkBytes,
 		readers:                make(map[string]*cachedIVFReader),
+		ftsCache:               make(map[string]*fts.Index),
+		docOffsetsCache:        make(map[string][]uint64),
 	}
 }
 
@@ -252,6 +260,51 @@ func (r *Reader) loadObject(ctx context.Context, key string) ([]byte, error) {
 	}
 
 	// Cache the data
+	if r.diskCache != nil {
+		r.diskCache.PutBytes(cacheKey, data)
+	}
+
+	return data, nil
+}
+
+// loadObjectRange loads a byte range from storage, using the disk cache when available.
+func (r *Reader) loadObjectRange(ctx context.Context, key string, start, length uint64) ([]byte, error) {
+	if length == 0 {
+		return nil, nil
+	}
+
+	cacheKey := cache.CacheKey{
+		ObjectKey: fmt.Sprintf("%s#%d-%d", key, start, length),
+	}
+
+	if r.diskCache != nil {
+		if reader, err := r.diskCache.GetReader(cacheKey); err == nil {
+			data, err := readAllWithContext(ctx, reader)
+			reader.Close()
+			if err == nil {
+				return data, nil
+			}
+		}
+	}
+
+	opts := &objectstore.GetOptions{
+		Range: &objectstore.ByteRange{
+			Start: int64(start),
+			End:   int64(start + length - 1),
+		},
+	}
+
+	reader, _, err := r.store.Get(ctx, key, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	data, err := readAllWithContext(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+
 	if r.diskCache != nil {
 		r.diskCache.PutBytes(cacheKey, data)
 	}
@@ -510,6 +563,7 @@ type topKCollector struct {
 	limit   int
 	heap    topKHeap
 	maxSize int
+	seen    map[uint64]struct{} // Track DocIDs we've already added
 }
 
 type topKHeap []vector.IVFSearchResult
@@ -534,11 +588,20 @@ func newTopKCollector(limit int) *topKCollector {
 	if limit < 1 {
 		limit = 1
 	}
-	return &topKCollector{limit: limit}
+	return &topKCollector{
+		limit: limit,
+		seen:  make(map[uint64]struct{}),
+	}
 }
 
 func (c *topKCollector) consider(res vector.IVFSearchResult) {
+	// Skip if we've already seen this DocID (deduplication)
+	if _, exists := c.seen[res.DocID]; exists {
+		return
+	}
+
 	if len(c.heap) < c.limit {
+		c.seen[res.DocID] = struct{}{}
 		heap.Push(&c.heap, res)
 		if len(c.heap) > c.maxSize {
 			c.maxSize = len(c.heap)
@@ -549,6 +612,10 @@ func (c *topKCollector) consider(res vector.IVFSearchResult) {
 		return
 	}
 	if res.Distance < c.heap[0].Distance {
+		// Remove old docID from seen map
+		delete(c.seen, c.heap[0].DocID)
+		// Add new docID to seen map
+		c.seen[res.DocID] = struct{}{}
 		c.heap[0] = res
 		heap.Fix(&c.heap, 0)
 	}
@@ -594,40 +661,53 @@ func (r *Reader) searchANN(ctx context.Context, ivfReader *vector.IVFReader, clu
 }
 
 func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, query []float32, nProbe int, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
+	t0 := time.Now()
 	// Find nearest centroids
 	nearestClusters := findNearestCentroids(ivfReader, query, nProbe)
 
 	// Get byte ranges for all selected clusters
 	ranges := ivfReader.GetClusterRanges(nearestClusters)
+	centroidMs := time.Since(t0).Milliseconds()
 
 	// Separate small clusters (can batch) from large clusters (must stream)
 	var smallRanges []vector.ByteRange
 	var largeRanges []vector.ByteRange
+	var totalSmallBytes, totalLargeBytes uint64
 	for _, rng := range ranges {
 		if rng.Length <= MaxClusterSizeForBatch {
 			smallRanges = append(smallRanges, rng)
+			totalSmallBytes += rng.Length
 		} else {
 			largeRanges = append(largeRanges, rng)
+			totalLargeBytes += rng.Length
 		}
 	}
+	fmt.Printf("[TIMING] collectANN setup: %dms (nProbe=%d, small=%d/%dMB, large=%d/%dMB)\n",
+		centroidMs, nProbe, len(smallRanges), totalSmallBytes/1024/1024, len(largeRanges), totalLargeBytes/1024/1024)
 
 	// Process small clusters in batch
 	if len(smallRanges) > 0 {
+		t1 := time.Now()
 		fetcher := NewMultiRangeClusterDataFetcher(r.store, r.diskCache, clusterDataKey)
 		clusterData, err := fetcher.FetchRanges(ctx, smallRanges)
+		fetchMs := time.Since(t1).Milliseconds()
 		if err != nil {
 			return fmt.Errorf("failed to fetch cluster data: %w", err)
 		}
 
+		t2 := time.Now()
 		for clusterID, data := range clusterData {
 			if err := searchClusterDataInto(data, query, clusterID, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap, collector); err != nil {
 				return fmt.Errorf("failed to search cluster %d: %w", clusterID, err)
 			}
 		}
+		searchMs := time.Since(t2).Milliseconds()
+		fmt.Printf("[TIMING] smallClusters: fetch=%dms, search=%dms\n", fetchMs, searchMs)
 	}
 
 	// Stream large clusters in parallel to utilize all CPU cores
 	if len(largeRanges) > 0 {
+		t3 := time.Now()
 		var wg sync.WaitGroup
 		// Create per-goroutine collectors to avoid contention
 		collectors := make([]*topKCollector, len(largeRanges))
@@ -646,13 +726,19 @@ func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, cl
 			}(i, rng)
 		}
 		wg.Wait()
+		parallelMs := time.Since(t3).Milliseconds()
 
 		// Merge results from all collectors
+		t4 := time.Now()
+		totalResults := 0
 		for _, c := range collectors {
 			for _, res := range c.results() {
 				collector.consider(res)
+				totalResults++
 			}
 		}
+		mergeMs := time.Since(t4).Milliseconds()
+		fmt.Printf("[TIMING] largeClusters: parallel=%dms, merge=%dms, results=%d\n", parallelMs, mergeMs, totalResults)
 	}
 
 	return nil
@@ -1212,6 +1298,7 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 		return nil, nil
 	}
 
+	t0 := time.Now()
 	manifest, err := r.LoadManifest(ctx, manifestKey)
 	if err != nil {
 		return nil, err
@@ -1219,6 +1306,7 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 	if manifest == nil {
 		return nil, nil
 	}
+	manifestMs := time.Since(t0).Milliseconds()
 
 	// Build a set of requested IDs for O(1) lookup
 	idSet := make(map[uint64]struct{}, len(ids))
@@ -1226,18 +1314,28 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 		idSet[id] = struct{}{}
 	}
 
+	fmt.Printf("[TIMING] LoadDocsForIDs: manifest=%dms, segments=%d, requestedIDs=%v\n",
+		manifestMs, len(manifest.Segments), ids)
+
 	// Collect all versions of requested docs from all segments.
 	// We must search all segments because a tombstone in a later segment
 	// should override a document in an earlier segment.
 	var allDocs []IndexedDocument
-	for _, seg := range manifest.Segments {
+	for i, seg := range manifest.Segments {
+		t1 := time.Now()
 		// Don't remove from idSet - we need to find ALL versions including tombstones
 		docs, err := r.loadDocsForIDsFromSegment(ctx, seg, copyIDSet(idSet))
+		segMs := time.Since(t1).Milliseconds()
 		if err != nil {
+			fmt.Printf("[TIMING] LoadDocsForIDs: segment[%d] error=%v (%dms)\n", i, err, segMs)
 			continue
 		}
+		fmt.Printf("[TIMING] LoadDocsForIDs: segment[%d] found=%d (%dms) docsKey=%s\n",
+			i, len(docs), segMs, seg.DocsKey)
 		allDocs = append(allDocs, docs...)
 	}
+
+	fmt.Printf("[TIMING] LoadDocsForIDs: totalFound=%d before dedup\n", len(allDocs))
 
 	// Deduplicate: keep the document with the highest WAL seq for each ID
 	// This ensures tombstones (higher WAL seq) properly shadow earlier versions
@@ -1247,6 +1345,15 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 			docsByID[doc.NumericID] = doc
 		}
 	}
+
+	// Count non-deleted docs
+	nonDeleted := 0
+	for _, doc := range docsByID {
+		if !doc.Deleted {
+			nonDeleted++
+		}
+	}
+	fmt.Printf("[TIMING] LoadDocsForIDs: afterDedup=%d, nonDeleted=%d\n", len(docsByID), nonDeleted)
 
 	result := make([]IndexedDocument, 0, len(docsByID))
 	for _, doc := range docsByID {
@@ -1400,6 +1507,306 @@ func (r *Reader) loadDocsForIDsFromSegment(ctx context.Context, seg Segment, idS
 	return result, nil
 }
 
+func docsOffsetsKey(docsKey string) string {
+	if strings.HasSuffix(docsKey, "/docs.col.zst") {
+		return strings.TrimSuffix(docsKey, "/docs.col.zst") + "/docs.offsets.bin"
+	}
+	if strings.HasSuffix(docsKey, "docs.col.zst") {
+		return strings.TrimSuffix(docsKey, "docs.col.zst") + "docs.offsets.bin"
+	}
+	return ""
+}
+
+func parseDocOffsets(data []byte) ([]uint64, error) {
+	if len(data) < 16 {
+		return nil, fmt.Errorf("offsets data too short")
+	}
+	if string(data[:4]) != "DOFF" {
+		return nil, fmt.Errorf("invalid offsets magic")
+	}
+	version := binary.LittleEndian.Uint32(data[4:8])
+	if version != 1 {
+		return nil, fmt.Errorf("unsupported offsets version %d", version)
+	}
+	count := binary.LittleEndian.Uint64(data[8:16])
+	expected := 16 + int((count+1)*8)
+	if len(data) < expected {
+		return nil, fmt.Errorf("offsets data truncated")
+	}
+	offsets := make([]uint64, count+1)
+	for i := 0; i < int(count)+1; i++ {
+		start := 16 + (i * 8)
+		offsets[i] = binary.LittleEndian.Uint64(data[start : start+8])
+	}
+	return offsets, nil
+}
+
+func (r *Reader) loadDocOffsets(ctx context.Context, docsKey string) ([]uint64, error) {
+	if r.store == nil {
+		return nil, nil
+	}
+	offsetsKey := docsOffsetsKey(docsKey)
+	if offsetsKey == "" {
+		return nil, nil
+	}
+
+	r.mu.RLock()
+	cached := r.docOffsetsCache[offsetsKey]
+	r.mu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	data, err := r.loadObject(ctx, offsetsKey)
+	if err != nil {
+		if objectstore.IsNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	offsets, err := parseDocOffsets(data)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	if existing := r.docOffsetsCache[offsetsKey]; existing != nil {
+		r.mu.Unlock()
+		return existing, nil
+	}
+	r.docOffsetsCache[offsetsKey] = offsets
+	r.mu.Unlock()
+
+	return offsets, nil
+}
+
+func isZstdMagic(data []byte) bool {
+	return len(data) >= 4 && data[0] == 0x28 && data[1] == 0xB5 && data[2] == 0x2F && data[3] == 0xFD
+}
+
+func normalizeDocJSON(data []byte) []byte {
+	trimmed := bytes.TrimSpace(data)
+	for len(trimmed) > 0 && trimmed[0] == ',' {
+		trimmed = bytes.TrimSpace(trimmed[1:])
+	}
+	for len(trimmed) > 0 {
+		last := trimmed[len(trimmed)-1]
+		if last != ',' && last != ']' {
+			break
+		}
+		trimmed = bytes.TrimSpace(trimmed[:len(trimmed)-1])
+	}
+	return trimmed
+}
+
+func decodeDocBytes(data []byte) (IndexedDocument, error) {
+	normalized := normalizeDocJSON(data)
+	var doc IndexedDocument
+	if len(normalized) == 0 {
+		return doc, fmt.Errorf("empty doc data")
+	}
+	if err := json.Unmarshal(normalized, &doc); err != nil {
+		return doc, err
+	}
+	return doc, nil
+}
+
+func (r *Reader) loadDocsForRowIDsWithOffsets(ctx context.Context, docsKey string, rowIDs []uint32, offsets []uint64) (map[uint32]IndexedDocument, bool, error) {
+	if len(offsets) < 2 {
+		return nil, false, nil
+	}
+
+	var cachedFile *os.File
+	var readerAt io.ReaderAt
+	if r.diskCache != nil {
+		if path, err := r.diskCache.Get(cache.CacheKey{ObjectKey: docsKey}); err == nil {
+			file, err := os.Open(path)
+			if err == nil {
+				cachedFile = file
+				readerAt = file
+			}
+		}
+	}
+	if cachedFile != nil {
+		defer cachedFile.Close()
+	}
+
+	var magic []byte
+	var err error
+	if readerAt != nil {
+		magic = make([]byte, 4)
+		n, readErr := readerAt.ReadAt(magic, 0)
+		if readErr != nil && readErr != io.EOF {
+			return nil, false, readErr
+		}
+		magic = magic[:n]
+	} else {
+		magic, err = r.loadObjectRange(ctx, docsKey, 0, 4)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	if isZstdMagic(magic) {
+		return nil, false, nil
+	}
+
+	sortedIDs := append([]uint32(nil), rowIDs...)
+	sort.Slice(sortedIDs, func(i, j int) bool { return sortedIDs[i] < sortedIDs[j] })
+	result := make(map[uint32]IndexedDocument, len(sortedIDs))
+
+	for _, id := range sortedIDs {
+		if int(id)+1 >= len(offsets) {
+			continue
+		}
+		start := offsets[id]
+		end := offsets[id+1]
+		if end <= start {
+			continue
+		}
+		length := end - start
+
+		var data []byte
+		if readerAt != nil {
+			section := io.NewSectionReader(readerAt, int64(start), int64(length))
+			data, err = readAllWithContext(ctx, section)
+		} else {
+			data, err = r.loadObjectRange(ctx, docsKey, start, length)
+		}
+		if err != nil {
+			return nil, true, err
+		}
+		doc, err := decodeDocBytes(data)
+		if err != nil {
+			return nil, true, err
+		}
+		result[id] = doc
+	}
+
+	return result, true, nil
+}
+
+// LoadDocsForRowIDs loads documents by their row index within the segment's docs column.
+// This uses streaming decode and skips parsing attributes for non-matching rows.
+func (r *Reader) LoadDocsForRowIDs(ctx context.Context, seg Segment, rowIDs []uint32) (map[uint32]IndexedDocument, error) {
+	if seg.DocsKey == "" || len(rowIDs) == 0 {
+		return nil, nil
+	}
+
+	idSet := make(map[uint32]struct{}, len(rowIDs))
+	var maxID uint32
+	for _, id := range rowIDs {
+		idSet[id] = struct{}{}
+		if id > maxID {
+			maxID = id
+		}
+	}
+
+	if offsets, err := r.loadDocOffsets(ctx, seg.DocsKey); err == nil && len(offsets) > 0 {
+		if int(maxID)+1 < len(offsets) {
+			if docs, used, err := r.loadDocsForRowIDsWithOffsets(ctx, seg.DocsKey, rowIDs, offsets); err != nil {
+				return nil, err
+			} else if used {
+				return docs, nil
+			}
+		}
+	}
+
+	// Try to use disk cache for faster reads
+	var reader io.ReadCloser
+	cacheKey := cache.CacheKey{ObjectKey: seg.DocsKey}
+	if r.diskCache != nil {
+		if cachedReader, err := r.diskCache.GetReader(cacheKey); err == nil {
+			reader = cachedReader
+		}
+	}
+
+	// Fall back to object storage if not cached
+	if reader == nil {
+		storeReader, _, err := r.store.Get(ctx, seg.DocsKey, nil)
+		if err != nil {
+			if objectstore.IsNotFoundError(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("failed to get docs: %w", err)
+		}
+		reader = storeReader
+	}
+	defer reader.Close()
+
+	// Peek first 4 bytes to check for zstd magic (0x28B52FFD)
+	magic := make([]byte, 4)
+	n, err := io.ReadFull(reader, magic)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("failed to read docs magic: %w", err)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+
+	// Create a reader that includes the magic bytes we already read
+	fullReader := io.MultiReader(bytes.NewReader(magic[:n]), reader)
+
+	// Check for zstd magic bytes and wrap with decompressor if needed
+	var jsonReader io.Reader
+	isZstd := n >= 4 && magic[0] == 0x28 && magic[1] == 0xB5 && magic[2] == 0x2F && magic[3] == 0xFD
+	if isZstd {
+		// Use low memory mode and limit window size to reduce memory usage
+		zstdReader, err := zstd.NewReader(fullReader,
+			zstd.WithDecoderLowmem(true),
+			zstd.WithDecoderMaxWindow(32*1024*1024),
+			zstd.WithDecoderConcurrency(1),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+		}
+		defer zstdReader.Close()
+		jsonReader = zstdReader
+	} else {
+		jsonReader = fullReader
+	}
+
+	decoder := json.NewDecoder(jsonReader)
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read JSON start: %w", err)
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '[' {
+		return nil, fmt.Errorf("expected JSON array, got %v", token)
+	}
+
+	result := make(map[uint32]IndexedDocument, len(idSet))
+	var idx uint32
+	for decoder.More() {
+		if idx > maxID && len(idSet) == 0 {
+			break
+		}
+
+		if _, ok := idSet[idx]; ok {
+			var doc IndexedDocument
+			if err := decoder.Decode(&doc); err != nil {
+				return nil, fmt.Errorf("failed to decode doc: %w", err)
+			}
+			result[idx] = doc
+			delete(idSet, idx)
+		} else {
+			var skip json.RawMessage
+			if err := decoder.Decode(&skip); err != nil {
+				return nil, fmt.Errorf("failed to skip doc: %w", err)
+			}
+		}
+		idx++
+		if len(idSet) == 0 && idx > maxID {
+			break
+		}
+	}
+
+	return result, nil
+}
+
 // LoadFTSIndexes loads FTS indexes from all segments in a manifest.
 // Returns a map of attribute name -> list of FTS indexes (one per segment).
 // Multiple indexes for the same attribute need to be merged for BM25 scoring.
@@ -1436,6 +1843,81 @@ func (r *Reader) LoadFTSIndexes(ctx context.Context, manifestKey string) (map[st
 	return result, nil
 }
 
+// FTSSegmentIndex ties a deserialized FTS index to its segment metadata.
+type FTSSegmentIndex struct {
+	Segment Segment
+	Index   *fts.Index
+}
+
+// LoadFTSIndexesForField loads deserialized FTS indexes for a specific field across segments.
+func (r *Reader) LoadFTSIndexesForField(ctx context.Context, manifestKey, field string) ([]FTSSegmentIndex, error) {
+	if manifestKey == "" || r.store == nil || field == "" {
+		return nil, nil
+	}
+
+	manifest, err := r.LoadManifest(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+
+	var results []FTSSegmentIndex
+	for _, seg := range manifest.Segments {
+		for _, ftsKey := range seg.FTSKeys {
+			attrName := extractAttrNameFromFTSKey(ftsKey)
+			if attrName != field {
+				continue
+			}
+
+			idx, err := r.loadFTSIndex(ctx, ftsKey)
+			if err != nil || idx == nil {
+				continue
+			}
+
+			results = append(results, FTSSegmentIndex{
+				Segment: seg,
+				Index:   idx,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+func (r *Reader) loadFTSIndex(ctx context.Context, key string) (*fts.Index, error) {
+	r.mu.RLock()
+	cached := r.ftsCache[key]
+	r.mu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	data, err := r.loadObject(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	idx, err := fts.Deserialize(data)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	if existing := r.ftsCache[key]; existing != nil {
+		r.mu.Unlock()
+		return existing, nil
+	}
+	r.ftsCache[key] = idx
+	r.mu.Unlock()
+
+	return idx, nil
+}
+
 // extractAttrNameFromFTSKey extracts the attribute name from an FTS key.
 // Key format: .../fts.<attribute>.bm25
 func extractAttrNameFromFTSKey(key string) string {
@@ -1465,6 +1947,20 @@ func (r *Reader) Clear(namespace string) {
 			delete(r.readers, key)
 		}
 	}
+
+	// Remove cached FTS indexes for this namespace.
+	prefix := "vex/namespaces/" + namespace + "/"
+	for key := range r.ftsCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.ftsCache, key)
+		}
+	}
+
+	for key := range r.docOffsetsCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.docOffsetsCache, key)
+		}
+	}
 }
 
 // Close releases all resources.
@@ -1472,5 +1968,7 @@ func (r *Reader) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.readers = make(map[string]*cachedIVFReader)
+	r.ftsCache = make(map[string]*fts.Index)
+	r.docOffsetsCache = make(map[string][]uint64)
 	return nil
 }
