@@ -79,6 +79,10 @@ func (s *S3Store) Get(ctx context.Context, key string, opts *GetOptions) (io.Rea
 		return nil, nil, s.mapError(err)
 	}
 
+	if opts != nil && opts.Range != nil {
+		return obj, &ObjectInfo{Key: key}, nil
+	}
+
 	stat, err := obj.Stat()
 	if err != nil {
 		obj.Close()
