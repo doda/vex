@@ -1758,3 +1758,12 @@ KEY DEPENDENCIES:
 - Challenges: none.
 - Follow-ups: none.
 [2026-01-06T22:31:03.519Z] Instruction: "Write comprehensive documentation including README..." -> 8 task(s)
+[2026-01-06T22:47:00Z] Completed configuration-reference: PASS
+- Documented config JSON schema, defaults, precedence, and env overrides plus object store types.
+- Added minimal and full configuration examples with auth/admin and timeout notes.
+- Files changed: docs/configuration.md; task_list.json.
+- Tests: /usr/local/go/bin/go test ./internal/config -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: go not on PATH for tests.
+- Resolution: used /usr/local/go/bin/go.
+- Follow-ups: none.
