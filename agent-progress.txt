@@ -1795,3 +1795,13 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-07T01:30:00Z] Completed api-namespace-ops: PASS
+- Documented namespace list, metadata, warm-cache, and delete endpoints with pagination and examples.
+- Captured metadata fields (schema, index status, unindexed bytes, timestamps, approx stats) from state/router behavior.
+- Files changed: docs/api/namespaces.md.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./... -count=1 (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
