@@ -325,7 +325,10 @@ func (h *Handler) refreshTailIfNeeded(ctx context.Context, ns string, loaded *na
 		}
 		refreshStart := time.Now()
 		if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
-			return fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
+			// For eventual consistency, gracefully continue with stale data
+			// rather than failing the query when refresh fails
+			debugLogf("[query] refresh failed for eventual query ns=%s (continuing with stale data): %v", ns, err)
+			return nil
 		}
 		debugLogf("[query] refresh ns=%s strong=false head_seq=%d indexed_seq=%d dur=%s", ns, headSeq, indexedSeq, time.Since(refreshStart))
 		h.MarkSnapshotRefreshed(ns, now)
@@ -866,7 +869,6 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 	// Check if there's an IVF index available
 	var indexResults []vector.IVFSearchResult
 	indexedWALSeq := loaded.State.Index.IndexedWALSeq
-	var ivfSegment *index.Segment
 
 	// Determine if we can use the index
 	// We can use the index:
@@ -882,9 +884,6 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 			// Log error but fall back to exhaustive search
 			fmt.Printf("[TIMING] GetIVFReader error after %dms: %v\n", getIVFReaderMs, err)
 		} else if ivfReader != nil {
-			if seg, err := h.indexReader.GetIVFSegment(ctx, ns, loaded.State.Index.ManifestKey, loaded.State.Index.ManifestSeq); err == nil {
-				ivfSegment = seg
-			}
 			fmt.Printf("[TIMING] GetIVFReader: %dms (clusters=%d, vectors=%d)\n", getIVFReaderMs, ivfReader.NClusters, len(ivfReader.ClusterOffsets))
 			nProbe := DefaultNProbe
 			candidates := req.Limit
@@ -982,16 +981,14 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 		}
 
 		// Load only the documents we need (not all docs in the segment)
+		// Always use LoadDocsForIDs which searches ALL segments to find tombstones
+		// that may exist in later segments. This is critical for correctness when
+		// documents are deleted in a segment after being indexed in an earlier segment.
 		t3 := time.Now()
 		var err error
 		var indexedDocs []index.IndexedDocument
-		if ivfSegment != nil {
-			indexedDocs, err = h.indexReader.LoadDocsForIDsInSegment(ctx, *ivfSegment, resultIDs)
-			fmt.Printf("[TIMING] LoadDocsForIDsInSegment: %dms (requested=%d, loaded=%d, segment=%s)\n", time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs), ivfSegment.ID)
-		} else {
-			indexedDocs, err = h.indexReader.LoadDocsForIDs(ctx, loaded.State.Index.ManifestKey, resultIDs)
-			fmt.Printf("[TIMING] LoadDocsForIDs: %dms (requested=%d, loaded=%d)\n", time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs))
-		}
+		indexedDocs, err = h.indexReader.LoadDocsForIDs(ctx, loaded.State.Index.ManifestKey, resultIDs)
+		fmt.Printf("[TIMING] LoadDocsForIDs: %dms (requested=%d, loaded=%d)\n", time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs))
 		if err == nil && len(indexedDocs) > 0 {
 			indexDocIDs = make(map[uint64]document.ID, len(indexedDocs))
 			indexDocAttrs = make(map[uint64]map[string]any, len(indexedDocs))

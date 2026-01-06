@@ -226,8 +226,8 @@ func TestOrderByMergesIndexAndTail(t *testing.T) {
 	docsKey := "vex/namespaces/test-ns/index/segments/seg_1/docs.col.zst"
 
 	indexedDocs := []index.IndexedDocument{
-		{ID: "1", NumericID: 1, WALSeq: 5, Attributes: map[string]any{"score": float64(100), "source": "index"}},
-		{ID: "2", NumericID: 2, WALSeq: 6, Attributes: map[string]any{"score": float64(300), "source": "index"}},
+		{ID: "u64:1", NumericID: 1, WALSeq: 5, Attributes: map[string]any{"score": float64(100), "source": "index"}},
+		{ID: "u64:2", NumericID: 2, WALSeq: 6, Attributes: map[string]any{"score": float64(300), "source": "index"}},
 	}
 
 	if err := writeIndexDocs(store, manifestKey, docsKey, indexedDocs); err != nil {

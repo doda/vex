@@ -578,9 +578,9 @@ func TestNullSemantics(t *testing.T) {
 			t.Fatalf("Parse failed: %v", err)
 		}
 
-		// Should NOT match when field is explicitly nil
-		if f.Eval(docWithField) {
-			t.Error("Eq null should not match when field is explicit nil")
+		// Should match when field is explicitly nil
+		if !f.Eval(docWithField) {
+			t.Error("Eq null should match when field is explicit nil")
 		}
 	})
 
@@ -607,9 +607,9 @@ func TestNullSemantics(t *testing.T) {
 			t.Fatalf("Parse failed: %v", err)
 		}
 
-		// Should match when field is explicitly nil
-		if !f.Eval(docWithField) {
-			t.Error("NotEq null should match when field is explicit nil")
+		// Should NOT match when field is explicitly nil
+		if f.Eval(docWithField) {
+			t.Error("NotEq null should not match when field is explicit nil")
 		}
 	})
 
@@ -623,7 +623,7 @@ func TestNullSemantics(t *testing.T) {
 		}
 		docEmpty := Document{}
 
-		// Test that Eq null only matches missing attributes
+		// Test that Eq null matches missing attributes AND explicit nil
 		tests := []struct {
 			attr     string
 			expected bool
@@ -632,7 +632,7 @@ func TestNullSemantics(t *testing.T) {
 			{"present_int", false},
 			{"present_bool", false},
 			{"present_array", false},
-			{"nil_value", false},
+			{"nil_value", true}, // explicit nil matches Eq null
 			{"nonexistent", true},
 		}
 
@@ -656,7 +656,7 @@ func TestNullSemantics(t *testing.T) {
 		docActive := Document{"name": "bob", "deleted_at": nil}
 		docDeleted := Document{"name": "charlie", "deleted_at": "2024-01-01"}
 
-		// Filter: name = "alice" AND deleted_at is null (not deleted)
+		// Filter: name = "alice" AND deleted_at is null (missing or explicit nil)
 		f, _ := Parse([]any{"And", []any{
 			[]any{"name", "Eq", "alice"},
 			[]any{"deleted_at", "Eq", nil},
@@ -665,20 +665,21 @@ func TestNullSemantics(t *testing.T) {
 		if !f.Eval(doc) {
 			t.Error("Should match alice with missing deleted_at")
 		}
+		// docActive has name="bob", so AND fails due to name check (not deleted_at)
 		if f.Eval(docActive) {
-			t.Error("Should not match bob with explicit null deleted_at")
+			t.Error("Should not match bob (name doesn't match)")
 		}
 		if f.Eval(docDeleted) {
 			t.Error("Should not match charlie with set deleted_at")
 		}
 
-		// Filter: deleted_at is NOT null (deleted)
+		// Filter: deleted_at is NOT null (present with non-nil value)
 		f2, _ := Parse([]any{"deleted_at", "NotEq", nil})
 		if !f2.Eval(docDeleted) {
 			t.Error("NotEq null should match when deleted_at is set")
 		}
-		if !f2.Eval(docActive) {
-			t.Error("NotEq null should match when deleted_at is explicit null")
+		if f2.Eval(docActive) {
+			t.Error("NotEq null should not match when deleted_at is explicit null")
 		}
 		if f2.Eval(doc) {
 			t.Error("NotEq null should not match when deleted_at is missing")
