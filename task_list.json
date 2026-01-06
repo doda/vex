@@ -3516,7 +3516,7 @@
       "internal/filter/filter.go",
       "pkg/api/router.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "api-namespace-ops",

@@ -1786,3 +1786,12 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-06T23:07:51Z] Completed api-query: PASS
+- Documented query endpoint parameters, rank_by variants, filters, aggregations, and multi-query behavior.
+- Added request/response examples and validation notes tied to handler parsing.
+- Files changed: docs/api/query.md.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./... -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
