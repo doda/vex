@@ -3494,7 +3494,7 @@
       "pkg/api/router.go",
       "SPEC.md"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "api-query",

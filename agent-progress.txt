@@ -1777,3 +1777,12 @@ KEY DEPENDENCIES:
 - Challenges: none.
 - Resolutions: none.
 - Follow-ups: none.
+[2026-01-06T22:57:45Z] Completed api-write: PASS
+- Documented write endpoint schema, ordering, constraints, and response format.
+- Added filter syntax, ID formats, and backpressure/partial cap notes.
+- Added JSON examples for row/column writes, delete_by_filter, patch_by_filter, copy_from_namespace, schema updates, and disable_backpressure.
+- Files changed: docs/api/write.md, task_list.json.
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
