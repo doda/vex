@@ -13,6 +13,7 @@ import (
 
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/index"
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/wal"
@@ -527,6 +528,16 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 			}
 			currentETag = updated.ETag
 		}
+	}
+
+	var totalUpserts int64
+	for _, subBatch := range walEntry.SubBatches {
+		if subBatch != nil && subBatch.Stats != nil {
+			totalUpserts += subBatch.Stats.RowsUpserted
+		}
+	}
+	if totalUpserts > 0 {
+		metrics.AddDocumentsIndexed(batch.namespace, totalUpserts)
 	}
 
 	commitState.lastCommit = time.Now()

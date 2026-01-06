@@ -13,6 +13,7 @@ import (
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/index"
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/schema"
 	"github.com/vexsearch/vex/internal/tail"
@@ -486,6 +487,9 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		RowsDeleted:   subBatch.Stats.RowsDeleted,
 		RowsRemaining: rowsRemaining,
 	}
+
+	// Record documents indexed metric
+	metrics.AddDocumentsIndexed(ns, subBatch.Stats.RowsUpserted)
 
 	// Complete the idempotency reservation with the successful response
 	if reserved && h.idempotency != nil {
