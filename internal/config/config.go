@@ -135,11 +135,14 @@ type ObjectStoreConfig struct {
 }
 
 type CacheConfig struct {
-	NVMePath           string `json:"nvme_path"`
-	NVMESizeGB         int    `json:"nvme_size_gb"`
-	RAMSizeMB          int    `json:"ram_size_mb"`
-	RAMNamespaceCapPct int    `json:"ram_namespace_cap_pct"`
-	BudgetPct          int    `json:"budget_pct"`
+	NVMePath            string   `json:"nvme_path"`
+	NVMESizeGB          int      `json:"nvme_size_gb"`
+	RAMSizeMB           int      `json:"ram_size_mb"`
+	RAMNamespaceCapPct  int      `json:"ram_namespace_cap_pct"`
+	BudgetPct           int      `json:"budget_pct"`
+	WarmNamespaces      []string `json:"warm_namespaces"`
+	WarmOnStart         bool     `json:"warm_on_start"`
+	WarmIntervalSeconds int      `json:"warm_interval_seconds"`
 }
 
 type MembershipConfig struct {

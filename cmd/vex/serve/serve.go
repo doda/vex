@@ -71,6 +71,7 @@ func Run(args []string) {
 
 	var diskCache *cache.DiskCache
 	var ramCache *cache.MemoryCache
+	var stopWarm func()
 	if store != nil {
 		diskCfg := cache.DiskCacheConfig{
 			RootPath:  cfg.Cache.NVMePath,
@@ -101,6 +102,7 @@ func Run(args []string) {
 		if diskCache != nil || ramCache != nil {
 			cacheWarmer := warmer.New(store, router.StateManager(), diskCache, ramCache, warmer.DefaultConfig())
 			router.SetCacheWarmer(cacheWarmer)
+			stopWarm = startWarmLoop(cacheWarmer, cfg.Cache)
 		}
 
 		// Start the indexer for all-in-one mode
@@ -142,6 +144,10 @@ func Run(args []string) {
 		log.Fatalf("Shutdown error: %v", err)
 	}
 
+	if stopWarm != nil {
+		stopWarm()
+	}
+
 	// Close router resources (batcher, write handler, tail store)
 	if err := router.Close(); err != nil {
 		log.Printf("Router close error: %v", err)
@@ -150,4 +156,45 @@ func Run(args []string) {
 	membershipMgr.Stop()
 
 	fmt.Println("Server stopped")
+}
+
+func startWarmLoop(cacheWarmer *warmer.Warmer, cfg config.CacheConfig) func() {
+	if cacheWarmer == nil {
+		return nil
+	}
+
+	namespaces := cfg.WarmNamespaces
+	if len(namespaces) == 0 {
+		return nil
+	}
+
+	if cfg.WarmOnStart {
+		for _, ns := range namespaces {
+			cacheWarmer.Enqueue(ns)
+		}
+	}
+
+	if cfg.WarmIntervalSeconds <= 0 {
+		return nil
+	}
+
+	stop := make(chan struct{})
+	interval := time.Duration(cfg.WarmIntervalSeconds) * time.Second
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				for _, ns := range namespaces {
+					cacheWarmer.Enqueue(ns)
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+	}
 }
