@@ -1822,3 +1822,14 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-07T03:10:00Z] Completed readme-overview: PASS
+- Added top-level README with project summary, quickstart, CLI commands, and doc links.
+- Covered run modes (serve/query/indexer) and flags based on cmd/vex/main.go and cmd/vex/serve/serve.go.
+- Summarized turbopuffer compatibility and core architecture features from SPEC.md.
+- Files changed: README.md.
+- Files changed: task_list.json.
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Tests: /usr/local/go/bin/go test ./... -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
