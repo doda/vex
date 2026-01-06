@@ -1767,3 +1767,13 @@ KEY DEPENDENCIES:
 - Challenges: go not on PATH for tests.
 - Resolution: used /usr/local/go/bin/go.
 - Follow-ups: none.
+[2026-01-07T00:00:00Z] Completed api-overview: PASS
+- Documented API auth, compression, error envelope, status codes, and limits.
+- Added new overview doc with request/response conventions and sample error JSON.
+- Files changed: docs/api/overview.md.
+- Files changed: task_list.json.
+- Verification: ./init.sh > .looper-init.log 2>&1 (pass).
+- Verification: /usr/local/go/bin/go test ./... -count=1 (pass).
+- Challenges: none.
+- Resolutions: none.
+- Follow-ups: none.
