@@ -3535,7 +3535,7 @@
       "pkg/api/router.go",
       "internal/namespace/state.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "api-debug-recall",
