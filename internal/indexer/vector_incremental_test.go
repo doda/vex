@@ -14,7 +14,6 @@ import (
 	"github.com/vexsearch/vex/internal/tail"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/internal/wal"
-	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
 // encodeVectorForTest encodes a float32 vector to bytes.
@@ -74,18 +73,6 @@ type vectorTestDoc struct {
 	id     uint64
 	attrs  map[string]any
 	vector []float32
-}
-
-// tailObjectStore wraps mockStore to implement the simple interface tail expects.
-type tailObjectStore struct {
-	*mockStore
-}
-
-func (t *tailObjectStore) Get(ctx context.Context, key string, opts *objectstore.GetOptions) (interface {
-	Read([]byte) (int, error)
-	Close() error
-}, *objectstore.ObjectInfo, error) {
-	return t.mockStore.Get(ctx, key, opts)
 }
 
 // TestVectorIncrementalUpdates_Step1_TailExhaustiveScan verifies:

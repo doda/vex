@@ -1057,17 +1057,6 @@ func readVectorElements(r io.Reader, out []float32, dtype vector.DType) error {
 	return nil
 }
 
-// sortResultsByDistance sorts results by distance (ascending).
-func sortResultsByDistance(results []vector.IVFSearchResult) {
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Distance < results[i].Distance {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
-}
-
 // LoadFilterIndexes loads filter bitmap indexes for a segment.
 // Returns a map of attribute name -> FilterIndex.
 func (r *Reader) LoadFilterIndexes(ctx context.Context, filterKeys []string) (map[string]*filter.FilterIndex, error) {

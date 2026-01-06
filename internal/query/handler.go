@@ -2510,14 +2510,6 @@ func docIDToAny(id document.ID) any {
 	}
 }
 
-// getAttrValue gets an attribute value, returning nil if not found.
-func getAttrValue(attrs map[string]any, key string) any {
-	if attrs == nil {
-		return nil
-	}
-	return attrs[key]
-}
-
 // getDocAttrValue gets an attribute value from a document, handling "id" specially.
 func getDocAttrValue(doc *tail.Document, key string) any {
 	if key == "id" {

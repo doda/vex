@@ -10,8 +10,6 @@ package simulation
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -596,12 +594,6 @@ func (s *MemoryStoreWithLog) Delete(ctx context.Context, key string) error {
 	s.mu.Unlock()
 
 	return nil
-}
-
-// computeETag computes a deterministic ETag for data.
-func computeETag(data []byte) string {
-	hash := sha256.Sum256(data)
-	return base64.StdEncoding.EncodeToString(hash[:16])
 }
 
 // CrashableStore wraps a store to simulate crashes at specific points.

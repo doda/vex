@@ -20,11 +20,10 @@ type Scheduler struct {
 	taskCond *sync.Cond
 
 	// Execution control
-	mode           SchedulerMode
-	stepTasks      []uint64    // Tasks to step in order (for step mode)
-	allowedCounts  map[uint64]int // How many steps allowed per task
-	blockedTasks   map[uint64]bool
-	pausedAt       map[uint64]string // Task ID -> pause point name
+	mode          SchedulerMode
+	allowedCounts map[uint64]int      // How many steps allowed per task
+	blockedTasks  map[uint64]bool
+	pausedAt      map[uint64]string // Task ID -> pause point name
 
 	// For sequential mode
 	runQueue []uint64
