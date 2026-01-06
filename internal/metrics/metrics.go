@@ -139,6 +139,16 @@ var (
 		[]string{"namespace", "query_type", "status"}, // query_type: vector/attribute/bm25/aggregate
 	)
 
+	// DocumentsIndexed tracks total documents indexed (upserted).
+	DocumentsIndexed = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "documents_indexed_total",
+			Help:      "Total documents indexed",
+		},
+		[]string{"namespace"},
+	)
+
 	// QueryLatency tracks query execution latency.
 	QueryLatency = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -254,6 +264,13 @@ func ObserveQuery(ns, queryType string, latencySeconds float64, err error) {
 	}
 	QueriesTotal.WithLabelValues(ns, queryType, status).Inc()
 	QueryLatency.WithLabelValues(ns, queryType).Observe(latencySeconds)
+}
+
+// AddDocumentsIndexed increments the documents indexed counter by the given count.
+func AddDocumentsIndexed(ns string, count int64) {
+	if count > 0 {
+		DocumentsIndexed.WithLabelValues(ns).Add(float64(count))
+	}
 }
 
 // TemperatureToValue converts a temperature string to a numeric value for Prometheus.
