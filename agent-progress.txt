@@ -1813,3 +1813,12 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-07T02:45:00Z] Completed architecture-overview: PASS
+- Added architecture overview doc covering roles, modes, storage layout, write/query paths, caching, routing, durability/consistency, plus ASCII diagram.
+- Files changed: docs/architecture.md.
+- Files changed: task_list.json.
+- Tests: /usr/local/go/bin/go test ./... (pass).
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
