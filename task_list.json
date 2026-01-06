@@ -3044,7 +3044,7 @@
   {
     "id": "integration-bm25-fts",
     "category": "test",
-    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer \u2192 manifest \u2192 query.",
+    "description": "Add integration tests for BM25/FTS query flows and readiness gating across indexer → manifest → query.",
     "steps": [
       "Add end-to-end tests that enable FTS, index data, and run BM25 queries while validating 202 gating until ready",
       "Run `go test ./tests/integration -run BM25`",
@@ -3417,10 +3417,10 @@
       "Add a test that unauthenticated requests to /_test/state return 401/403",
       "Run the relevant API tests and confirm the endpoint is no longer publicly accessible"
     ],
+    "completed": true,
     "scope": [
       "pkg/api/router.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "enforce-post-gzip-size-limit",
@@ -3431,10 +3431,189 @@
       "Add a test that sends a small gzip body that inflates beyond 256MB and expects 413",
       "Run the write API tests and verify both compressed and uncompressed limits are enforced"
     ],
+    "completed": true,
     "scope": [
       "pkg/api/router.go"
+    ]
+  },
+  {
+    "id": "configuration-reference",
+    "category": "docs",
+    "description": "Create a configuration reference covering JSON schema, env overrides, defaults, and object store options.",
+    "steps": [
+      "Review `internal/config/config.go` and `cmd/vex/*.go` to list config fields, defaults, and overrides.",
+      "Document each config section (mode, listen_addr, auth/admin tokens, compat_mode, object_store, cache, membership, indexer, guardrails, timeout) with meanings and defaults.",
+      "Add a table of `VEX_*` environment variables mapped to config fields plus minimal and full example configs.",
+      "Note supported object store types and required fields using `pkg/objectstore/store.go`."
     ],
-    "completed": true
+    "scope": [
+      "docs/configuration.md",
+      "internal/config/config.go",
+      "cmd/vex/serve/serve.go",
+      "cmd/vex/query/query.go",
+      "cmd/vex/indexer/indexer.go",
+      "pkg/objectstore/store.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "api-overview",
+    "category": "docs",
+    "description": "Document API conventions including auth, compression, error envelope, status codes, and global limits.",
+    "steps": [
+      "Extract auth, gzip handling, and body size enforcement from `pkg/api/router.go`.",
+      "Use `pkg/api/errors.go` and `SPEC.md` to list error envelope and status codes.",
+      "Write `docs/api/overview.md` with headers, request/response conventions, and limits plus a sample error JSON."
+    ],
+    "scope": [
+      "docs/api/overview.md",
+      "pkg/api/router.go",
+      "pkg/api/errors.go",
+      "SPEC.md"
+    ],
+    "completed": false
+  },
+  {
+    "id": "api-write",
+    "category": "docs",
+    "description": "Document the write endpoint schema, mutation ordering, constraints, and response format.",
+    "steps": [
+      "Read `internal/write/handler.go` for WriteRequest/WriteResponse fields, limits, and mutation ordering.",
+      "Document accepted ID formats and constraints using `internal/document/id.go` and filter syntax from `internal/filter/filter.go`.",
+      "Include JSON examples for row and column writes, delete_by_filter, patch_by_filter, copy_from_namespace, schema updates, and backpressure flags.",
+      "Confirm the endpoint path and auth requirements from `pkg/api/router.go`."
+    ],
+    "depends_on": [
+      "api-overview"
+    ],
+    "scope": [
+      "docs/api/write.md",
+      "internal/write/handler.go",
+      "internal/document/id.go",
+      "internal/filter/filter.go",
+      "pkg/api/router.go",
+      "SPEC.md"
+    ],
+    "completed": false
+  },
+  {
+    "id": "api-query",
+    "category": "docs",
+    "description": "Document query endpoint parameters, rank_by variants, filters, aggregations, and responses.",
+    "steps": [
+      "Use `internal/query/handler.go` and `internal/query/request.go` to list fields, defaults, and validation rules.",
+      "Describe rank_by formats (vector, BM25, attr order, composite), limit/top_k, per, include/exclude attributes, vector_encoding, consistency, and multi-query.",
+      "Explain filter syntax using `internal/filter/filter.go` and provide example requests and responses.",
+      "Verify endpoint path and auth requirements via `pkg/api/router.go`."
+    ],
+    "depends_on": [
+      "api-overview"
+    ],
+    "scope": [
+      "docs/api/query.md",
+      "internal/query/handler.go",
+      "internal/query/request.go",
+      "internal/filter/filter.go",
+      "pkg/api/router.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "api-namespace-ops",
+    "category": "docs",
+    "description": "Document namespace metadata, list, warm-cache, and delete endpoints with request/response fields.",
+    "steps": [
+      "Inspect `pkg/api/router.go` handlers for metadata, list, delete, and warm-cache endpoints and parameters.",
+      "Use `internal/namespace/state.go` to describe metadata fields (schema, index status, unindexed bytes, timestamps).",
+      "Add pagination details for list (cursor, prefix, page_size) with response examples."
+    ],
+    "depends_on": [
+      "api-overview"
+    ],
+    "scope": [
+      "docs/api/namespaces.md",
+      "pkg/api/router.go",
+      "internal/namespace/state.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "api-debug-recall",
+    "category": "docs",
+    "description": "Document debug endpoints including recall and admin-only test/state APIs.",
+    "steps": [
+      "Use `internal/query/recall.go` and `pkg/api/router.go` to describe request/response schema and defaults for recall.",
+      "Document admin token requirements and debug endpoints (`/v1/namespaces/:namespace/_debug/recall`, `/_debug/state/{namespace}`, `/_test/state`).",
+      "Add example requests/responses and expected error cases."
+    ],
+    "depends_on": [
+      "api-overview"
+    ],
+    "scope": [
+      "docs/api/debug.md",
+      "internal/query/recall.go",
+      "pkg/api/router.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "architecture-overview",
+    "category": "docs",
+    "description": "Write an architecture overview covering roles, data flow, storage layout, caching, and routing.",
+    "steps": [
+      "Summarize system roles and runtime modes from `SPEC.md` and `cmd/vex/main.go`.",
+      "Describe the write path (WAL, tail, indexing) using `internal/write/handler.go`, `internal/wal/*`, `internal/indexer/*`, and `internal/tail/store.go`.",
+      "Describe query path, cache layers, and routing/membership using `internal/query/handler.go`, `internal/cache/*`, `internal/routing/*`, and `internal/membership/*`.",
+      "Add an ASCII diagram and note durability and consistency behaviors."
+    ],
+    "scope": [
+      "docs/architecture.md",
+      "SPEC.md",
+      "cmd/vex/main.go",
+      "internal/write/handler.go",
+      "internal/wal/committer.go",
+      "internal/indexer/indexer.go",
+      "internal/tail/store.go",
+      "internal/query/handler.go",
+      "internal/cache/disk.go",
+      "internal/cache/memory.go",
+      "internal/routing/rendezvous.go",
+      "internal/membership/membership.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "readme-overview",
+    "category": "docs",
+    "description": "Create the top-level README with project summary, quickstart, and links to detailed docs.",
+    "steps": [
+      "Use `cmd/vex/main.go` and `cmd/vex/serve/serve.go` to document CLI commands and run modes.",
+      "Add quickstart steps (build, run, health check) and link to configuration and API docs in `docs/`.",
+      "Summarize features and compatibility goals from `SPEC.md` and link to `docs/architecture.md`."
+    ],
+    "depends_on": [
+      "configuration-reference",
+      "api-overview",
+      "api-write",
+      "api-query",
+      "api-namespace-ops",
+      "api-debug-recall",
+      "architecture-overview"
+    ],
+    "scope": [
+      "README.md",
+      "cmd/vex/main.go",
+      "cmd/vex/serve/serve.go",
+      "SPEC.md",
+      "docs/configuration.md",
+      "docs/api/overview.md",
+      "docs/api/write.md",
+      "docs/api/query.md",
+      "docs/api/namespaces.md",
+      "docs/api/debug.md",
+      "docs/architecture.md"
+    ],
+    "completed": false
   },
   {
     "id": "server-timeouts-from-config",
@@ -3445,12 +3624,12 @@
       "Add a config-focused test or integration check that asserts timeouts match config defaults",
       "Run the server startup tests and verify no regressions"
     ],
+    "completed": false,
     "scope": [
       "cmd/vex/serve/serve.go",
       "cmd/vex/query/query.go",
       "internal/config/config.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "wal-idempotency-persisted",
@@ -3461,11 +3640,11 @@
       "Add a test that writes with a request_id, restarts the server, replays the request, and verifies the original response is returned",
       "Run the write/idempotency tests and confirm duplicate requests do not re-apply mutations"
     ],
+    "completed": false,
     "scope": [
       "internal/write/idempotency.go",
       "internal/wal"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "wal-repair-task-wireup",
@@ -3476,12 +3655,12 @@
       "Add a test that simulates a WAL upload without state update and verifies repair advances state",
       "Run WAL repair tests and confirm state catches up automatically"
     ],
+    "completed": false,
     "scope": [
       "internal/wal/repair.go",
       "cmd/vex/serve/serve.go",
       "cmd/vex/query/query.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "lsm-query-segment-iterator-implement",
@@ -3492,10 +3671,10 @@
       "Add a unit test that asserts segments are visited in expected order and not skipped",
       "Run index/query tests and confirm indexed segments are included in results"
     ],
+    "completed": false,
     "scope": [
       "internal/index/lsm.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "ann-debug-logging-remove",
@@ -3506,10 +3685,10 @@
       "Add a test (or log assertion) to ensure no raw stdout prints occur during queries",
       "Run query tests and confirm logs remain structured"
     ],
+    "completed": false,
     "scope": [
       "internal/query/handler.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "ram-eviction-priority-enforce",
@@ -3520,10 +3699,10 @@
       "Add a test that loads mixed-priority items and verifies tail data is retained longest",
       "Run cache tests and confirm eviction order honors priority tiers"
     ],
+    "completed": false,
     "scope": [
       "internal/cache/memory.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "gossip-self-api-addr-config",
@@ -3534,11 +3713,11 @@
       "Add a test with non-8080 listen ports to ensure self address matches actual server",
       "Run membership/routing tests and confirm proxying selects the correct home node"
     ],
+    "completed": false,
     "scope": [
       "internal/membership/gossip.go",
       "internal/config/config.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "disk-cache-missing-file-heal",
@@ -3549,10 +3728,10 @@
       "Add a test that deletes cached files and verifies Get reports a miss and cleans metadata",
       "Run cache tests and confirm no repeated hit accounting on missing files"
     ],
+    "completed": false,
     "scope": [
       "internal/cache/disk.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "delete-namespace-gc-trigger",
@@ -3563,11 +3742,11 @@
       "Add a test that deletes a namespace and verifies GC is invoked and keys are removed",
       "Run delete/GC tests and confirm tombstoned namespaces are cleaned up"
     ],
+    "completed": false,
     "scope": [
       "pkg/api/router.go",
       "internal/gc"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "validate-state-format-version",
@@ -3578,10 +3757,10 @@
       "Add a test that loads an unsupported version and expects a deterministic error",
       "Run namespace/state tests and verify valid versions still load"
     ],
+    "completed": false,
     "scope": [
       "internal/namespace/manager.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "validate-index-manifest-version",
@@ -3592,10 +3771,10 @@
       "Add a test that loads an unsupported manifest version and expects an error",
       "Run index reader tests and confirm supported manifests still load"
     ],
+    "completed": false,
     "scope": [
       "internal/index/reader.go"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "integration-gzip-size-limit",
@@ -3606,10 +3785,10 @@
       "Run `go test ./tests/integration -run GzipSizeLimit` and confirm it fails before fixes",
       "Fix size enforcement and re-run the test to confirm 413 is returned"
     ],
+    "completed": false,
     "scope": [
       "tests/integration"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "integration-idempotency-restart",
@@ -3620,11 +3799,11 @@
       "Run `go test ./tests/integration -run IdempotencyRestart` and confirm it fails before fixes",
       "Implement persisted idempotency and re-run the test to confirm original response reuse"
     ],
+    "completed": false,
     "scope": [
       "tests/integration",
       "internal/write",
       "internal/wal"
-    ],
-    "completed": false
+    ]
   }
 ]
