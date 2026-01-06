@@ -4,7 +4,6 @@ package warmer
 import (
 	"context"
 	"io"
-	"strings"
 	"sync"
 	"time"
 
@@ -216,8 +215,11 @@ func (w *Warmer) prefetchSegment(ctx context.Context, seg index.Segment) {
 	// Prefetch docs key (column headers)
 	if seg.DocsKey != "" {
 		w.prefetchDocsHeader(ctx, seg.DocsKey)
-		if offsetsKey := docsOffsetsKey(seg.DocsKey); offsetsKey != "" {
+		if offsetsKey := index.DocsOffsetsKey(seg.DocsKey); offsetsKey != "" {
 			w.prefetchToCache(ctx, offsetsKey, false, cache.TypeDocColumn)
+		}
+		if idMapKey := index.DocsIDMapKey(seg.DocsKey); idMapKey != "" {
+			w.prefetchToCache(ctx, idMapKey, false, cache.TypeDocColumn)
 		}
 	}
 }
@@ -339,16 +341,6 @@ func extractNamespace(key string) string {
 		}
 	}
 	return rest
-}
-
-func docsOffsetsKey(docsKey string) string {
-	if strings.HasSuffix(docsKey, "/docs.col.zst") {
-		return strings.TrimSuffix(docsKey, "/docs.col.zst") + "/docs.offsets.bin"
-	}
-	if strings.HasSuffix(docsKey, "docs.col.zst") {
-		return strings.TrimSuffix(docsKey, "docs.col.zst") + "docs.offsets.bin"
-	}
-	return ""
 }
 
 // QueueLen returns the current length of the task queue.

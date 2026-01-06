@@ -422,6 +422,28 @@ func (w *SegmentWriter) WriteDocsData(ctx context.Context, data []byte) (string,
 	return key, nil
 }
 
+// WriteDocIDMapData writes doc ID map data and returns the object key.
+func (w *SegmentWriter) WriteDocIDMapData(ctx context.Context, data []byte) (string, error) {
+	w.mu.Lock()
+	if w.sealed {
+		w.mu.Unlock()
+		return "", ErrSegmentSealed
+	}
+	w.mu.Unlock()
+
+	key := fmt.Sprintf("%s/docs.idmap.bin", SegmentKey(w.namespace, w.segmentID))
+	etag, err := w.writeObject(ctx, key, data)
+	if err != nil {
+		return "", err
+	}
+
+	w.mu.Lock()
+	w.written[key] = etag
+	w.mu.Unlock()
+
+	return key, nil
+}
+
 // WriteVectorsData writes vector index data and returns the object key.
 // Deprecated: Use WriteIVFCentroids, WriteIVFClusterOffsets, and WriteIVFClusterData instead.
 func (w *SegmentWriter) WriteVectorsData(ctx context.Context, data []byte) (string, error) {

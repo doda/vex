@@ -323,16 +323,20 @@ func (h *Handler) refreshTailIfNeeded(ctx context.Context, ns string, loaded *na
 		if !h.shouldRefreshEventual(ns, now) {
 			return nil
 		}
+		refreshStart := time.Now()
 		if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
 			return fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
 		}
+		debugLogf("[query] refresh ns=%s strong=false head_seq=%d indexed_seq=%d dur=%s", ns, headSeq, indexedSeq, time.Since(refreshStart))
 		h.MarkSnapshotRefreshed(ns, now)
 		return nil
 	}
 
+	refreshStart := time.Now()
 	if err := h.tailStore.Refresh(ctx, ns, indexedSeq, headSeq); err != nil {
 		return fmt.Errorf("%w: %v", ErrSnapshotRefreshFailed, err)
 	}
+	debugLogf("[query] refresh ns=%s strong=true head_seq=%d indexed_seq=%d dur=%s", ns, headSeq, indexedSeq, time.Since(refreshStart))
 	h.MarkSnapshotRefreshed(ns, h.nowTime())
 	return nil
 }
@@ -340,21 +344,75 @@ func (h *Handler) refreshTailIfNeeded(ctx context.Context, ns string, loaded *na
 // Handle executes a query against the given namespace.
 func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*QueryResponse, error) {
 	start := time.Now()
+	debug := queryDebugEnabled()
+	var (
+		validateDur    time.Duration
+		acquireDur     time.Duration
+		loadDur        time.Duration
+		refreshDur     time.Duration
+		parseRankDur   time.Duration
+		parseFilterDur time.Duration
+		pendingDur     time.Duration
+		execDur        time.Duration
+		filterAttrDur  time.Duration
+	)
+	logDone := func(queryType string, err error) {
+		if !debug {
+			return
+		}
+		debugLogf(
+			"[query] done ns=%s type=%s validate=%s acquire=%s load=%s refresh=%s parse_rank=%s parse_filter=%s pending=%s exec=%s filter_attrs=%s total=%s err=%v",
+			ns,
+			queryType,
+			validateDur,
+			acquireDur,
+			loadDur,
+			refreshDur,
+			parseRankDur,
+			parseFilterDur,
+			pendingDur,
+			execDur,
+			filterAttrDur,
+			time.Since(start),
+			err,
+		)
+	}
+
+	if debug {
+		debugLogf("[query] start ns=%s consistency=%s limit=%d", ns, req.Consistency, req.Limit)
+	}
+
 	// Validate the request
+	stepStart := time.Now()
 	if err := h.validateRequest(req); err != nil {
+		logDone("error", err)
 		return nil, err
+	}
+	validateDur = time.Since(stepStart)
+	if debug {
+		debugLogf("[query] stage=validate ns=%s dur=%s", ns, validateDur)
 	}
 
 	// Acquire concurrency slot - blocks until available or context cancelled
+	stepStart = time.Now()
 	release, err := h.limiter.Acquire(ctx, ns)
 	if err != nil {
+		acquireDur = time.Since(stepStart)
+		logDone("error", err)
 		return nil, err
+	}
+	acquireDur = time.Since(stepStart)
+	if debug {
+		debugLogf("[query] stage=acquire ns=%s dur=%s", ns, acquireDur)
 	}
 	defer release()
 
 	// Load namespace state
+	stepStart = time.Now()
 	loaded, err := h.stateMan.Load(ctx, ns)
 	if err != nil {
+		loadDur = time.Since(stepStart)
+		logDone("error", err)
 		if errors.Is(err, namespace.ErrStateNotFound) {
 			return nil, ErrNamespaceNotFound
 		}
@@ -363,47 +421,82 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		}
 		return nil, err
 	}
+	loadDur = time.Since(stepStart)
+	if debug {
+		debugLogf("[query] stage=load_state ns=%s dur=%s", ns, loadDur)
+	}
 
 	// Strong consistency is the default: refresh tail to WAL head to include all committed writes
 	isStrongConsistency := req.Consistency != "eventual"
 	if isStrongConsistency {
 		if loaded.State.NamespaceFlags.DisableBackpressure && loaded.State.WAL.BytesUnindexedEst > MaxUnindexedBytes {
+			logDone("error", ErrStrongQueryBackpressure)
 			return nil, ErrStrongQueryBackpressure
 		}
 	}
+	stepStart = time.Now()
 	if err := h.refreshTailIfNeeded(ctx, ns, loaded, isStrongConsistency); err != nil {
+		refreshDur = time.Since(stepStart)
+		logDone("error", err)
 		return nil, err
+	}
+	refreshDur = time.Since(stepStart)
+	if debug {
+		debugLogf("[query] stage=refresh ns=%s dur=%s", ns, refreshDur)
 	}
 
 	// Parse the rank_by expression
+	stepStart = time.Now()
 	parsed, err := parseRankBy(req.RankBy, req.VectorEncoding)
 	if err != nil {
+		parseRankDur = time.Since(stepStart)
+		logDone("error", err)
 		return nil, err
 	}
+	parseRankDur = time.Since(stepStart)
+	if debug {
+		debugLogf("[query] stage=parse_rank ns=%s dur=%s", ns, parseRankDur)
+	}
 	if err := validateVectorDims(loaded.State, parsed); err != nil {
+		logDone("error", err)
 		return nil, err
 	}
 
 	// Parse filters if provided
 	var f *filter.Filter
 	if req.Filters != nil {
+		stepStart = time.Now()
 		f, err = filter.Parse(req.Filters)
 		if err != nil {
+			parseFilterDur = time.Since(stepStart)
+			logDone("error", ErrInvalidFilter)
 			return nil, ErrInvalidFilter
+		}
+		parseFilterDur = time.Since(stepStart)
+		if debug {
+			debugLogf("[query] stage=parse_filter ns=%s dur=%s", ns, parseFilterDur)
 		}
 
 		// Validate regex filters against schema
 		if f.UsesRegexOperators() {
 			schemaChecker := buildSchemaChecker(loaded.State.Schema)
 			if err := f.ValidateWithSchema(schemaChecker); err != nil {
+				logDone("error", err)
 				return nil, fmt.Errorf("%w: %v", ErrInvalidFilter, err)
 			}
 		}
 	}
 
 	// Check for pending index rebuilds that affect this query
+	stepStart = time.Now()
 	if err := CheckPendingRebuilds(loaded.State, f, parsed); err != nil {
+		pendingDur = time.Since(stepStart)
+		logDone("error", err)
 		return nil, err
+	}
+	pendingDur = time.Since(stepStart)
+	if debug {
+		debugLogf("[query] stage=pending ns=%s dur=%s", ns, pendingDur)
 	}
 
 	// Determine byte limit for eventual consistency
@@ -416,24 +509,36 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 	if req.AggregateBy != nil {
 		queryType := queryTypeForRequest(nil, true)
 		// Parse aggregations
+		stepStart = time.Now()
 		aggregations, err := parseAggregateBy(req.AggregateBy)
 		if err != nil {
+			execDur = time.Since(stepStart)
+			logDone(queryType, err)
 			return nil, err
 		}
+		execDur = time.Since(stepStart)
 
 		// Check if this is a grouped aggregation
 		if req.GroupBy != nil {
 			// Parse group_by
+			stepStart = time.Now()
 			groupByAttrs, err := parseGroupBy(req.GroupBy)
 			if err != nil {
+				execDur = time.Since(stepStart)
+				logDone(queryType, err)
 				return nil, err
 			}
+			execDur = time.Since(stepStart)
 
 			// Execute grouped aggregation query
+			stepStart = time.Now()
 			aggGroups, err := h.executeGroupedAggregationQuery(ctx, ns, f, aggregations, groupByAttrs, req.Limit, tailByteCap)
 			if err != nil {
+				execDur = time.Since(stepStart)
+				logDone(queryType, err)
 				return nil, err
 			}
+			execDur = time.Since(stepStart)
 
 			resp := &QueryResponse{
 				AggregationGroups: aggGroups,
@@ -442,14 +547,19 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 					BillableLogicalBytesReturned: 0,
 				},
 			}
+			logDone(queryType, nil)
 			return h.finalizeQueryResponse(start, ns, queryType, resp), nil
 		}
 
 		// Execute non-grouped aggregation query
+		stepStart = time.Now()
 		aggResults, err := h.executeAggregationQuery(ctx, ns, f, aggregations, tailByteCap)
 		if err != nil {
+			execDur = time.Since(stepStart)
+			logDone(queryType, err)
 			return nil, err
 		}
+		execDur = time.Since(stepStart)
 
 		resp := &QueryResponse{
 			Aggregations: aggResults,
@@ -458,12 +568,14 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 				BillableLogicalBytesReturned: 0,
 			},
 		}
+		logDone(queryType, nil)
 		return h.finalizeQueryResponse(start, ns, queryType, resp), nil
 	}
 
 	// Execute the query based on rank_by type
 	var rows []Row
 	if parsed != nil {
+		stepStart = time.Now()
 		switch parsed.Type {
 		case RankByVector:
 			rows, err = h.executeVectorQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
@@ -474,13 +586,23 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 		case RankByComposite:
 			rows, err = h.executeCompositeQuery(ctx, ns, loaded, parsed, f, req, tailByteCap)
 		}
+		execDur = time.Since(stepStart)
+		if debug {
+			debugLogf("[query] stage=execute ns=%s type=%s dur=%s", ns, queryTypeForRequest(parsed, false), execDur)
+		}
 		if err != nil {
+			logDone(queryTypeForRequest(parsed, false), err)
 			return nil, err
 		}
 	}
 
 	// Apply attribute filtering
+	stepStart = time.Now()
 	rows = filterAttributes(rows, req.IncludeAttributes, req.ExcludeAttributes)
+	filterAttrDur = time.Since(stepStart)
+	if debug {
+		debugLogf("[query] stage=filter_attrs ns=%s dur=%s", ns, filterAttrDur)
+	}
 
 	queryType := queryTypeForRequest(parsed, false)
 	resp := &QueryResponse{
@@ -490,6 +612,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *QueryRequest) (*Qu
 			BillableLogicalBytesReturned: 0,
 		},
 	}
+	logDone(queryType, nil)
 	return h.finalizeQueryResponse(start, ns, queryType, resp), nil
 }
 
@@ -743,6 +866,7 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 	// Check if there's an IVF index available
 	var indexResults []vector.IVFSearchResult
 	indexedWALSeq := loaded.State.Index.IndexedWALSeq
+	var ivfSegment *index.Segment
 
 	// Determine if we can use the index
 	// We can use the index:
@@ -758,6 +882,9 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 			// Log error but fall back to exhaustive search
 			fmt.Printf("[TIMING] GetIVFReader error after %dms: %v\n", getIVFReaderMs, err)
 		} else if ivfReader != nil {
+			if seg, err := h.indexReader.GetIVFSegment(ctx, ns, loaded.State.Index.ManifestKey, loaded.State.Index.ManifestSeq); err == nil {
+				ivfSegment = seg
+			}
 			fmt.Printf("[TIMING] GetIVFReader: %dms (clusters=%d, vectors=%d)\n", getIVFReaderMs, ivfReader.NClusters, len(ivfReader.ClusterOffsets))
 			nProbe := DefaultNProbe
 			candidates := req.Limit
@@ -856,8 +983,15 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 
 		// Load only the documents we need (not all docs in the segment)
 		t3 := time.Now()
-		indexedDocs, err := h.indexReader.LoadDocsForIDs(ctx, loaded.State.Index.ManifestKey, resultIDs)
-		fmt.Printf("[TIMING] LoadDocsForIDs: %dms (requested=%d, loaded=%d)\n", time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs))
+		var err error
+		var indexedDocs []index.IndexedDocument
+		if ivfSegment != nil {
+			indexedDocs, err = h.indexReader.LoadDocsForIDsInSegment(ctx, *ivfSegment, resultIDs)
+			fmt.Printf("[TIMING] LoadDocsForIDsInSegment: %dms (requested=%d, loaded=%d, segment=%s)\n", time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs), ivfSegment.ID)
+		} else {
+			indexedDocs, err = h.indexReader.LoadDocsForIDs(ctx, loaded.State.Index.ManifestKey, resultIDs)
+			fmt.Printf("[TIMING] LoadDocsForIDs: %dms (requested=%d, loaded=%d)\n", time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs))
+		}
 		if err == nil && len(indexedDocs) > 0 {
 			indexDocIDs = make(map[uint64]document.ID, len(indexedDocs))
 			indexDocAttrs = make(map[uint64]map[string]any, len(indexedDocs))
@@ -1105,13 +1239,27 @@ func (h *Handler) mergeVectorResults(ctx context.Context, ns string, indexResult
 // This function queries both indexed segments and tail data, merging results with
 // tail taking precedence for deduplication (newer data).
 func (h *Handler) executeAttrQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
+	debug := queryDebugEnabled()
+	start := time.Now()
+	var (
+		indexedCount int
+		tailCount    int
+		dedupedCount int
+		loadIndexDur time.Duration
+		tailScanDur  time.Duration
+		dedupeDur    time.Duration
+		sortDur      time.Duration
+	)
+
 	// Collect all documents from both index and tail
 	var allDocs []*tail.Document
 
 	// Step 1: Load documents from indexed segments if available
 	indexedWALSeq := loaded.State.Index.IndexedWALSeq
 	if loaded.State.Index.ManifestKey != "" && h.indexReader != nil {
+		loadStart := time.Now()
 		indexedDocs, err := h.indexReader.LoadSegmentDocs(ctx, loaded.State.Index.ManifestKey)
+		loadIndexDur = time.Since(loadStart)
 		if err == nil && len(indexedDocs) > 0 {
 			// Convert indexed documents to tail.Document format
 			for _, idoc := range indexedDocs {
@@ -1146,6 +1294,7 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, loaded *names
 
 				allDocs = append(allDocs, doc)
 			}
+			indexedCount = len(allDocs)
 		}
 	}
 
@@ -1153,21 +1302,28 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, loaded *names
 	if h.tailStore != nil {
 		var tailDocs []*tail.Document
 		var err error
+		tailStart := time.Now()
 		if tailByteCap > 0 {
 			tailDocs, err = h.tailStore.ScanWithByteLimit(ctx, ns, f, tailByteCap)
 		} else {
 			tailDocs, err = h.tailStore.Scan(ctx, ns, f)
 		}
+		tailScanDur = time.Since(tailStart)
 		if err != nil {
 			return nil, err
 		}
+		tailCount = len(tailDocs)
 		allDocs = append(allDocs, tailDocs...)
 	}
 
 	// Step 3: Deduplicate documents - tail (newer WAL seq) takes precedence
+	dedupeStart := time.Now()
 	allDocs = h.deduplicateAttrQueryDocs(allDocs, indexedWALSeq)
+	dedupeDur = time.Since(dedupeStart)
+	dedupedCount = len(allDocs)
 
 	// Step 4: Sort by the specified attribute
+	sortStart := time.Now()
 	sort.Slice(allDocs, func(i, j int) bool {
 		vi := getDocAttrValue(allDocs[i], parsed.Field)
 		vj := getDocAttrValue(allDocs[j], parsed.Field)
@@ -1177,6 +1333,7 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, loaded *names
 		}
 		return cmp < 0
 	})
+	sortDur = time.Since(sortStart)
 
 	// Step 5: Apply limit with optional per diversification
 	var selected []*tail.Document
@@ -1201,6 +1358,20 @@ func (h *Handler) executeAttrQuery(ctx context.Context, ns string, loaded *names
 		})
 	}
 
+	if debug {
+		debugLogf(
+			"[attr] ns=%s indexed=%d tail=%d deduped=%d load_index=%s tail_scan=%s dedupe=%s sort=%s total=%s",
+			ns,
+			indexedCount,
+			tailCount,
+			dedupedCount,
+			loadIndexDur,
+			tailScanDur,
+			dedupeDur,
+			sortDur,
+			time.Since(start),
+		)
+	}
 	return rows, nil
 }
 
@@ -1252,6 +1423,9 @@ func (h *Handler) deduplicateAttrQueryDocs(docs []*tail.Document, indexedWALSeq 
 // When LastAsPrefix is true, the last token is matched as a prefix for typeahead support,
 // and prefix matches score 1.0 (as per turbopuffer spec).
 func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
+	debug := queryDebugEnabled()
+	start := time.Now()
+
 	// Get FTS config for the field from schema
 	ftsCfg := h.getFTSConfig(loaded, parsed.Field)
 	if ftsCfg == nil {
@@ -1260,17 +1434,28 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 	}
 
 	// Tokenize the query
+	tokenizeStart := time.Now()
 	tokenizer := fts.NewTokenizer(ftsCfg)
 	queryTokens := tokenizer.Tokenize(parsed.QueryText)
+	if debug {
+		debugLogf("[bm25] ns=%s tokens=%d tokenize=%s", ns, len(queryTokens), time.Since(tokenizeStart))
+	}
 
 	// If query produces no tokens, return empty results
 	if len(queryTokens) == 0 {
+		if debug {
+			debugLogf("[bm25] ns=%s empty_tokens total=%s", ns, time.Since(start))
+		}
 		return []Row{}, nil
 	}
 
 	// Prefer prebuilt FTS indexes when available.
 	if loaded.State.Index.ManifestKey != "" && h.indexReader != nil {
+		indexStart := time.Now()
 		rows, ok, err := h.executeBM25QueryWithFTSIndexes(ctx, ns, loaded, parsed, f, req, tailByteCap, ftsCfg, queryTokens)
+		if debug {
+			debugLogf("[bm25] ns=%s index_ok=%t rows=%d dur=%s err=%v", ns, ok, len(rows), time.Since(indexStart), err)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1279,21 +1464,39 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 		}
 	}
 
+	if debug {
+		debugLogf("[bm25] ns=%s fallback_full_scan start total=%s", ns, time.Since(start))
+	}
 	return h.executeBM25QueryFullScan(ctx, ns, loaded, parsed, f, req, tailByteCap, ftsCfg, queryTokens)
 }
 
 func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64, ftsCfg *fts.Config, queryTokens []string) ([]Row, bool, error) {
+	debug := queryDebugEnabled()
+	loadStart := time.Now()
 	ftsIndexes, err := h.indexReader.LoadFTSIndexesForField(ctx, loaded.State.Index.ManifestKey, parsed.Field)
 	if err != nil {
+		if debug {
+			debugLogf("[bm25] ns=%s fts_load err=%v dur=%s", ns, err, time.Since(loadStart))
+		}
 		return nil, false, err
+	}
+	if debug {
+		debugLogf("[bm25] ns=%s fts_indexes=%d load_dur=%s", ns, len(ftsIndexes), time.Since(loadStart))
 	}
 	if len(ftsIndexes) == 0 {
 		return nil, false, nil
 	}
 
+	tailStart := time.Now()
 	tailLatest, tailScores, err := h.loadTailBM25Scores(ctx, ns, parsed, f, tailByteCap, ftsCfg, queryTokens)
 	if err != nil {
+		if debug {
+			debugLogf("[bm25] ns=%s tail_scores err=%v dur=%s", ns, err, time.Since(tailStart))
+		}
 		return nil, false, err
+	}
+	if debug {
+		debugLogf("[bm25] ns=%s tail_docs=%d tail_scores=%d dur=%s", ns, len(tailLatest), len(tailScores), time.Since(tailStart))
 	}
 
 	indexed := make(map[string]bm25Candidate)
@@ -1303,16 +1506,87 @@ func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string,
 		if target < req.Limit {
 			target = req.Limit
 		}
+		topStart := time.Now()
 		topRows := bm25TopRowScores(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg, target)
+		if debug {
+			debugLogf("[bm25] ns=%s segment=%s top_rows=%d top_dur=%s", ns, seg.Segment.ID, len(topRows), time.Since(topStart))
+		}
 		if len(topRows) > 0 {
 			rowIDs := make([]uint32, 0, len(topRows))
 			for _, row := range topRows {
 				rowIDs = append(rowIDs, row.rowID)
 			}
 
+			loadStart := time.Now()
 			docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, seg.Segment, rowIDs)
 			if err != nil {
 				return nil, false, err
+			}
+			if debug {
+				debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, seg.Segment.ID, len(docsByRow), time.Since(loadStart))
+			}
+
+			for _, row := range topRows {
+				idoc, ok := docsByRow[row.rowID]
+				if !ok {
+					continue
+				}
+				if row.score <= 0 {
+					continue
+				}
+
+				docID, ok := indexedDocumentID(idoc)
+				if !ok {
+					continue
+				}
+
+				doc := &tail.Document{
+					ID:         docID,
+					WalSeq:     idoc.WALSeq,
+					Attributes: idoc.Attributes,
+					Deleted:    idoc.Deleted,
+				}
+
+				key := doc.ID.String()
+				existing, ok := indexed[key]
+				if ok && doc.WalSeq < existing.doc.WalSeq {
+					continue
+				}
+				indexed[key] = bm25Candidate{
+					doc:         doc,
+					score:       row.score,
+					filterMatch: true,
+				}
+			}
+		}
+	} else if f == nil {
+		target := req.Limit + len(tailLatest)
+		if target < req.Limit {
+			target = req.Limit
+		}
+
+		for _, seg := range ftsIndexes {
+			topStart := time.Now()
+			topRows := bm25TopRowScores(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg, target)
+			if debug {
+				debugLogf("[bm25] ns=%s segment=%s top_rows=%d top_dur=%s", ns, seg.Segment.ID, len(topRows), time.Since(topStart))
+			}
+			if len(topRows) == 0 {
+				continue
+			}
+
+			rowIDs := make([]uint32, 0, len(topRows))
+			for _, row := range topRows {
+				rowIDs = append(rowIDs, row.rowID)
+			}
+
+			loadStart := time.Now()
+			docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, seg.Segment, rowIDs)
+			if err != nil {
+				return nil, false, err
+			}
+			if debug {
+				debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, seg.Segment.ID, len(docsByRow), time.Since(loadStart))
 			}
 
 			for _, row := range topRows {
@@ -1350,7 +1624,11 @@ func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string,
 		}
 	} else {
 		for _, seg := range ftsIndexes {
+			scoreStart := time.Now()
 			scoresByRow := bm25ScoresForIndex(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg)
+			if debug {
+				debugLogf("[bm25] ns=%s segment=%s scores=%d score_dur=%s", ns, seg.Segment.ID, len(scoresByRow), time.Since(scoreStart))
+			}
 			if len(scoresByRow) == 0 {
 				continue
 			}
@@ -1360,9 +1638,13 @@ func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string,
 				rowIDs = append(rowIDs, rowID)
 			}
 
+			loadStart := time.Now()
 			docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, seg.Segment, rowIDs)
 			if err != nil {
 				return nil, false, err
+			}
+			if debug {
+				debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, seg.Segment.ID, len(docsByRow), time.Since(loadStart))
 			}
 
 			for rowID, idoc := range docsByRow {
@@ -1440,6 +1722,9 @@ func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string,
 		})
 	}
 
+	if debug {
+		debugLogf("[bm25] ns=%s index_rows=%d indexed_candidates=%d", ns, len(rows), len(scored))
+	}
 	return rows, true, nil
 }
 
@@ -1497,11 +1782,26 @@ func (h *Handler) loadTailBM25Scores(ctx context.Context, ns string, parsed *Par
 }
 
 func (h *Handler) executeBM25QueryFullScan(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64, ftsCfg *fts.Config, queryTokens []string) ([]Row, error) {
+	debug := queryDebugEnabled()
+	start := time.Now()
+	var (
+		indexedCount  int
+		tailCount     int
+		dedupedCount  int
+		loadIndexDur  time.Duration
+		tailScanDur   time.Duration
+		buildIndexDur time.Duration
+		scoreDur      time.Duration
+		sortDur       time.Duration
+	)
+
 	// Collect all documents from both indexed segments and tail
 	var allDocs []*tail.Document
 	// Step 1: Load documents from indexed segments if available
 	if loaded.State.Index.ManifestKey != "" && h.indexReader != nil {
+		loadStart := time.Now()
 		indexedDocs, err := h.indexReader.LoadSegmentDocs(ctx, loaded.State.Index.ManifestKey)
+		loadIndexDur = time.Since(loadStart)
 		if err == nil && len(indexedDocs) > 0 {
 			// Convert indexed documents to tail.Document format
 			for _, idoc := range indexedDocs {
@@ -1529,27 +1829,36 @@ func (h *Handler) executeBM25QueryFullScan(ctx context.Context, ns string, loade
 
 				allDocs = append(allDocs, doc)
 			}
+			indexedCount = len(allDocs)
 		}
 	}
 
 	// Step 2: Get documents from tail (unindexed data), including deletes for deduplication.
 	if h.tailStore != nil {
+		tailStart := time.Now()
 		tailDocs, err := h.scanTailForBM25(ctx, ns, f, tailByteCap)
+		tailScanDur = time.Since(tailStart)
 		if err != nil {
 			return nil, err
 		}
+		tailCount = len(tailDocs)
 		allDocs = append(allDocs, tailDocs...)
 	}
 
 	// Step 3: Deduplicate documents - tail (newer WAL seq) takes precedence
 	allDocs = h.deduplicateBM25Docs(allDocs)
+	dedupedCount = len(allDocs)
 
 	if len(allDocs) == 0 {
+		if debug {
+			debugLogf("[bm25] ns=%s full_scan empty indexed=%d tail=%d total=%s", ns, indexedCount, tailCount, time.Since(start))
+		}
 		return []Row{}, nil
 	}
 
 	// Step 4: Build a temporary FTS index from all documents for BM25 scoring
 	// This computes term frequencies and document statistics needed for BM25
+	buildStart := time.Now()
 	index := fts.NewIndex(parsed.Field, ftsCfg)
 	docIDMap := make(map[uint32]*tail.Document) // Map internal doc IDs to docs
 
@@ -1568,9 +1877,13 @@ func (h *Handler) executeBM25QueryFullScan(ctx context.Context, ns string, loade
 		index.AddDocument(internalID, text)
 		docIDMap[internalID] = doc
 	}
+	buildIndexDur = time.Since(buildStart)
 
 	// If no documents have the field, return empty results
 	if index.TotalDocs == 0 {
+		if debug {
+			debugLogf("[bm25] ns=%s full_scan no_docs indexed=%d tail=%d deduped=%d build=%s total=%s", ns, indexedCount, tailCount, dedupedCount, buildIndexDur, time.Since(start))
+		}
 		return []Row{}, nil
 	}
 
@@ -1579,6 +1892,7 @@ func (h *Handler) executeBM25QueryFullScan(ctx context.Context, ns string, loade
 		doc   *tail.Document
 		score float64
 	}
+	scoreStart := time.Now()
 	var scored []scoredDoc
 
 	for docID, doc := range docIDMap {
@@ -1587,11 +1901,14 @@ func (h *Handler) executeBM25QueryFullScan(ctx context.Context, ns string, loade
 			scored = append(scored, scoredDoc{doc: doc, score: score})
 		}
 	}
+	scoreDur = time.Since(scoreStart)
 
 	// Sort by score descending
+	sortStart := time.Now()
 	sort.Slice(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
 	})
+	sortDur = time.Since(sortStart)
 
 	// Apply limit
 	if len(scored) > req.Limit {
@@ -1609,6 +1926,22 @@ func (h *Handler) executeBM25QueryFullScan(ctx context.Context, ns string, loade
 		})
 	}
 
+	if debug {
+		debugLogf(
+			"[bm25] ns=%s full_scan indexed=%d tail=%d deduped=%d scored=%d load_index=%s tail_scan=%s build=%s score=%s sort=%s total=%s",
+			ns,
+			indexedCount,
+			tailCount,
+			dedupedCount,
+			len(scored),
+			loadIndexDur,
+			tailScanDur,
+			buildIndexDur,
+			scoreDur,
+			sortDur,
+			time.Since(start),
+		)
+	}
 	return rows, nil
 }
 

@@ -405,6 +405,16 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 			return nil, fmt.Errorf("failed to write docs: %w", err)
 		}
 		result.ObjectsWritten = append(result.ObjectsWritten, docsKey)
+
+		idMapData, err := EncodeDocIDMapFromDocs(docs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build doc id map: %w", err)
+		}
+		idMapKey, err := writer.WriteDocIDMapData(ctx, idMapData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to write doc id map: %w", err)
+		}
+		result.ObjectsWritten = append(result.ObjectsWritten, idMapKey)
 	}
 
 	writer.Seal()

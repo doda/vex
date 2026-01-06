@@ -586,6 +586,14 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		return nil, fmt.Errorf("failed to write docs: %w", err)
 	}
 
+	idMapData, err := index.EncodeDocIDMapFromDocs(docColumns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build doc id map: %w", err)
+	}
+	if _, err := writer.WriteDocIDMapData(ctx, idMapData); err != nil {
+		return nil, fmt.Errorf("failed to write doc id map: %w", err)
+	}
+
 	var filterKeys []string
 	var filterBytes int64
 	if schemaDef != nil && len(docs) > 0 {
@@ -673,6 +681,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	}
 	vectorBytes := int64(len(vectorDocs) * dims * bytesPerElement)
 	totalBytes := int64(len(docsData))
+	totalBytes += int64(len(idMapData))
 	if ivfIndex != nil {
 		totalBytes += int64(centroidsBuf.Len()) + int64(offsetsBuf.Len()) + int64(len(ivfIndex.GetClusterDataBytes()))
 	}
