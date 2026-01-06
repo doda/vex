@@ -43,6 +43,8 @@ type Reader struct {
 	ftsCache map[string]*fts.Index
 
 	docOffsetsCache map[string][]uint64
+	docIDRowMu      sync.RWMutex
+	docIDRowCache   map[string]map[uint64]uint32
 }
 
 // ReaderOptions configures index reader behavior.
@@ -60,6 +62,7 @@ type cachedIVFReader struct {
 	manifestSeq    uint64
 	segmentID      string
 	clusterDataKey string
+	segment        Segment
 }
 
 // NewReader creates a new index reader.
@@ -77,6 +80,7 @@ func NewReaderWithOptions(store objectstore.Store, diskCache *cache.DiskCache, r
 		readers:                make(map[string]*cachedIVFReader),
 		ftsCache:               make(map[string]*fts.Index),
 		docOffsetsCache:        make(map[string][]uint64),
+		docIDRowCache:          make(map[string]map[uint64]uint32),
 	}
 }
 
@@ -227,10 +231,44 @@ func (r *Reader) GetIVFReader(ctx context.Context, namespace string, manifestKey
 		manifestSeq:    manifestSeq,
 		segmentID:      ivfSegment.ID,
 		clusterDataKey: clusterDataKey,
+		segment:        *ivfSegment,
 	}
 	r.mu.Unlock()
 
 	return ivfReader, clusterDataKey, nil
+}
+
+// GetIVFSegment returns the first segment with IVF data for the manifest.
+func (r *Reader) GetIVFSegment(ctx context.Context, namespace string, manifestKey string, manifestSeq uint64) (*Segment, error) {
+	if manifestKey == "" {
+		return nil, nil
+	}
+
+	readerKey := fmt.Sprintf("%s/%d", namespace, manifestSeq)
+	r.mu.RLock()
+	cached, ok := r.readers[readerKey]
+	r.mu.RUnlock()
+	if ok && cached.segment.ID != "" {
+		seg := cached.segment
+		return &seg, nil
+	}
+
+	manifest, err := r.LoadManifest(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+
+	for i := range manifest.Segments {
+		if manifest.Segments[i].IVFKeys.HasIVF() {
+			seg := manifest.Segments[i]
+			return &seg, nil
+		}
+	}
+
+	return nil, nil
 }
 
 // loadObject loads an object from storage, using cache if available.
@@ -1202,20 +1240,37 @@ func (r *Reader) LoadSegmentDocs(ctx context.Context, manifestKey string) ([]Ind
 		return nil, nil
 	}
 
+	manifestStart := time.Now()
 	manifest, err := r.LoadManifest(ctx, manifestKey)
 	if err != nil {
+		if indexDebugEnabled() {
+			indexDebugf("[index] load_segment_docs manifest=%s err=%v dur=%s", manifestKey, err, time.Since(manifestStart))
+		}
 		return nil, err
 	}
 	if manifest == nil {
+		if indexDebugEnabled() {
+			indexDebugf("[index] load_segment_docs manifest=%s empty dur=%s", manifestKey, time.Since(manifestStart))
+		}
 		return nil, nil
+	}
+	if indexDebugEnabled() {
+		indexDebugf("[index] load_segment_docs manifest=%s segments=%d dur=%s", manifestKey, len(manifest.Segments), time.Since(manifestStart))
 	}
 
 	var allDocs []IndexedDocument
 	for _, seg := range manifest.Segments {
+		segStart := time.Now()
 		docs, err := r.loadDocsFromSegment(ctx, seg)
 		if err != nil {
 			// Log error and continue with other segments
+			if indexDebugEnabled() {
+				indexDebugf("[index] load_segment_docs segment_key=%s err=%v dur=%s", seg.DocsKey, err, time.Since(segStart))
+			}
 			continue
+		}
+		if indexDebugEnabled() {
+			indexDebugf("[index] load_segment_docs segment_key=%s docs=%d dur=%s", seg.DocsKey, len(docs), time.Since(segStart))
 		}
 		allDocs = append(allDocs, docs...)
 	}
@@ -1258,9 +1313,16 @@ func (r *Reader) loadDocsFromSegment(ctx context.Context, seg Segment) ([]Indexe
 		return nil, nil
 	}
 
+	loadStart := time.Now()
 	data, err := r.loadObject(ctx, seg.DocsKey)
 	if err != nil {
+		if indexDebugEnabled() {
+			indexDebugf("[index] load_docs obj=%s err=%v dur=%s", seg.DocsKey, err, time.Since(loadStart))
+		}
 		return nil, err
+	}
+	if indexDebugEnabled() {
+		indexDebugf("[index] load_docs obj=%s bytes=%d dur=%s", seg.DocsKey, len(data), time.Since(loadStart))
 	}
 	if len(data) == 0 {
 		return nil, nil
@@ -1268,14 +1330,22 @@ func (r *Reader) loadDocsFromSegment(ctx context.Context, seg Segment) ([]Indexe
 
 	decoded := data
 	if IsZstdCompressed(data) {
+		decompressStart := time.Now()
 		decoded, err = DecompressZstd(data)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decompress docs: %w", err)
 		}
+		if indexDebugEnabled() {
+			indexDebugf("[index] load_docs obj=%s decompress_bytes=%d dur=%s", seg.DocsKey, len(decoded), time.Since(decompressStart))
+		}
 	}
 
+	decodeStart := time.Now()
 	docs, err := DecodeDocsColumn(decoded)
 	if err == nil {
+		if indexDebugEnabled() {
+			indexDebugf("[index] load_docs obj=%s docs=%d decode_dur=%s", seg.DocsKey, len(docs), time.Since(decodeStart))
+		}
 		return docs, nil
 	}
 	if errors.Is(err, ErrDocsColumnFormat) || errors.Is(err, ErrDocsColumnVersion) {
@@ -1287,6 +1357,59 @@ func (r *Reader) loadDocsFromSegment(ctx context.Context, seg Segment) ([]Indexe
 	}
 
 	return nil, err
+}
+
+// LoadDocsForIDsInSegment loads documents matching the specified numeric IDs from a single segment.
+// This avoids scanning unrelated segments when the caller already knows which segment holds the IDs.
+func (r *Reader) LoadDocsForIDsInSegment(ctx context.Context, seg Segment, ids []uint64) ([]IndexedDocument, error) {
+	if seg.DocsKey == "" || r.store == nil || len(ids) == 0 {
+		return nil, nil
+	}
+
+	idSet := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		idSet[id] = struct{}{}
+	}
+
+	rowMap, err := r.getDocIDRowMap(ctx, seg)
+	if err != nil {
+		return nil, err
+	}
+	if rowMap == nil {
+		return nil, nil
+	}
+
+	rowIDs := make([]uint32, 0, len(idSet))
+	for id := range idSet {
+		if rowID, ok := rowMap[id]; ok {
+			rowIDs = append(rowIDs, rowID)
+		}
+	}
+	if len(rowIDs) == 0 {
+		return nil, nil
+	}
+
+	docsByRow, err := r.LoadDocsForRowIDs(ctx, seg, rowIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(docsByRow) == 0 {
+		return nil, nil
+	}
+
+	result := make([]IndexedDocument, 0, len(docsByRow))
+	for _, rowID := range rowIDs {
+		doc, ok := docsByRow[rowID]
+		if !ok {
+			continue
+		}
+		if _, ok := idSet[doc.NumericID]; !ok {
+			continue
+		}
+		result = append(result, doc)
+	}
+
+	return result, nil
 }
 
 // LoadDocsForIDs loads only the documents matching the specified numeric IDs.
@@ -1507,16 +1630,6 @@ func (r *Reader) loadDocsForIDsFromSegment(ctx context.Context, seg Segment, idS
 	return result, nil
 }
 
-func docsOffsetsKey(docsKey string) string {
-	if strings.HasSuffix(docsKey, "/docs.col.zst") {
-		return strings.TrimSuffix(docsKey, "/docs.col.zst") + "/docs.offsets.bin"
-	}
-	if strings.HasSuffix(docsKey, "docs.col.zst") {
-		return strings.TrimSuffix(docsKey, "docs.col.zst") + "docs.offsets.bin"
-	}
-	return ""
-}
-
 func parseDocOffsets(data []byte) ([]uint64, error) {
 	if len(data) < 16 {
 		return nil, fmt.Errorf("offsets data too short")
@@ -1545,7 +1658,7 @@ func (r *Reader) loadDocOffsets(ctx context.Context, docsKey string) ([]uint64, 
 	if r.store == nil {
 		return nil, nil
 	}
-	offsetsKey := docsOffsetsKey(docsKey)
+	offsetsKey := DocsOffsetsKey(docsKey)
 	if offsetsKey == "" {
 		return nil, nil
 	}
@@ -1582,6 +1695,187 @@ func (r *Reader) loadDocOffsets(ctx context.Context, docsKey string) ([]uint64, 
 	r.mu.Unlock()
 
 	return offsets, nil
+}
+
+func (r *Reader) getDocIDRowMap(ctx context.Context, seg Segment) (map[uint64]uint32, error) {
+	if seg.DocsKey == "" || r.store == nil {
+		return nil, nil
+	}
+
+	r.docIDRowMu.RLock()
+	cached := r.docIDRowCache[seg.DocsKey]
+	r.docIDRowMu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	loaded, err := r.buildDocIDRowMap(ctx, seg)
+	if err != nil || loaded == nil {
+		return nil, err
+	}
+
+	r.docIDRowMu.Lock()
+	if existing := r.docIDRowCache[seg.DocsKey]; existing != nil {
+		r.docIDRowMu.Unlock()
+		return existing, nil
+	}
+	r.docIDRowCache[seg.DocsKey] = loaded
+	r.docIDRowMu.Unlock()
+	return loaded, nil
+}
+
+func (r *Reader) buildDocIDRowMap(ctx context.Context, seg Segment) (map[uint64]uint32, error) {
+	var capacity int
+	if offsets, err := r.loadDocOffsets(ctx, seg.DocsKey); err == nil && len(offsets) > 1 {
+		capacity = len(offsets) - 1
+	}
+
+	start := time.Now()
+	if idMapKey := DocsIDMapKey(seg.DocsKey); idMapKey != "" {
+		data, err := r.loadObject(ctx, idMapKey)
+		if err == nil && len(data) > 0 {
+			ids, err := DecodeDocIDMap(data)
+			if err == nil {
+				rowMap := buildDocIDRowMapFromIDs(ids)
+				if indexDebugEnabled() {
+					indexDebugf("[index] load_doc_id_map key=%s rows=%d dur=%s", idMapKey, len(rowMap), time.Since(start))
+				}
+				return rowMap, nil
+			}
+			if indexDebugEnabled() {
+				indexDebugf("[index] load_doc_id_map key=%s err=%v", idMapKey, err)
+			}
+		} else if err != nil && !objectstore.IsNotFoundError(err) {
+			return nil, err
+		}
+	}
+
+	var reader io.ReadCloser
+	cacheKey := cache.CacheKey{ObjectKey: seg.DocsKey}
+	if r.diskCache != nil {
+		if cachedReader, err := r.diskCache.GetReader(cacheKey); err == nil {
+			reader = cachedReader
+		}
+	}
+	if reader == nil {
+		storeReader, _, err := r.store.Get(ctx, seg.DocsKey, nil)
+		if err != nil {
+			if objectstore.IsNotFoundError(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("failed to get docs: %w", err)
+		}
+		reader = storeReader
+	}
+	defer reader.Close()
+
+	magic := make([]byte, 4)
+	n, err := io.ReadFull(reader, magic)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("failed to read docs magic: %w", err)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+
+	fullReader := io.MultiReader(bytes.NewReader(magic[:n]), reader)
+
+	var docReader io.Reader
+	isZstd := n >= 4 && magic[0] == 0x28 && magic[1] == 0xB5 && magic[2] == 0x2F && magic[3] == 0xFD
+	if isZstd {
+		zstdReader, err := zstd.NewReader(fullReader,
+			zstd.WithDecoderLowmem(true),
+			zstd.WithDecoderMaxWindow(32*1024*1024),
+			zstd.WithDecoderConcurrency(1),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+		}
+		defer zstdReader.Close()
+		docReader = zstdReader
+	} else {
+		docReader = fullReader
+	}
+
+	buffered := bufio.NewReader(docReader)
+	peek, err := buffered.Peek(len(docsColumnMagic))
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("failed to peek docs column magic: %w", err)
+	}
+
+	var rowMap map[uint64]uint32
+	if len(peek) == len(docsColumnMagic) && bytes.Equal(peek, docsColumnMagic[:]) {
+		rowMap, err = buildDocIDRowMapFromDocsColumn(buffered, capacity)
+	} else {
+		rowMap, err = buildDocIDRowMapFromJSON(ctx, buffered, capacity)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if indexDebugEnabled() {
+		indexDebugf("[index] build_doc_id_rows docs_key=%s rows=%d dur=%s", seg.DocsKey, len(rowMap), time.Since(start))
+	}
+	return rowMap, nil
+}
+
+func buildDocIDRowMapFromDocsColumn(r io.Reader, capacity int) (map[uint64]uint32, error) {
+	docCount, _, err := readDocsColumnHeader(r)
+	if err != nil {
+		return nil, err
+	}
+	if docCount == 0 {
+		return map[uint64]uint32{}, nil
+	}
+	if capacity < docCount {
+		capacity = docCount
+	}
+	ids := make([]uint64, docCount)
+	if err := binary.Read(r, binary.LittleEndian, ids); err != nil {
+		return nil, fmt.Errorf("failed to read numeric IDs: %w", err)
+	}
+	rowMap := make(map[uint64]uint32, capacity)
+	for i, id := range ids {
+		rowMap[id] = uint32(i)
+	}
+	return rowMap, nil
+}
+
+func buildDocIDRowMapFromIDs(ids []uint64) map[uint64]uint32 {
+	rowMap := make(map[uint64]uint32, len(ids))
+	for i, id := range ids {
+		rowMap[id] = uint32(i)
+	}
+	return rowMap
+}
+
+func buildDocIDRowMapFromJSON(ctx context.Context, r *bufio.Reader, capacity int) (map[uint64]uint32, error) {
+	decoder := json.NewDecoder(r)
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read JSON start: %w", err)
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '[' {
+		return nil, fmt.Errorf("expected JSON array, got %v", token)
+	}
+
+	rowMap := make(map[uint64]uint32, capacity)
+	var idx uint32
+	for decoder.More() {
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		var partial struct {
+			NumericID uint64 `json:"NumericID"`
+		}
+		if err := decoder.Decode(&partial); err != nil {
+			return nil, fmt.Errorf("failed to decode doc ID: %w", err)
+		}
+		rowMap[partial.NumericID] = idx
+		idx++
+	}
+
+	return rowMap, nil
 }
 
 func isZstdMagic(data []byte) bool {
@@ -1622,8 +1916,9 @@ func (r *Reader) loadDocsForRowIDsWithOffsets(ctx context.Context, docsKey strin
 
 	var cachedFile *os.File
 	var readerAt io.ReaderAt
+	cacheKey := cache.CacheKey{ObjectKey: docsKey}
 	if r.diskCache != nil {
-		if path, err := r.diskCache.Get(cache.CacheKey{ObjectKey: docsKey}); err == nil {
+		if path, err := r.diskCache.Get(cacheKey); err == nil {
 			file, err := os.Open(path)
 			if err == nil {
 				cachedFile = file
@@ -1679,7 +1974,44 @@ func (r *Reader) loadDocsForRowIDsWithOffsets(ctx context.Context, docsKey strin
 		if err != nil {
 			return nil, true, err
 		}
+		if readerAt == nil && len(data) != int(length) {
+			if r.diskCache != nil {
+				if _, err := r.loadObject(ctx, docsKey); err == nil {
+					if path, err := r.diskCache.Get(cacheKey); err == nil {
+						file, err := os.Open(path)
+						if err == nil {
+							cachedFile = file
+							readerAt = file
+							defer cachedFile.Close()
+							section := io.NewSectionReader(readerAt, int64(start), int64(length))
+							data, err = readAllWithContext(ctx, section)
+							if err != nil {
+								return nil, true, err
+							}
+						}
+					}
+				}
+			}
+			if readerAt == nil && len(data) != int(length) {
+				return nil, false, nil
+			}
+		}
 		doc, err := decodeDocBytes(data)
+		if err != nil && readerAt != nil {
+			if cachedFile != nil {
+				_ = cachedFile.Close()
+				cachedFile = nil
+			}
+			readerAt = nil
+			if r.diskCache != nil {
+				_ = r.diskCache.Delete(cacheKey)
+			}
+			data, err = r.loadObjectRange(ctx, docsKey, start, length)
+			if err != nil {
+				return nil, true, err
+			}
+			doc, err = decodeDocBytes(data)
+		}
 		if err != nil {
 			return nil, true, err
 		}
