@@ -3613,7 +3613,7 @@
       "docs/api/debug.md",
       "docs/architecture.md"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "server-timeouts-from-config",
