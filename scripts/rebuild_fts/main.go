@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,18 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/vexsearch/vex/internal/config"
 	"github.com/vexsearch/vex/internal/fts"
 	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
-
-type segmentDoc struct {
-	Deleted    bool           `json:"Deleted"`
-	Attributes map[string]any `json:"Attributes"`
-}
 
 func main() {
 	var (
@@ -144,16 +139,20 @@ func main() {
 		if seg.DocsKey == "" || seg.Stats.RowCount == 0 {
 			continue
 		}
-		if err := ensureDocOffsets(ctx, store, seg.DocsKey); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to build offsets for %s: %v\n", seg.DocsKey, err)
+		docs, err := loadSegmentDocs(ctx, store, seg.DocsKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load docs for %s: %v\n", seg.DocsKey, err)
 			os.Exit(1)
+		}
+		if len(docs) == 0 {
+			continue
 		}
 		for _, field := range fields {
 			if hasFTSKey(seg, field) {
 				continue
 			}
 			fmt.Printf("building FTS index: namespace=%s segment=%s field=%s\n", namespaceArg, seg.ID, field)
-			idx, err := buildFTSIndexForSegment(ctx, store, seg.DocsKey, field, ftsConfigRaw)
+			idx, err := buildFTSIndexForDocs(docs, field, ftsConfigRaw)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "failed to build FTS index for %s/%s: %v\n", seg.ID, field, err)
 				os.Exit(1)
@@ -263,7 +262,7 @@ func splitFields(raw string) []string {
 }
 
 func hasFTSKey(seg *index.Segment, field string) bool {
-	suffix := "/fts/" + field + ".idx"
+	suffix := "/fts." + field + ".bm25"
 	for _, key := range seg.FTSKeys {
 		if strings.HasSuffix(key, suffix) {
 			return true
@@ -272,192 +271,58 @@ func hasFTSKey(seg *index.Segment, field string) bool {
 	return false
 }
 
-func buildFTSIndexForSegment(ctx context.Context, store objectstore.Store, docsKey, field string, rawConfig json.RawMessage) (*fts.Index, error) {
-	reader, closeFn, err := openDocsReader(ctx, store, docsKey)
-	if err != nil {
-		return nil, err
-	}
-	defer closeFn()
-
-	decoder := json.NewDecoder(reader)
-	token, err := decoder.Token()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read JSON start: %w", err)
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '[' {
-		return nil, fmt.Errorf("expected JSON array, got %v", token)
-	}
-
+func buildFTSIndexForDocs(docs []index.DocColumn, field string, rawConfig json.RawMessage) (*fts.Index, error) {
 	cfg, err := fts.Parse(rawConfig)
 	if err != nil || cfg == nil {
 		cfg = fts.DefaultConfig()
 	}
 	idx := fts.NewIndex(field, cfg)
-
-	var rowID uint32
-	for decoder.More() {
-		var doc segmentDoc
-		if err := decoder.Decode(&doc); err != nil {
-			return nil, fmt.Errorf("failed to decode doc: %w", err)
+	for rowID, doc := range docs {
+		if doc.Deleted || doc.Attributes == nil {
+			continue
 		}
-		if !doc.Deleted && doc.Attributes != nil {
-			if val, ok := doc.Attributes[field]; ok {
-				if text, ok := val.(string); ok && text != "" {
-					idx.AddDocument(rowID, text)
-				}
+		if val, ok := doc.Attributes[field]; ok {
+			if text, ok := val.(string); ok && text != "" {
+				idx.AddDocument(uint32(rowID), text)
 			}
 		}
-		rowID++
 	}
-
 	return idx, nil
 }
 
-func openDocsReader(ctx context.Context, store objectstore.Store, key string) (io.Reader, func() error, error) {
-	reader, _, err := store.Get(ctx, key, nil)
+func loadSegmentDocs(ctx context.Context, store objectstore.Store, docsKey string) ([]index.DocColumn, error) {
+	reader, _, err := store.Get(ctx, docsKey, nil)
 	if err != nil {
-		return nil, nil, err
-	}
-
-	magic := make([]byte, 4)
-	n, err := io.ReadFull(reader, magic)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		reader.Close()
-		return nil, nil, fmt.Errorf("failed to read docs magic: %w", err)
-	}
-	if n == 0 {
-		reader.Close()
-		return nil, nil, io.EOF
-	}
-
-	fullReader := io.MultiReader(bytes.NewReader(magic[:n]), reader)
-	isZstd := n >= 4 && magic[0] == 0x28 && magic[1] == 0xB5 && magic[2] == 0x2F && magic[3] == 0xFD
-	if !isZstd {
-		return fullReader, reader.Close, nil
-	}
-
-	zstdReader, err := zstd.NewReader(fullReader,
-		zstd.WithDecoderLowmem(true),
-		zstd.WithDecoderMaxWindow(32*1024*1024),
-		zstd.WithDecoderConcurrency(1),
-	)
-	if err != nil {
-		reader.Close()
-		return nil, nil, fmt.Errorf("failed to create zstd reader: %w", err)
-	}
-
-	closeFn := func() error {
-		zstdReader.Close()
-		return reader.Close()
-	}
-	return zstdReader, closeFn, nil
-}
-
-func ensureDocOffsets(ctx context.Context, store objectstore.Store, docsKey string) error {
-	offsetsKey := docsOffsetsKey(docsKey)
-	if offsetsKey == "" {
-		return nil
-	}
-	if _, err := store.Head(ctx, offsetsKey); err == nil {
-		return nil
-	}
-
-	reader, closeFn, err := openDocsReader(ctx, store, docsKey)
-	if err != nil {
-		return err
-	}
-	defer closeFn()
-
-	decoder := json.NewDecoder(reader)
-	token, err := decoder.Token()
-	if err != nil {
-		return fmt.Errorf("failed to read JSON start: %w", err)
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '[' {
-		return fmt.Errorf("expected JSON array, got %v", token)
-	}
-
-	var offsets []uint64
-	var lastEnd int64
-	for decoder.More() {
-		start := decoder.InputOffset()
-		var skip json.RawMessage
-		if err := decoder.Decode(&skip); err != nil {
-			return fmt.Errorf("failed to decode doc: %w", err)
-		}
-		lastEnd = decoder.InputOffset()
-		offsets = append(offsets, uint64(start))
-	}
-	offsets = append(offsets, uint64(lastEnd))
-
-	data, err := encodeDocOffsets(offsets)
-	if err != nil {
-		return err
-	}
-
-	_, err = store.PutIfAbsent(ctx, offsetsKey, bytes.NewReader(data), int64(len(data)), &objectstore.PutOptions{
-		ContentType: "application/octet-stream",
-	})
-	if err != nil && !objectstore.IsConflictError(err) {
-		return err
-	}
-	return nil
-}
-
-func docsOffsetsKey(docsKey string) string {
-	if strings.HasSuffix(docsKey, "/docs.col.zst") {
-		return strings.TrimSuffix(docsKey, "/docs.col.zst") + "/docs.offsets.bin"
-	}
-	if strings.HasSuffix(docsKey, "docs.col.zst") {
-		return strings.TrimSuffix(docsKey, "docs.col.zst") + "docs.offsets.bin"
-	}
-	return ""
-}
-
-func encodeDocOffsets(offsets []uint64) ([]byte, error) {
-	if len(offsets) == 0 {
-		return nil, fmt.Errorf("empty offsets")
-	}
-	count := uint64(len(offsets) - 1)
-	buf := &bytes.Buffer{}
-	buf.WriteString("DOFF")
-	if err := binaryWrite(buf, uint32(1)); err != nil {
 		return nil, err
 	}
-	if err := binaryWrite(buf, count); err != nil {
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
 		return nil, err
 	}
-	for _, off := range offsets {
-		if err := binaryWrite(buf, off); err != nil {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	decoded := data
+	if index.IsZstdCompressed(data) {
+		decoded, err = index.DecompressZstd(data)
+		if err != nil {
 			return nil, err
 		}
 	}
-	return buf.Bytes(), nil
-}
 
-func binaryWrite(buf *bytes.Buffer, value any) error {
-	switch v := value.(type) {
-	case uint32:
-		var b [4]byte
-		b[0] = byte(v)
-		b[1] = byte(v >> 8)
-		b[2] = byte(v >> 16)
-		b[3] = byte(v >> 24)
-		_, err := buf.Write(b[:])
-		return err
-	case uint64:
-		var b [8]byte
-		b[0] = byte(v)
-		b[1] = byte(v >> 8)
-		b[2] = byte(v >> 16)
-		b[3] = byte(v >> 24)
-		b[4] = byte(v >> 32)
-		b[5] = byte(v >> 40)
-		b[6] = byte(v >> 48)
-		b[7] = byte(v >> 56)
-		_, err := buf.Write(b[:])
-		return err
-	default:
-		return fmt.Errorf("unsupported type")
+	docs, err := index.DecodeDocsColumn(decoded)
+	if err == nil {
+		return docs, nil
 	}
+	if errors.Is(err, index.ErrDocsColumnFormat) || errors.Is(err, index.ErrDocsColumnVersion) {
+		var fallbackDocs []index.DocColumn
+		if err := json.Unmarshal(decoded, &fallbackDocs); err != nil {
+			return nil, fmt.Errorf("failed to parse docs JSON: %w", err)
+		}
+		return fallbackDocs, nil
+	}
+	return nil, err
 }
