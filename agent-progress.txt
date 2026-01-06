@@ -1805,3 +1805,11 @@ KEY DEPENDENCIES:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2026-01-07T02:15:00Z] Completed api-debug-recall: PASS
+- Documented recall debug endpoint defaults, request/response, and error cases.
+- Documented admin-only debug state and test-state injection APIs with schemas and examples.
+- Files changed: docs/api/debug.md.
+- Files changed: task_list.json.
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.
