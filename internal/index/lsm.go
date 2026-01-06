@@ -728,13 +728,11 @@ func DeduplicateDocuments(docs []DocumentEntry) []DocumentEntry {
 
 // QuerySegmentIterator iterates over segments and tail for query execution.
 type QuerySegmentIterator struct {
-	segments    []Segment
-	tailDocs    []DocumentEntry
-	tailIndex   int
-	segmentIdx  int
-	seenIDs     map[string]bool
-	namespace   string
-	reader      *SegmentReader
+	segments  []Segment
+	tailDocs  []DocumentEntry
+	tailIndex int
+	seenIDs   map[string]bool
+	reader    *SegmentReader
 }
 
 // NewQuerySegmentIterator creates an iterator for query execution.

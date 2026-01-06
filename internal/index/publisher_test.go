@@ -190,12 +190,6 @@ func (m *publisherMockStore) hasObject(key string) bool {
 	return exists
 }
 
-func (m *publisherMockStore) getObject(key string) []byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.objects[key]
-}
-
 // Test: Verify all segment objects are uploaded before manifest
 func TestPublisher_SegmentsUploadedBeforeManifest(t *testing.T) {
 	store := newPublisherMockStore()

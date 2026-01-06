@@ -167,15 +167,6 @@ func (m *recoveryMockStore) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// setLastModified sets a custom last modified time for an object.
-func (m *recoveryMockStore) setLastModified(key string, t time.Time) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if obj, ok := m.objects[key]; ok {
-		obj.lastModified = t
-	}
-}
-
 // hasObject checks if an object exists.
 func (m *recoveryMockStore) hasObject(key string) bool {
 	m.mu.Lock()

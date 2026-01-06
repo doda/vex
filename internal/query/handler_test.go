@@ -500,18 +500,6 @@ func (m *mockTailStore) Close() error {
 	return nil
 }
 
-// mockStateManager is a minimal implementation for testing
-type mockStateManager struct {
-	state *namespace.LoadedState
-}
-
-func (m *mockStateManager) Load(ctx context.Context, ns string) (*namespace.LoadedState, error) {
-	if m.state == nil {
-		return nil, namespace.ErrStateNotFound
-	}
-	return m.state, nil
-}
-
 func TestQueryHandler_Handle(t *testing.T) {
 	// Create a handler with mock dependencies
 	store := objectstore.NewMemoryStore()

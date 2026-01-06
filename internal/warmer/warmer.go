@@ -21,8 +21,6 @@ type WarmTask struct {
 
 // Warmer handles background cache warming for namespaces.
 type Warmer struct {
-	mu sync.Mutex
-
 	store        objectstore.Store
 	stateManager *namespace.StateManager
 	diskCache    *cache.DiskCache

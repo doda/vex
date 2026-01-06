@@ -342,10 +342,10 @@ func TestParseAndEval_Comparison(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Eq null doesn't match explicit null",
+			name:     "Eq null matches explicit null",
 			filter:   []any{"a", "Eq", nil},
 			doc:      Document{"a": nil},
-			expected: false,
+			expected: true,
 		},
 		{
 			name:     "Eq null doesn't match present",
@@ -374,10 +374,10 @@ func TestParseAndEval_Comparison(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "NotEq null matches explicit null",
+			name:     "NotEq null doesn't match explicit null",
 			filter:   []any{"a", "NotEq", nil},
 			doc:      Document{"a": nil},
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "NotEq null doesn't match missing",
@@ -654,7 +654,7 @@ func TestEqNotEq_TaskVerification(t *testing.T) {
 	})
 
 	t.Run("Eq_null_matches_missing_attribute", func(t *testing.T) {
-		// Test ["attr", "Eq", null] matches missing attribute
+		// Test ["attr", "Eq", null] matches missing attribute or explicit null
 		f, err := Parse([]any{"optional_field", "Eq", nil})
 		if err != nil {
 			t.Fatalf("Parse failed: %v", err)
@@ -662,8 +662,8 @@ func TestEqNotEq_TaskVerification(t *testing.T) {
 		if !f.Eval(Document{"other": "value"}) {
 			t.Error("Eq null should match when attribute is missing")
 		}
-		if f.Eval(Document{"optional_field": nil}) {
-			t.Error("Eq null should not match when attribute is explicit null")
+		if !f.Eval(Document{"optional_field": nil}) {
+			t.Error("Eq null should match when attribute is explicit null")
 		}
 		if f.Eval(Document{"optional_field": "exists"}) {
 			t.Error("Eq null should not match when attribute has a value")
@@ -689,7 +689,7 @@ func TestEqNotEq_TaskVerification(t *testing.T) {
 	})
 
 	t.Run("NotEq_null_matches_attribute_present", func(t *testing.T) {
-		// Test ["attr", "NotEq", null] matches attribute present
+		// Test ["attr", "NotEq", null] matches attribute present with non-nil value
 		f, err := Parse([]any{"required_field", "NotEq", nil})
 		if err != nil {
 			t.Fatalf("Parse failed: %v", err)
@@ -703,8 +703,8 @@ func TestEqNotEq_TaskVerification(t *testing.T) {
 		if f.Eval(Document{"other": "value"}) {
 			t.Error("NotEq null should not match when attribute is missing")
 		}
-		if !f.Eval(Document{"required_field": nil}) {
-			t.Error("NotEq null should match when attribute is explicit null")
+		if f.Eval(Document{"required_field": nil}) {
+			t.Error("NotEq null should not match when attribute is explicit null")
 		}
 	})
 }

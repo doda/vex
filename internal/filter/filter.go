@@ -325,9 +325,9 @@ func (f *Filter) evalNot(doc Document) bool {
 func (f *Filter) evalEq(doc Document) bool {
 	docVal, exists := doc[f.Attr]
 
-	// Eq null matches missing attribute (explicit null is treated as present).
+	// Eq null matches missing attribute OR explicit nil value.
 	if f.Value == nil {
-		return !exists
+		return !exists || docVal == nil
 	}
 
 	// If attribute doesn't exist, can't match
@@ -341,9 +341,9 @@ func (f *Filter) evalEq(doc Document) bool {
 func (f *Filter) evalNotEq(doc Document) bool {
 	docVal, exists := doc[f.Attr]
 
-	// NotEq null matches "attribute present" (including explicit null).
+	// NotEq null matches "attribute present with non-nil value".
 	if f.Value == nil {
-		return exists
+		return exists && docVal != nil
 	}
 
 	// If attribute doesn't exist, it's not equal

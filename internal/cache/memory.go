@@ -63,7 +63,6 @@ type memoryEntry struct {
 	data       []byte
 	size       int64
 	accessTime time.Time
-	element    *list.Element
 }
 
 // shard groups all entries belonging to a single shard for shard-aware eviction.

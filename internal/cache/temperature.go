@@ -3,7 +3,6 @@ package cache
 
 import (
 	"sync"
-	"time"
 
 	"github.com/vexsearch/vex/internal/logging"
 )
@@ -41,9 +40,7 @@ type TemperatureTracker struct {
 	// Per-namespace statistics for granular tracking.
 	namespaceStats map[string]*namespaceHitStats
 
-	// Timestamp of last temperature calculation for rate limiting.
-	lastTempCalc time.Time
-	cachedTemp   logging.CacheTemperature
+	cachedTemp logging.CacheTemperature
 }
 
 // namespaceHitStats tracks per-namespace cache statistics.
