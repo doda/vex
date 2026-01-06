@@ -3454,7 +3454,7 @@
       "cmd/vex/indexer/indexer.go",
       "pkg/objectstore/store.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "api-overview",
