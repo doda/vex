@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/url"
 	"time"
 )
 
@@ -175,17 +174,6 @@ func (p *Proxy) ProxyHandler(namespace string, localHandler http.HandlerFunc) ht
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}
-}
-
-// buildTargetURL creates the URL for the proxied request.
-func buildTargetURL(targetAddr string, originalURL *url.URL) (*url.URL, error) {
-	target := &url.URL{
-		Scheme:   "http",
-		Host:     targetAddr,
-		Path:     originalURL.Path,
-		RawQuery: originalURL.RawQuery,
-	}
-	return target, nil
 }
 
 // ErrNoHomeNode is returned when no home node can be found.

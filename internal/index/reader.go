@@ -1057,17 +1057,6 @@ func readVectorElements(r io.Reader, out []float32, dtype vector.DType) error {
 	return nil
 }
 
-// sortResultsByDistance sorts results by distance (ascending).
-func sortResultsByDistance(results []vector.IVFSearchResult) {
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Distance < results[i].Distance {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
-}
-
 // LoadFilterIndexes loads filter bitmap indexes for a segment.
 // Returns a map of attribute name -> FilterIndex.
 func (r *Reader) LoadFilterIndexes(ctx context.Context, filterKeys []string) (map[string]*filter.FilterIndex, error) {
@@ -2083,7 +2072,7 @@ func (r *Reader) LoadDocsForRowIDs(ctx context.Context, seg Segment, rowIDs []ui
 	fullReader := io.MultiReader(bytes.NewReader(magic[:n]), reader)
 
 	// Check for zstd magic bytes and wrap with decompressor if needed
-	var jsonReader io.Reader
+	var dataReader io.Reader
 	isZstd := n >= 4 && magic[0] == 0x28 && magic[1] == 0xB5 && magic[2] == 0x2F && magic[3] == 0xFD
 	if isZstd {
 		// Use low memory mode and limit window size to reduce memory usage
@@ -2096,12 +2085,31 @@ func (r *Reader) LoadDocsForRowIDs(ctx context.Context, seg Segment, rowIDs []ui
 			return nil, fmt.Errorf("failed to create zstd reader: %w", err)
 		}
 		defer zstdReader.Close()
-		jsonReader = zstdReader
+		dataReader = zstdReader
 	} else {
-		jsonReader = fullReader
+		dataReader = fullReader
 	}
 
-	decoder := json.NewDecoder(jsonReader)
+	// Check for column format magic bytes
+	buffered := bufio.NewReader(dataReader)
+	peek, err := buffered.Peek(len(docsColumnMagic))
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("failed to peek docs column magic: %w", err)
+	}
+	if len(peek) == len(docsColumnMagic) && bytes.Equal(peek, docsColumnMagic[:]) {
+		docCols, err := DecodeDocsColumnForRowIDs(buffered, idSet)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode docs column for row IDs: %w", err)
+		}
+		result := make(map[uint32]IndexedDocument, len(docCols))
+		for rowID, col := range docCols {
+			result[rowID] = docColumnToIndexedDocument(col)
+		}
+		return result, nil
+	}
+
+	// Fall back to JSON format
+	decoder := json.NewDecoder(buffered)
 	token, err := decoder.Token()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read JSON start: %w", err)
@@ -2137,6 +2145,18 @@ func (r *Reader) LoadDocsForRowIDs(ctx context.Context, seg Segment, rowIDs []ui
 	}
 
 	return result, nil
+}
+
+// docColumnToIndexedDocument converts a DocColumn to an IndexedDocument.
+func docColumnToIndexedDocument(col DocColumn) IndexedDocument {
+	return IndexedDocument{
+		ID:         col.ID,
+		NumericID:  col.NumericID,
+		WALSeq:     col.WALSeq,
+		Deleted:    col.Deleted,
+		Attributes: col.Attributes,
+		Vector:     col.Vector,
+	}
 }
 
 // LoadFTSIndexes loads FTS indexes from all segments in a manifest.

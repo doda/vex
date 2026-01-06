@@ -72,11 +72,10 @@ type batchResult struct {
 type namespaceBatch struct {
 	namespace   string
 	writes      []*pendingWrite
-	timer       *time.Timer
-	startTime   time.Time
-	size        int64 // estimated uncompressed size
-	schemaDelta *namespace.Schema
-	flushed     bool // set to true once flush starts, prevents double-flush
+	timer     *time.Timer
+	startTime time.Time
+	size      int64 // estimated uncompressed size
+	flushed   bool  // set to true once flush starts, prevents double-flush
 }
 
 type namespaceCommitState struct {
@@ -892,11 +891,6 @@ func (p *writeProcessor) deduplicatePatchRows(rows []map[string]any) ([]map[stri
 func (p *writeProcessor) processUpsertRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
 	h := &Handler{canon: p.canon}
 	return h.processUpsertRow(row, batch, schemaCollector)
-}
-
-func (p *writeProcessor) processPatchRow(row map[string]any, batch *wal.WriteSubBatch, schemaCollector *schemaCollector) error {
-	h := &Handler{canon: p.canon}
-	return h.processPatchRow(row, batch, schemaCollector)
 }
 
 func (p *writeProcessor) preparePatchRow(row map[string]any) (document.ID, map[string]any, map[string]*wal.AttributeValue, error) {

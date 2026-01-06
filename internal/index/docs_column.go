@@ -277,6 +277,130 @@ func DecodeDocsColumnForIDs(r io.Reader, idSet map[uint64]struct{}) ([]DocColumn
 	return result, nil
 }
 
+// DecodeDocsColumnForRowIDs decodes only the requested row indices from an uncompressed columnar reader.
+// This returns a map from row index to DocColumn for efficient lookup.
+func DecodeDocsColumnForRowIDs(r io.Reader, rowIDSet map[uint32]struct{}) (map[uint32]DocColumn, error) {
+	if len(rowIDSet) == 0 {
+		return nil, nil
+	}
+
+	docCount, vectorDims, err := readDocsColumnHeader(r)
+	if err != nil {
+		return nil, err
+	}
+	if docCount == 0 {
+		return nil, nil
+	}
+
+	numericIDs := make([]uint64, docCount)
+	if err := binary.Read(r, binary.LittleEndian, numericIDs); err != nil {
+		return nil, fmt.Errorf("failed to read numeric IDs: %w", err)
+	}
+
+	walSeqs := make([]uint64, docCount)
+	if err := binary.Read(r, binary.LittleEndian, walSeqs); err != nil {
+		return nil, fmt.Errorf("failed to read WAL sequences: %w", err)
+	}
+
+	deletedFlags := make([]byte, docCount)
+	if _, err := io.ReadFull(r, deletedFlags); err != nil {
+		return nil, fmt.Errorf("failed to read deleted flags: %w", err)
+	}
+
+	result := make(map[uint32]DocColumn, len(rowIDSet))
+	for i := 0; i < docCount; i++ {
+		if _, ok := rowIDSet[uint32(i)]; !ok {
+			continue
+		}
+		result[uint32(i)] = DocColumn{
+			NumericID: numericIDs[i],
+			WALSeq:    walSeqs[i],
+			Deleted:   deletedFlags[i] == 1,
+		}
+	}
+	if len(result) == 0 {
+		return nil, nil
+	}
+
+	for i := 0; i < docCount; i++ {
+		length, err := readUint32(r)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read ID length: %w", err)
+		}
+		if _, keep := rowIDSet[uint32(i)]; !keep {
+			if err := discardBytes(r, int64(length)); err != nil {
+				return nil, fmt.Errorf("failed to skip ID bytes: %w", err)
+			}
+			continue
+		}
+		if length == 0 {
+			continue
+		}
+		idBytes := make([]byte, length)
+		if _, err := io.ReadFull(r, idBytes); err != nil {
+			return nil, fmt.Errorf("failed to read ID bytes: %w", err)
+		}
+		doc := result[uint32(i)]
+		doc.ID = string(idBytes)
+		result[uint32(i)] = doc
+	}
+
+	for i := 0; i < docCount; i++ {
+		length, err := readUint32(r)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read attributes length: %w", err)
+		}
+		if _, keep := rowIDSet[uint32(i)]; !keep {
+			if err := discardBytes(r, int64(length)); err != nil {
+				return nil, fmt.Errorf("failed to skip attributes bytes: %w", err)
+			}
+			continue
+		}
+		if length == 0 {
+			continue
+		}
+		attrBytes := make([]byte, length)
+		if _, err := io.ReadFull(r, attrBytes); err != nil {
+			return nil, fmt.Errorf("failed to read attributes bytes: %w", err)
+		}
+		var attrs map[string]any
+		if err := json.Unmarshal(attrBytes, &attrs); err != nil {
+			attrs = make(map[string]any)
+		}
+		doc := result[uint32(i)]
+		doc.Attributes = attrs
+		result[uint32(i)] = doc
+	}
+
+	if vectorDims == 0 {
+		return result, nil
+	}
+
+	bytesPerVector := int(vectorDims * 4)
+	for i := 0; i < docCount; i++ {
+		if _, keep := rowIDSet[uint32(i)]; !keep {
+			if err := discardBytes(r, int64(bytesPerVector)); err != nil {
+				return nil, fmt.Errorf("failed to skip vector bytes: %w", err)
+			}
+			continue
+		}
+		raw := make([]byte, bytesPerVector)
+		if _, err := io.ReadFull(r, raw); err != nil {
+			return nil, fmt.Errorf("failed to read vector bytes: %w", err)
+		}
+		vec := make([]float32, vectorDims)
+		for j := 0; j < int(vectorDims); j++ {
+			start := j * 4
+			vec[j] = math.Float32frombits(binary.LittleEndian.Uint32(raw[start : start+4]))
+		}
+		doc := result[uint32(i)]
+		doc.Vector = vec
+		result[uint32(i)] = doc
+	}
+
+	return result, nil
+}
+
 // IsZstdCompressed reports whether the data starts with the zstd magic header.
 func IsZstdCompressed(data []byte) bool {
 	if len(data) < len(zstdMagic) {

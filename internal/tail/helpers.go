@@ -7,7 +7,6 @@ import (
 	"math"
 	"sort"
 
-	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/wal"
 )
 
@@ -321,9 +320,4 @@ func estimateAttributeSize(v *wal.AttributeValue) int64 {
 	}
 
 	return 0
-}
-
-// documentIDFromProto converts a protobuf DocumentID to document.ID.
-func documentIDFromProto(protoID *wal.DocumentID) (document.ID, error) {
-	return wal.DocumentIDToID(protoID)
 }

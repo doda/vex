@@ -145,20 +145,6 @@ func New(store objectstore.Store, stateManager *namespace.StateManager, config *
 	return idx
 }
 
-// defaultProcessor reads WAL entries in the range and returns total bytes read.
-// This is a fallback processor that reads WAL but doesn't build indexes.
-func (i *Indexer) defaultProcessor(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
-	_, totalBytes, lastSeq, err := i.ProcessWALRange(ctx, ns, startSeq, endSeq)
-	if err != nil {
-		return nil, err
-	}
-	return &WALProcessResult{
-		BytesIndexed:       totalBytes,
-		ProcessedWALSeq:    lastSeq,
-		ProcessedWALSeqSet: true,
-	}, nil
-}
-
 // Start begins the indexer's background processing.
 func (i *Indexer) Start() {
 	i.wg.Add(1)

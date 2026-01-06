@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/vexsearch/vex/internal/write"
@@ -132,94 +130,6 @@ func (f *goldenTestFixture) executeQuery(t *testing.T, namespace string, body ma
 	}
 
 	return rec.Code, resp
-}
-
-// goldenDir returns the path to the golden files directory.
-func goldenDir() string {
-	return filepath.Join("testdata")
-}
-
-// loadGolden loads a golden file for comparison.
-func loadGolden(t *testing.T, name string) map[string]any {
-	t.Helper()
-
-	path := filepath.Join(goldenDir(), name+".json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read golden file %s: %v", path, err)
-	}
-
-	var golden map[string]any
-	if err := json.Unmarshal(data, &golden); err != nil {
-		t.Fatalf("failed to unmarshal golden file %s: %v", path, err)
-	}
-
-	return golden
-}
-
-// saveGolden saves a golden file (used when updating goldens).
-func saveGolden(t *testing.T, name string, data map[string]any) {
-	t.Helper()
-
-	// Create directory if not exists
-	dir := goldenDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("failed to create golden dir: %v", err)
-	}
-
-	path := filepath.Join(dir, name+".json")
-	content, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		t.Fatalf("failed to marshal golden data: %v", err)
-	}
-
-	if err := os.WriteFile(path, content, 0644); err != nil {
-		t.Fatalf("failed to write golden file: %v", err)
-	}
-}
-
-// normalizeResponse removes volatile fields (timing, etc) for golden comparison.
-func normalizeResponse(resp map[string]any) map[string]any {
-	normalized := make(map[string]any)
-	for k, v := range resp {
-		switch k {
-		case "performance":
-			// Normalize performance - keep structure but zero out timing
-			if perf, ok := v.(map[string]any); ok {
-				normPerf := make(map[string]any)
-				for pk, pv := range perf {
-					switch pk {
-					case "server_total_ms", "query_execution_ms":
-						normPerf[pk] = 0.0 // Normalize timing to 0
-					default:
-						normPerf[pk] = pv
-					}
-				}
-				normalized[k] = normPerf
-			}
-		case "billing":
-			// Keep billing as-is (it should be deterministic for fixed dataset)
-			normalized[k] = v
-		default:
-			normalized[k] = v
-		}
-	}
-	return normalized
-}
-
-// compareResponses checks if actual matches expected, ignoring volatile fields.
-func compareResponses(t *testing.T, testName string, actual, expected map[string]any) {
-	t.Helper()
-
-	actualNorm := normalizeResponse(actual)
-	expectedNorm := normalizeResponse(expected)
-
-	actualJSON, _ := json.MarshalIndent(actualNorm, "", "  ")
-	expectedJSON, _ := json.MarshalIndent(expectedNorm, "", "  ")
-
-	if !bytes.Equal(actualJSON, expectedJSON) {
-		t.Errorf("response mismatch for %s\nExpected:\n%s\n\nActual:\n%s", testName, expectedJSON, actualJSON)
-	}
 }
 
 // TestGoldenFixedDataset tests that the fixed dataset is correctly created.
