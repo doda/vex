@@ -3471,7 +3471,7 @@
       "pkg/api/errors.go",
       "SPEC.md"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "api-write",
