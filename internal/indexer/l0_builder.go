@@ -760,6 +760,20 @@ func (p *L0SegmentProcessor) publishSegment(ctx context.Context, ns string, segm
 	})
 	if err != nil {
 		if objectstore.IsConflictError(err) {
+			// Manifest already exists - recover by reading existing and advancing state
+			fmt.Printf("[l0_builder] Manifest %s already exists, attempting recovery...\n", newManifestKey)
+			existingManifest, loadErr := p.loadManifest(ctx, newManifestKey)
+			if loadErr != nil {
+				return nil, fmt.Errorf("manifest already exists and failed to load: %w", loadErr)
+			}
+			if existingManifest != nil {
+				_, advErr := p.stateMan.AdvanceIndex(ctx, ns, etag, newManifestKey, newManifestSeq, existingManifest.IndexedWALSeq, segment.Stats.LogicalBytes)
+				if advErr != nil {
+					return nil, fmt.Errorf("manifest exists, failed to advance state: %w", advErr)
+				}
+				fmt.Printf("[l0_builder] Recovered from existing manifest %s\n", newManifestKey)
+				return &WALProcessResult{ManifestKey: newManifestKey, ManifestSeq: newManifestSeq, IndexedWALSeq: existingManifest.IndexedWALSeq, ManifestWritten: false}, nil
+			}
 			return nil, fmt.Errorf("manifest already exists: %w", err)
 		}
 		return nil, fmt.Errorf("failed to write manifest: %w", err)
