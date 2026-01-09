@@ -117,7 +117,7 @@ type Handler struct {
 	stateMan    *namespace.StateManager
 	encoder     *wal.Encoder
 	canon       *wal.Canonicalizer
-	tailStore   tail.Store        // Optional tail store for filter evaluation
+	tailStore   tail.Store // Optional tail store for filter evaluation
 	indexReader *index.Reader
 	idempotency *IdempotencyStore // Optional idempotency store for de-duplication
 	compatMode  string            // Compatibility mode: "turbopuffer" or "vex"
@@ -441,7 +441,7 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 	if err != nil {
 		if objectstore.IsConflictError(err) {
 			if confirmErr := confirmExistingWAL(ctx, h.store, walKey, result.Data); confirmErr != nil {
-				err = fmt.Errorf("%w: %v", wal.ErrWALSeqConflict, confirmErr)
+				err = wrapWALConflict(ctx, h.store, h.stateMan, ns, confirmErr)
 				releaseOnError(err)
 				return nil, err
 			}
