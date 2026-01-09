@@ -1420,11 +1420,6 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 	}
 	manifestMs := time.Since(t0).Milliseconds()
 
-	// Build a set of requested IDs for O(1) lookup
-	idSet := make(map[uint64]struct{}, len(ids))
-	for _, id := range ids {
-		idSet[id] = struct{}{}
-	}
 
 	fmt.Printf("[TIMING] LoadDocsForIDs: manifest=%dms, segments=%d, requestedIDs=%v\n",
 		manifestMs, len(manifest.Segments), ids)
@@ -1435,8 +1430,7 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 	var allDocs []IndexedDocument
 	for i, seg := range manifest.Segments {
 		t1 := time.Now()
-		// Don't remove from idSet - we need to find ALL versions including tombstones
-		docs, err := r.loadDocsForIDsFromSegment(ctx, seg, copyIDSet(idSet))
+		docs, err := r.LoadDocsForIDsInSegment(ctx, seg, ids)
 		segMs := time.Since(t1).Milliseconds()
 		if err != nil {
 			fmt.Printf("[TIMING] LoadDocsForIDs: segment[%d] error=%v (%dms)\n", i, err, segMs)
@@ -1475,14 +1469,6 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 	return result, nil
 }
 
-// copyIDSet creates a copy of an ID set
-func copyIDSet(idSet map[uint64]struct{}) map[uint64]struct{} {
-	copy := make(map[uint64]struct{}, len(idSet))
-	for id := range idSet {
-		copy[id] = struct{}{}
-	}
-	return copy
-}
 
 // partialDoc is used for efficient streaming - defers attribute parsing until we know we need the doc
 type partialDoc struct {
