@@ -70,8 +70,8 @@ type batchResult struct {
 
 // namespaceBatch collects writes for a single namespace.
 type namespaceBatch struct {
-	namespace   string
-	writes      []*pendingWrite
+	namespace string
+	writes    []*pendingWrite
 	timer     *time.Timer
 	startTime time.Time
 	size      int64 // estimated uncompressed size
@@ -473,7 +473,7 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	if err != nil {
 		if objectstore.IsConflictError(err) {
 			if confirmErr := confirmExistingWAL(batchCtx, b.store, walKey, result.Data); confirmErr != nil {
-				batchErr := fmt.Errorf("%w: %v", wal.ErrWALSeqConflict, confirmErr)
+				batchErr := wrapWALConflict(batchCtx, b.store, b.stateMan, batch.namespace, confirmErr)
 				for i, pw := range batch.writes {
 					if results[i] != nil {
 						if pw.reserved {

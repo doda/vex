@@ -50,7 +50,7 @@ func TestHandler_HandleBasicUpsert(t *testing.T) {
 	}
 }
 
-func TestHandlerWALConflictDoesNotAdvanceState(t *testing.T) {
+func TestHandlerWALConflictRepairsState(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
@@ -107,8 +107,8 @@ func TestHandlerWALConflictDoesNotAdvanceState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
 	}
-	if loaded.State.WAL.HeadSeq != 0 {
-		t.Errorf("expected head_seq 0, got %d", loaded.State.WAL.HeadSeq)
+	if loaded.State.WAL.HeadSeq != 1 {
+		t.Errorf("expected head_seq 1 after repair, got %d", loaded.State.WAL.HeadSeq)
 	}
 }
 
