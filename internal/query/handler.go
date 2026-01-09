@@ -1470,7 +1470,14 @@ func (h *Handler) executeBM25Query(ctx context.Context, ns string, loaded *names
 func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64, ftsCfg *fts.Config, queryTokens []string) ([]Row, bool, error) {
 	debug := queryDebugEnabled()
 	loadStart := time.Now()
-	ftsIndexes, err := h.indexReader.LoadFTSIndexesForField(ctx, loaded.State.Index.ManifestKey, parsed.Field)
+	maxSegments := bm25MaxSegments()
+	var ftsIndexes []index.FTSSegmentIndex
+	var err error
+	if maxSegments > 0 {
+		ftsIndexes, err = h.indexReader.LoadFTSIndexesForFieldWithLimit(ctx, loaded.State.Index.ManifestKey, parsed.Field, maxSegments)
+	} else {
+		ftsIndexes, err = h.indexReader.LoadFTSIndexesForField(ctx, loaded.State.Index.ManifestKey, parsed.Field)
+	}
 	if err != nil {
 		if debug {
 			debugLogf("[bm25] ns=%s fts_load err=%v dur=%s", ns, err, time.Since(loadStart))
@@ -1478,7 +1485,7 @@ func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string,
 		return nil, false, err
 	}
 	if debug {
-		debugLogf("[bm25] ns=%s fts_indexes=%d load_dur=%s", ns, len(ftsIndexes), time.Since(loadStart))
+		debugLogf("[bm25] ns=%s fts_indexes=%d max_segments=%d load_dur=%s", ns, len(ftsIndexes), maxSegments, time.Since(loadStart))
 	}
 	if len(ftsIndexes) == 0 {
 		return nil, false, nil
@@ -1496,233 +1503,217 @@ func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string,
 		debugLogf("[bm25] ns=%s tail_docs=%d tail_scores=%d dur=%s", ns, len(tailLatest), len(tailScores), time.Since(tailStart))
 	}
 
-	indexed := make(map[string]bm25Candidate)
-	if len(ftsIndexes) == 1 && f == nil {
-		seg := ftsIndexes[0]
-		target := req.Limit + len(tailLatest)
-		if target < req.Limit {
-			target = req.Limit
-		}
-		topStart := time.Now()
-		topRows := bm25TopRowScores(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg, target)
-		if debug {
-			debugLogf("[bm25] ns=%s segment=%s top_rows=%d top_dur=%s", ns, seg.Segment.ID, len(topRows), time.Since(topStart))
-		}
-		if len(topRows) > 0 {
-			rowIDs := make([]uint32, 0, len(topRows))
-			for _, row := range topRows {
-				rowIDs = append(rowIDs, row.rowID)
-			}
+	segmentLimit := req.Limit + len(tailLatest)
+	if segmentLimit < req.Limit {
+		segmentLimit = req.Limit
+	}
+	if segmentLimit <= 0 {
+		segmentLimit = req.Limit
+	}
 
-			loadStart := time.Now()
-			docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, seg.Segment, rowIDs)
-			if err != nil {
-				return nil, false, err
-			}
-			if debug {
-				debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, seg.Segment.ID, len(docsByRow), time.Since(loadStart))
-			}
+	var fallbackRows []Row
+	for {
+		indexed := make(map[string]bm25Candidate)
 
-			for _, row := range topRows {
-				idoc, ok := docsByRow[row.rowID]
-				if !ok {
-					continue
-				}
-				if row.score <= 0 {
-					continue
-				}
-
-				docID, ok := indexedDocumentID(idoc)
-				if !ok {
-					continue
-				}
-
-				doc := &tail.Document{
-					ID:         docID,
-					WalSeq:     idoc.WALSeq,
-					Attributes: idoc.Attributes,
-					Deleted:    idoc.Deleted,
-				}
-
-				key := doc.ID.String()
-				existing, ok := indexed[key]
-				if ok && doc.WalSeq < existing.doc.WalSeq {
-					continue
-				}
-				indexed[key] = bm25Candidate{
-					doc:         doc,
-					score:       row.score,
-					filterMatch: true,
-				}
-			}
-		}
-	} else if f == nil {
-		target := req.Limit + len(tailLatest)
-		if target < req.Limit {
-			target = req.Limit
+		type bm25SegmentRows struct {
+			seg  index.Segment
+			rows []bm25RowScore
 		}
 
+		segments := make([]bm25SegmentRows, 0, len(ftsIndexes))
+		totalCandidates := 0
+		truncated := false
 		for _, seg := range ftsIndexes {
 			topStart := time.Now()
-			topRows := bm25TopRowScores(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg, target)
+			topRows := bm25TopRowScores(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg, segmentLimit)
 			if debug {
 				debugLogf("[bm25] ns=%s segment=%s top_rows=%d top_dur=%s", ns, seg.Segment.ID, len(topRows), time.Since(topStart))
 			}
 			if len(topRows) == 0 {
 				continue
 			}
-
-			rowIDs := make([]uint32, 0, len(topRows))
-			for _, row := range topRows {
-				rowIDs = append(rowIDs, row.rowID)
+			if len(topRows) == segmentLimit {
+				truncated = true
 			}
+			segments = append(segments, bm25SegmentRows{seg: seg.Segment, rows: topRows})
+			totalCandidates += len(topRows)
+		}
 
-			loadStart := time.Now()
-			docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, seg.Segment, rowIDs)
-			if err != nil {
-				return nil, false, err
+		if len(segments) == 0 {
+			scored := mergeBM25Candidates(indexed, tailLatest, tailScores)
+			sort.Slice(scored, func(i, j int) bool {
+				return scored[i].score > scored[j].score
+			})
+			if len(scored) > req.Limit {
+				scored = scored[:req.Limit]
+			}
+			rows := make([]Row, 0, len(scored))
+			for _, sc := range scored {
+				dist := sc.score
+				rows = append(rows, Row{
+					ID:         docIDToAny(sc.doc.ID),
+					Dist:       &dist,
+					Attributes: sc.doc.Attributes,
+				})
 			}
 			if debug {
-				debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, seg.Segment.ID, len(docsByRow), time.Since(loadStart))
+				debugLogf("[bm25] ns=%s index_rows=%d indexed_candidates=%d", ns, len(rows), len(scored))
 			}
+			return rows, true, nil
+		}
 
-			for _, row := range topRows {
-				idoc, ok := docsByRow[row.rowID]
-				if !ok {
-					continue
-				}
-				if row.score <= 0 {
-					continue
-				}
+		merge := make(bm25MergeHeap, 0, len(segments))
+		for i, seg := range segments {
+			merge = append(merge, bm25MergeItem{
+				segIdx: i,
+				rowIdx: 0,
+				score:  seg.rows[0].score,
+			})
+		}
+		heap.Init(&merge)
 
-				docID, ok := indexedDocumentID(idoc)
-				if !ok {
-					continue
-				}
-
-				doc := &tail.Document{
-					ID:         docID,
-					WalSeq:     idoc.WALSeq,
-					Attributes: idoc.Attributes,
-					Deleted:    idoc.Deleted,
-				}
-
-				key := doc.ID.String()
-				existing, ok := indexed[key]
-				if ok && doc.WalSeq < existing.doc.WalSeq {
-					continue
-				}
-				indexed[key] = bm25Candidate{
-					doc:         doc,
-					score:       row.score,
-					filterMatch: true,
-				}
+		candidates := make([]bm25RowCandidate, 0, totalCandidates)
+		processed := 0
+		budget := req.Limit + len(tailLatest)
+		if budget < req.Limit {
+			budget = req.Limit
+		}
+		if f != nil {
+			budget += req.Limit
+			if budget < req.Limit {
+				budget = req.Limit
 			}
 		}
-	} else {
-		for _, seg := range ftsIndexes {
-			scoreStart := time.Now()
-			scoresByRow := bm25ScoresForIndex(seg.Index, queryTokens, parsed.LastAsPrefix, ftsCfg)
-			if debug {
-				debugLogf("[bm25] ns=%s segment=%s scores=%d score_dur=%s", ns, seg.Segment.ID, len(scoresByRow), time.Since(scoreStart))
-			}
-			if len(scoresByRow) == 0 {
-				continue
-			}
+		if budget > totalCandidates {
+			budget = totalCandidates
+		}
 
-			rowIDs := make([]uint32, 0, len(scoresByRow))
-			for rowID := range scoresByRow {
-				rowIDs = append(rowIDs, rowID)
-			}
-
-			loadStart := time.Now()
-			docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, seg.Segment, rowIDs)
-			if err != nil {
-				return nil, false, err
-			}
-			if debug {
-				debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, seg.Segment.ID, len(docsByRow), time.Since(loadStart))
-			}
-
-			for rowID, idoc := range docsByRow {
-				score := scoresByRow[rowID]
-				if score <= 0 {
-					continue
-				}
-
-				docID, ok := indexedDocumentID(idoc)
-				if !ok {
-					continue
-				}
-
-				doc := &tail.Document{
-					ID:         docID,
-					WalSeq:     idoc.WALSeq,
-					Attributes: idoc.Attributes,
-					Deleted:    idoc.Deleted,
-				}
-
-				key := doc.ID.String()
-				existing, ok := indexed[key]
-				if ok && doc.WalSeq < existing.doc.WalSeq {
-					continue
-				}
-				indexed[key] = bm25Candidate{
-					doc:         doc,
-					score:       score,
-					filterMatch: filterMatches(f, doc),
+		for {
+			for len(candidates) < budget && merge.Len() > 0 {
+				item := heap.Pop(&merge).(bm25MergeItem)
+				segRows := segments[item.segIdx].rows
+				row := segRows[item.rowIdx]
+				candidates = append(candidates, bm25RowCandidate{
+					segIdx: item.segIdx,
+					rowID:  row.rowID,
+					score:  row.score,
+				})
+				nextIdx := item.rowIdx + 1
+				if nextIdx < len(segRows) {
+					heap.Push(&merge, bm25MergeItem{
+						segIdx: item.segIdx,
+						rowIdx: nextIdx,
+						score:  segRows[nextIdx].score,
+					})
 				}
 			}
+
+			if processed < len(candidates) {
+				batches := make(map[int][]bm25RowCandidate)
+				for _, cand := range candidates[processed:] {
+					batches[cand.segIdx] = append(batches[cand.segIdx], cand)
+				}
+
+				for segIdx, batch := range batches {
+					rowIDs := make([]uint32, 0, len(batch))
+					for _, cand := range batch {
+						rowIDs = append(rowIDs, cand.rowID)
+					}
+
+					loadStart := time.Now()
+					docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, segments[segIdx].seg, rowIDs)
+					if err != nil {
+						return nil, false, err
+					}
+					if debug {
+						debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, segments[segIdx].seg.ID, len(docsByRow), time.Since(loadStart))
+					}
+
+					for _, cand := range batch {
+						idoc, ok := docsByRow[cand.rowID]
+						if !ok {
+							continue
+						}
+						if cand.score <= 0 {
+							continue
+						}
+
+						docID, ok := indexedDocumentID(idoc)
+						if !ok {
+							continue
+						}
+
+						doc := &tail.Document{
+							ID:         docID,
+							WalSeq:     idoc.WALSeq,
+							Attributes: idoc.Attributes,
+							Deleted:    idoc.Deleted,
+						}
+
+						key := doc.ID.String()
+						existing, ok := indexed[key]
+						if ok && doc.WalSeq < existing.doc.WalSeq {
+							continue
+						}
+						indexed[key] = bm25Candidate{
+							doc:         doc,
+							score:       cand.score,
+							filterMatch: filterMatches(f, doc),
+						}
+					}
+				}
+				processed = len(candidates)
+			}
+
+			scored := mergeBM25Candidates(indexed, tailLatest, tailScores)
+			if len(scored) >= req.Limit || merge.Len() == 0 || budget >= totalCandidates {
+				sort.Slice(scored, func(i, j int) bool {
+					return scored[i].score > scored[j].score
+				})
+				if len(scored) > req.Limit {
+					scored = scored[:req.Limit]
+				}
+
+				rows := make([]Row, 0, len(scored))
+				for _, sc := range scored {
+					dist := sc.score
+					rows = append(rows, Row{
+						ID:         docIDToAny(sc.doc.ID),
+						Dist:       &dist,
+						Attributes: sc.doc.Attributes,
+					})
+				}
+
+				if debug {
+					debugLogf("[bm25] ns=%s index_rows=%d indexed_candidates=%d", ns, len(rows), len(scored))
+				}
+
+				if len(scored) >= req.Limit || !truncated {
+					return rows, true, nil
+				}
+				fallbackRows = rows
+				break
+			}
+
+			newBudget := budget * 2
+			if newBudget <= budget {
+				newBudget = budget + 1
+			}
+			if newBudget > totalCandidates {
+				newBudget = totalCandidates
+			}
+			budget = newBudget
 		}
-	}
 
-	for id, doc := range tailLatest {
-		if doc.Deleted {
-			delete(indexed, id)
-			continue
+		nextLimit := segmentLimit * 2
+		if nextLimit <= segmentLimit {
+			if fallbackRows == nil {
+				return []Row{}, true, nil
+			}
+			return fallbackRows, true, nil
 		}
-		score := tailScores[id]
-		if score <= 0 {
-			delete(indexed, id)
-			continue
-		}
-		indexed[id] = bm25Candidate{
-			doc:         doc,
-			score:       score,
-			filterMatch: true,
-		}
+		segmentLimit = nextLimit
 	}
-
-	scored := make([]bm25Candidate, 0, len(indexed))
-	for _, cand := range indexed {
-		if cand.doc == nil || cand.doc.Deleted || !cand.filterMatch || cand.score <= 0 {
-			continue
-		}
-		scored = append(scored, cand)
-	}
-
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
-
-	if len(scored) > req.Limit {
-		scored = scored[:req.Limit]
-	}
-
-	rows := make([]Row, 0, len(scored))
-	for _, sc := range scored {
-		dist := sc.score
-		rows = append(rows, Row{
-			ID:         docIDToAny(sc.doc.ID),
-			Dist:       &dist,
-			Attributes: sc.doc.Attributes,
-		})
-	}
-
-	if debug {
-		debugLogf("[bm25] ns=%s index_rows=%d indexed_candidates=%d", ns, len(rows), len(scored))
-	}
-	return rows, true, nil
 }
 
 func (h *Handler) loadTailBM25Scores(ctx context.Context, ns string, parsed *ParsedRankBy, f *filter.Filter, tailByteCap int64, ftsCfg *fts.Config, queryTokens []string) (map[string]*tail.Document, map[string]float64, error) {
@@ -2171,6 +2162,12 @@ type bm25RowScore struct {
 	score float64
 }
 
+type bm25RowCandidate struct {
+	segIdx int
+	rowID  uint32
+	score  float64
+}
+
 type bm25TermStat struct {
 	idf   float64
 	freqs map[uint32]uint32
@@ -2183,6 +2180,26 @@ func (h bm25RowScoreHeap) Less(i, j int) bool { return h[i].score < h[j].score }
 func (h bm25RowScoreHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h *bm25RowScoreHeap) Push(x any)        { *h = append(*h, x.(bm25RowScore)) }
 func (h *bm25RowScoreHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
+
+type bm25MergeItem struct {
+	segIdx int
+	rowIdx int
+	score  float64
+}
+
+type bm25MergeHeap []bm25MergeItem
+
+func (h bm25MergeHeap) Len() int           { return len(h) }
+func (h bm25MergeHeap) Less(i, j int) bool { return h[i].score > h[j].score }
+func (h bm25MergeHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *bm25MergeHeap) Push(x any)        { *h = append(*h, x.(bm25MergeItem)) }
+func (h *bm25MergeHeap) Pop() any {
 	old := *h
 	n := len(old)
 	item := old[n-1]
@@ -2368,6 +2385,39 @@ func bm25ScoresForIndex(idx *fts.Index, queryTokens []string, lastAsPrefix bool,
 		return nil
 	}
 	return scores
+}
+
+func mergeBM25Candidates(indexed map[string]bm25Candidate, tailLatest map[string]*tail.Document, tailScores map[string]float64) []bm25Candidate {
+	merged := make(map[string]bm25Candidate, len(indexed)+len(tailLatest))
+	for id, cand := range indexed {
+		merged[id] = cand
+	}
+
+	for id, doc := range tailLatest {
+		if doc.Deleted {
+			delete(merged, id)
+			continue
+		}
+		score := tailScores[id]
+		if score <= 0 {
+			delete(merged, id)
+			continue
+		}
+		merged[id] = bm25Candidate{
+			doc:         doc,
+			score:       score,
+			filterMatch: true,
+		}
+	}
+
+	scored := make([]bm25Candidate, 0, len(merged))
+	for _, cand := range merged {
+		if cand.doc == nil || cand.doc.Deleted || !cand.filterMatch || cand.score <= 0 {
+			continue
+		}
+		scored = append(scored, cand)
+	}
+	return scored
 }
 
 func filterMatches(f *filter.Filter, doc *tail.Document) bool {
