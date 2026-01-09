@@ -41,6 +41,7 @@ type Reader struct {
 	mu       sync.RWMutex
 	readers  map[string]*cachedIVFReader
 	ftsCache map[string]*fts.Index
+	ftsTerms map[string][]string
 
 	docOffsetsCache map[string][]uint64
 	docIDRowMu      sync.RWMutex
@@ -79,6 +80,7 @@ func NewReaderWithOptions(store objectstore.Store, diskCache *cache.DiskCache, r
 		largeClusterChunkBytes: opts.LargeClusterChunkBytes,
 		readers:                make(map[string]*cachedIVFReader),
 		ftsCache:               make(map[string]*fts.Index),
+		ftsTerms:               make(map[string][]string),
 		docOffsetsCache:        make(map[string][]uint64),
 		docIDRowCache:          make(map[string]map[uint64]uint32),
 	}
@@ -1420,7 +1422,6 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 	}
 	manifestMs := time.Since(t0).Milliseconds()
 
-
 	fmt.Printf("[TIMING] LoadDocsForIDs: manifest=%dms, segments=%d, requestedIDs=%v\n",
 		manifestMs, len(manifest.Segments), ids)
 
@@ -1468,7 +1469,6 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 
 	return result, nil
 }
-
 
 // partialDoc is used for efficient streaming - defers attribute parsing until we know we need the doc
 type partialDoc struct {
@@ -2085,6 +2085,9 @@ func (r *Reader) LoadDocsForRowIDs(ctx context.Context, seg Segment, rowIDs []ui
 	if len(peek) == len(docsColumnMagic) && bytes.Equal(peek, docsColumnMagic[:]) {
 		docCols, err := DecodeDocsColumnForRowIDs(buffered, idSet)
 		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("failed to decode docs column for row IDs: %w", err)
 		}
 		result := make(map[uint32]IndexedDocument, len(docCols))
@@ -2187,6 +2190,81 @@ type FTSSegmentIndex struct {
 	Index   *fts.Index
 }
 
+// FTSSegmentTerms ties a term list to its segment metadata.
+type FTSSegmentTerms struct {
+	Segment Segment
+	Terms   []string
+}
+
+// LoadFTSTermsForField loads term lists for a specific field across segments.
+func (r *Reader) LoadFTSTermsForField(ctx context.Context, manifestKey, field string) ([]FTSSegmentTerms, error) {
+	if manifestKey == "" || r.store == nil || field == "" {
+		return nil, nil
+	}
+
+	manifest, err := r.LoadManifest(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+
+	var results []FTSSegmentTerms
+	for _, seg := range manifest.Segments {
+		for _, termsKey := range seg.FTSTermKeys {
+			attrName := extractAttrNameFromFTSTermsKey(termsKey)
+			if attrName != field {
+				continue
+			}
+
+			terms, err := r.loadFTSTerms(ctx, termsKey)
+			if err != nil || len(terms) == 0 {
+				continue
+			}
+
+			results = append(results, FTSSegmentTerms{
+				Segment: seg,
+				Terms:   terms,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+// LoadFTSIndexesForFieldInSegments loads deserialized FTS indexes for a field across selected segments.
+func (r *Reader) LoadFTSIndexesForFieldInSegments(ctx context.Context, manifestKey, field string, segments []Segment) ([]FTSSegmentIndex, error) {
+	if manifestKey == "" || r.store == nil || field == "" {
+		return nil, nil
+	}
+	if len(segments) == 0 {
+		return nil, nil
+	}
+
+	var results []FTSSegmentIndex
+	for _, seg := range segments {
+		for _, ftsKey := range seg.FTSKeys {
+			attrName := extractAttrNameFromFTSKey(ftsKey)
+			if attrName != field {
+				continue
+			}
+
+			idx, err := r.loadFTSIndex(ctx, ftsKey)
+			if err != nil || idx == nil {
+				continue
+			}
+
+			results = append(results, FTSSegmentIndex{
+				Segment: seg,
+				Index:   idx,
+			})
+		}
+	}
+
+	return results, nil
+}
+
 // LoadFTSIndexesForField loads deserialized FTS indexes for a specific field across segments.
 func (r *Reader) LoadFTSIndexesForField(ctx context.Context, manifestKey, field string) ([]FTSSegmentIndex, error) {
 	if manifestKey == "" || r.store == nil || field == "" {
@@ -2203,6 +2281,60 @@ func (r *Reader) LoadFTSIndexesForField(ctx context.Context, manifestKey, field 
 
 	var results []FTSSegmentIndex
 	for _, seg := range manifest.Segments {
+		for _, ftsKey := range seg.FTSKeys {
+			attrName := extractAttrNameFromFTSKey(ftsKey)
+			if attrName != field {
+				continue
+			}
+
+			idx, err := r.loadFTSIndex(ctx, ftsKey)
+			if err != nil || idx == nil {
+				continue
+			}
+
+			results = append(results, FTSSegmentIndex{
+				Segment: seg,
+				Index:   idx,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+// LoadFTSIndexesForFieldWithLimit loads FTS indexes for a field across a limited number of segments.
+// The newest segments by WAL sequence are preferred when maxSegments > 0.
+func (r *Reader) LoadFTSIndexesForFieldWithLimit(ctx context.Context, manifestKey, field string, maxSegments int) ([]FTSSegmentIndex, error) {
+	if maxSegments <= 0 {
+		return r.LoadFTSIndexesForField(ctx, manifestKey, field)
+	}
+	if manifestKey == "" || r.store == nil || field == "" {
+		return nil, nil
+	}
+
+	manifest, err := r.LoadManifest(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifest == nil {
+		return nil, nil
+	}
+
+	segments := manifest.Segments
+	if maxSegments > 0 && len(segments) > maxSegments {
+		ordered := make([]Segment, len(segments))
+		copy(ordered, segments)
+		sort.Slice(ordered, func(i, j int) bool {
+			if ordered[i].EndWALSeq == ordered[j].EndWALSeq {
+				return ordered[i].ID > ordered[j].ID
+			}
+			return ordered[i].EndWALSeq > ordered[j].EndWALSeq
+		})
+		segments = ordered[:maxSegments]
+	}
+
+	var results []FTSSegmentIndex
+	for _, seg := range segments {
 		for _, ftsKey := range seg.FTSKeys {
 			attrName := extractAttrNameFromFTSKey(ftsKey)
 			if attrName != field {
@@ -2256,6 +2388,38 @@ func (r *Reader) loadFTSIndex(ctx context.Context, key string) (*fts.Index, erro
 	return idx, nil
 }
 
+func (r *Reader) loadFTSTerms(ctx context.Context, key string) ([]string, error) {
+	r.mu.RLock()
+	cached := r.ftsTerms[key]
+	r.mu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	data, err := r.loadObject(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	terms, err := DecodeFTSTerms(data)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	if existing := r.ftsTerms[key]; existing != nil {
+		r.mu.Unlock()
+		return existing, nil
+	}
+	r.ftsTerms[key] = terms
+	r.mu.Unlock()
+
+	return terms, nil
+}
+
 // extractAttrNameFromFTSKey extracts the attribute name from an FTS key.
 // Key format: .../fts.<attribute>.bm25
 func extractAttrNameFromFTSKey(key string) string {
@@ -2268,6 +2432,24 @@ func extractAttrNameFromFTSKey(key string) string {
 		return ""
 	}
 	attrName := strings.TrimSuffix(strings.TrimPrefix(rest, "fts."), ".bm25")
+	if attrName == "" {
+		return ""
+	}
+	return attrName
+}
+
+// extractAttrNameFromFTSTermsKey extracts the attribute name from an FTS term list key.
+// Key format: .../fts.<attribute>.terms
+func extractAttrNameFromFTSTermsKey(key string) string {
+	lastSlash := strings.LastIndexByte(key, '/')
+	if lastSlash == -1 || lastSlash+1 >= len(key) {
+		return ""
+	}
+	rest := key[lastSlash+1:]
+	if !strings.HasPrefix(rest, "fts.") || !strings.HasSuffix(rest, ".terms") {
+		return ""
+	}
+	attrName := strings.TrimSuffix(strings.TrimPrefix(rest, "fts."), ".terms")
 	if attrName == "" {
 		return ""
 	}
@@ -2293,6 +2475,11 @@ func (r *Reader) Clear(namespace string) {
 			delete(r.ftsCache, key)
 		}
 	}
+	for key := range r.ftsTerms {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.ftsTerms, key)
+		}
+	}
 
 	for key := range r.docOffsetsCache {
 		if strings.HasPrefix(key, prefix) {
@@ -2307,6 +2494,7 @@ func (r *Reader) Close() error {
 	defer r.mu.Unlock()
 	r.readers = make(map[string]*cachedIVFReader)
 	r.ftsCache = make(map[string]*fts.Index)
+	r.ftsTerms = make(map[string][]string)
 	r.docOffsetsCache = make(map[string][]uint64)
 	return nil
 }

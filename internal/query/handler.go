@@ -1473,21 +1473,70 @@ func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string,
 	maxSegments := bm25MaxSegments()
 	var ftsIndexes []index.FTSSegmentIndex
 	var err error
-	if maxSegments > 0 {
-		ftsIndexes, err = h.indexReader.LoadFTSIndexesForFieldWithLimit(ctx, loaded.State.Index.ManifestKey, parsed.Field, maxSegments)
-	} else {
-		ftsIndexes, err = h.indexReader.LoadFTSIndexesForField(ctx, loaded.State.Index.ManifestKey, parsed.Field)
-	}
+	manifest, err := h.indexReader.LoadManifest(ctx, loaded.State.Index.ManifestKey)
 	if err != nil {
 		if debug {
-			debugLogf("[bm25] ns=%s fts_load err=%v dur=%s", ns, err, time.Since(loadStart))
+			debugLogf("[bm25] ns=%s fts_manifest err=%v dur=%s", ns, err, time.Since(loadStart))
 		}
 		return nil, false, err
+	}
+	if manifest == nil || len(manifest.Segments) == 0 {
+		return nil, false, nil
+	}
+
+	segments := manifest.Segments
+	segmentsToLoad := segments
+	filteredOutAll := false
+
+	termsStart := time.Now()
+	segmentTerms, termErr := h.indexReader.LoadFTSTermsForField(ctx, loaded.State.Index.ManifestKey, parsed.Field)
+	if termErr == nil && len(segmentTerms) > 0 {
+		termsByID := make(map[string][]string, len(segmentTerms))
+		for _, entry := range segmentTerms {
+			termsByID[entry.Segment.ID] = entry.Terms
+		}
+		filtered := make([]index.Segment, 0, len(segments))
+		for _, seg := range segments {
+			terms, ok := termsByID[seg.ID]
+			if ok && !ftsTermsMatch(terms, queryTokens, parsed.LastAsPrefix) {
+				continue
+			}
+			filtered = append(filtered, seg)
+		}
+		segmentsToLoad = filtered
+		if len(segmentsToLoad) == 0 {
+			filteredOutAll = true
+		}
+	}
+	if debug {
+		debugLogf("[bm25] ns=%s fts_terms=%d segments=%d filtered=%d term_dur=%s err=%v", ns, len(segmentTerms), len(segments), len(segmentsToLoad), time.Since(termsStart), termErr)
+	}
+
+	if maxSegments > 0 && len(segmentsToLoad) > maxSegments {
+		ordered := make([]index.Segment, len(segmentsToLoad))
+		copy(ordered, segmentsToLoad)
+		sort.Slice(ordered, func(i, j int) bool {
+			if ordered[i].EndWALSeq == ordered[j].EndWALSeq {
+				return ordered[i].ID > ordered[j].ID
+			}
+			return ordered[i].EndWALSeq > ordered[j].EndWALSeq
+		})
+		segmentsToLoad = ordered[:maxSegments]
+	}
+
+	if len(segmentsToLoad) > 0 {
+		ftsIndexes, err = h.indexReader.LoadFTSIndexesForFieldInSegments(ctx, loaded.State.Index.ManifestKey, parsed.Field, segmentsToLoad)
+		if err != nil {
+			if debug {
+				debugLogf("[bm25] ns=%s fts_load err=%v dur=%s", ns, err, time.Since(loadStart))
+			}
+			return nil, false, err
+		}
 	}
 	if debug {
 		debugLogf("[bm25] ns=%s fts_indexes=%d max_segments=%d load_dur=%s", ns, len(ftsIndexes), maxSegments, time.Since(loadStart))
 	}
-	if len(ftsIndexes) == 0 {
+	if len(ftsIndexes) == 0 && !filteredOutAll {
 		return nil, false, nil
 	}
 
@@ -1614,52 +1663,96 @@ func (h *Handler) executeBM25QueryWithFTSIndexes(ctx context.Context, ns string,
 					batches[cand.segIdx] = append(batches[cand.segIdx], cand)
 				}
 
-				for segIdx, batch := range batches {
-					rowIDs := make([]uint32, 0, len(batch))
-					for _, cand := range batch {
-						rowIDs = append(rowIDs, cand.rowID)
-					}
+				type bm25BatchResult struct {
+					segIdx     int
+					candidates []bm25Candidate
+					docCount   int
+					dur        time.Duration
+					err        error
+				}
 
-					loadStart := time.Now()
-					docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, segments[segIdx].seg, rowIDs)
-					if err != nil {
-						return nil, false, err
+				loadConcurrency := bm25LoadConcurrency()
+				if loadConcurrency < 1 {
+					loadConcurrency = 1
+				}
+				sem := make(chan struct{}, loadConcurrency)
+				results := make(chan bm25BatchResult, len(batches))
+				var wg sync.WaitGroup
+
+				for segIdx, batch := range batches {
+					segIdx := segIdx
+					batch := batch
+					wg.Add(1)
+					sem <- struct{}{}
+					go func() {
+						defer wg.Done()
+						defer func() { <-sem }()
+
+						rowIDs := make([]uint32, 0, len(batch))
+						for _, cand := range batch {
+							rowIDs = append(rowIDs, cand.rowID)
+						}
+
+						loadStart := time.Now()
+						docsByRow, err := h.indexReader.LoadDocsForRowIDs(ctx, segments[segIdx].seg, rowIDs)
+						result := bm25BatchResult{
+							segIdx:   segIdx,
+							docCount: len(docsByRow),
+							dur:      time.Since(loadStart),
+							err:      err,
+						}
+						if err == nil && len(docsByRow) > 0 {
+							cands := make([]bm25Candidate, 0, len(batch))
+							for _, cand := range batch {
+								idoc, ok := docsByRow[cand.rowID]
+								if !ok {
+									continue
+								}
+								if cand.score <= 0 {
+									continue
+								}
+
+								docID, ok := indexedDocumentID(idoc)
+								if !ok {
+									continue
+								}
+
+								doc := &tail.Document{
+									ID:         docID,
+									WalSeq:     idoc.WALSeq,
+									Attributes: idoc.Attributes,
+									Deleted:    idoc.Deleted,
+								}
+
+								cands = append(cands, bm25Candidate{
+									doc:         doc,
+									score:       cand.score,
+									filterMatch: filterMatches(f, doc),
+								})
+							}
+							result.candidates = cands
+						}
+						results <- result
+					}()
+				}
+
+				wg.Wait()
+				close(results)
+
+				for result := range results {
+					if result.err != nil {
+						return nil, false, result.err
 					}
 					if debug {
-						debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, segments[segIdx].seg.ID, len(docsByRow), time.Since(loadStart))
+						debugLogf("[bm25] ns=%s segment=%s docs=%d load_dur=%s", ns, segments[result.segIdx].seg.ID, result.docCount, result.dur)
 					}
-
-					for _, cand := range batch {
-						idoc, ok := docsByRow[cand.rowID]
-						if !ok {
-							continue
-						}
-						if cand.score <= 0 {
-							continue
-						}
-
-						docID, ok := indexedDocumentID(idoc)
-						if !ok {
-							continue
-						}
-
-						doc := &tail.Document{
-							ID:         docID,
-							WalSeq:     idoc.WALSeq,
-							Attributes: idoc.Attributes,
-							Deleted:    idoc.Deleted,
-						}
-
-						key := doc.ID.String()
+					for _, cand := range result.candidates {
+						key := cand.doc.ID.String()
 						existing, ok := indexed[key]
-						if ok && doc.WalSeq < existing.doc.WalSeq {
+						if ok && cand.doc.WalSeq < existing.doc.WalSeq {
 							continue
 						}
-						indexed[key] = bm25Candidate{
-							doc:         doc,
-							score:       cand.score,
-							filterMatch: filterMatches(f, doc),
-						}
+						indexed[key] = cand
 					}
 				}
 				processed = len(candidates)
@@ -2385,6 +2478,48 @@ func bm25ScoresForIndex(idx *fts.Index, queryTokens []string, lastAsPrefix bool,
 		return nil
 	}
 	return scores
+}
+
+func ftsTermsMatch(terms []string, queryTokens []string, lastAsPrefix bool) bool {
+	if len(terms) == 0 || len(queryTokens) == 0 {
+		return false
+	}
+	if !lastAsPrefix {
+		for _, token := range queryTokens {
+			if ftsTermsContain(terms, token) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(queryTokens) == 1 {
+		return ftsTermsContainPrefix(terms, queryTokens[0])
+	}
+	for _, token := range queryTokens[:len(queryTokens)-1] {
+		if !ftsTermsContain(terms, token) {
+			return false
+		}
+	}
+	return ftsTermsContainPrefix(terms, queryTokens[len(queryTokens)-1])
+}
+
+func ftsTermsContain(terms []string, token string) bool {
+	if token == "" {
+		return false
+	}
+	idx := sort.SearchStrings(terms, token)
+	return idx < len(terms) && terms[idx] == token
+}
+
+func ftsTermsContainPrefix(terms []string, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	idx := sort.SearchStrings(terms, prefix)
+	if idx >= len(terms) {
+		return false
+	}
+	return strings.HasPrefix(terms[idx], prefix)
 }
 
 func mergeBM25Candidates(indexed map[string]bm25Candidate, tailLatest map[string]*tail.Document, tailScores map[string]float64) []bm25Candidate {

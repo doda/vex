@@ -580,6 +580,28 @@ func (w *SegmentWriter) WriteFTSData(ctx context.Context, attrName string, data 
 	return key, nil
 }
 
+// WriteFTSTermsData writes the full-text search term list and returns the object key.
+func (w *SegmentWriter) WriteFTSTermsData(ctx context.Context, attrName string, data []byte) (string, error) {
+	w.mu.Lock()
+	if w.sealed {
+		w.mu.Unlock()
+		return "", ErrSegmentSealed
+	}
+	w.mu.Unlock()
+
+	key := fmt.Sprintf("%s/fts.%s.terms", SegmentKey(w.namespace, w.segmentID), attrName)
+	etag, err := w.writeObject(ctx, key, data)
+	if err != nil {
+		return "", err
+	}
+
+	w.mu.Lock()
+	w.written[key] = etag
+	w.mu.Unlock()
+
+	return key, nil
+}
+
 // writeObject writes data to object storage with optional checksum.
 func (w *SegmentWriter) writeObject(ctx context.Context, key string, data []byte) (string, error) {
 	var opts *objectstore.PutOptions

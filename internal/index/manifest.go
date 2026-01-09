@@ -82,6 +82,9 @@ type Segment struct {
 	// FTSKeys is a list of object storage keys for full-text search indexes.
 	FTSKeys []string `json:"fts_keys,omitempty"`
 
+	// FTSTermKeys is a list of object storage keys for full-text search term lists.
+	FTSTermKeys []string `json:"fts_term_keys,omitempty"`
+
 	// Stats contains statistics about this segment.
 	Stats SegmentStats `json:"stats"`
 

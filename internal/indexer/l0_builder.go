@@ -632,6 +632,8 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 
 	var ftsKeys []string
 	var ftsBytes int64
+	var ftsTermKeys []string
+	var ftsTermBytes int64
 	if len(ftsConfigs) > 0 {
 		ftsBuilder := fts.NewIndexBuilder()
 		for i, doc := range docs {
@@ -658,6 +660,12 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 				if idx == nil || idx.TotalDocs == 0 {
 					continue
 				}
+				terms := make([]string, 0, len(idx.TermPostings))
+				for term := range idx.TermPostings {
+					terms = append(terms, term)
+				}
+				sort.Strings(terms)
+
 				data, err := idx.Serialize()
 				if err != nil {
 					return nil, fmt.Errorf("failed to serialize FTS index %s: %w", attrName, err)
@@ -668,6 +676,19 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 				}
 				ftsKeys = append(ftsKeys, key)
 				ftsBytes += int64(len(data))
+
+				if len(terms) > 0 {
+					termsData, err := index.EncodeFTSTerms(terms)
+					if err != nil {
+						return nil, fmt.Errorf("failed to encode FTS terms %s: %w", attrName, err)
+					}
+					termsKey, err := writer.WriteFTSTermsData(ctx, attrName, termsData)
+					if err != nil {
+						return nil, fmt.Errorf("failed to write FTS terms %s: %w", attrName, err)
+					}
+					ftsTermKeys = append(ftsTermKeys, termsKey)
+					ftsTermBytes += int64(len(termsData))
+				}
 			}
 		}
 	}
@@ -687,6 +708,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	}
 	totalBytes += filterBytes
 	totalBytes += ftsBytes
+	totalBytes += ftsTermBytes
 
 	segment := &index.Segment{
 		ID:          segID,
@@ -696,6 +718,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		DocsKey:     docsKey,
 		FilterKeys:  filterKeys,
 		FTSKeys:     ftsKeys,
+		FTSTermKeys: ftsTermKeys,
 		IVFKeys: func() *index.IVFKeys {
 			if ivfIndex == nil {
 				return nil
