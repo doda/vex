@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/filter"
 	"github.com/vexsearch/vex/internal/guardrails"
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 	"google.golang.org/protobuf/proto"
@@ -117,6 +119,10 @@ type Config struct {
 
 	// NVMeCachePath is the path for NVMe tier storage.
 	NVMeCachePath string
+
+	// MaxEntries is the maximum number of WAL entries to keep per namespace.
+	// Default: 200k (0 = no limit).
+	MaxEntries int
 }
 
 // DefaultConfig returns the default tail store configuration.
@@ -126,6 +132,7 @@ func DefaultConfig() Config {
 		MaxNVMeBytes:         2 * 1024 * 1024 * 1024, // 2 GB
 		EventualTailCapBytes: 128 * 1024 * 1024,      // 128 MiB
 		NVMeCachePath:        "/tmp/vex-tail",
+		MaxEntries:           200000,
 	}
 }
 
@@ -264,8 +271,10 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 	}
 
 	if startSeq > upToSeq {
+		entryCount := len(nt.entries)
 		nt.afterSeq = afterSeq
 		nt.mu.Unlock()
+		metrics.SetTailEntries(namespace, entryCount)
 		return nil
 	}
 	nt.mu.Unlock()
@@ -365,7 +374,12 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 				nt.mu.Unlock()
 				return err
 			}
-			if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
+			if ts.enforceEntryCapLocked(namespace, nt) {
+				if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
+					nt.mu.Unlock()
+					return err
+				}
+			} else if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
 				nt.mu.Unlock()
 				return err
 			}
@@ -374,8 +388,11 @@ func (ts *TailStore) Refresh(ctx context.Context, namespace string, afterSeq, up
 	}
 
 	nt.mu.Lock()
+	entryCount := len(nt.entries)
 	nt.afterSeq = afterSeq
 	nt.mu.Unlock()
+
+	metrics.SetTailEntries(namespace, entryCount)
 
 	return nil
 }
@@ -591,6 +608,7 @@ func (ts *TailStore) Clear(namespace string) {
 	if ts.guardrails != nil {
 		ts.guardrails.Evict(namespace)
 	}
+	metrics.SetTailEntries(namespace, 0)
 }
 
 func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
@@ -645,7 +663,11 @@ func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
 	if err := ts.enforceGuardrailsCapLocked(nt); err != nil {
 		return
 	}
-	if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
+	if ts.enforceEntryCapLocked(namespace, nt) {
+		if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
+			return
+		}
+	} else if err := ts.updateGuardrailsTailBytesLocked(namespace, nt); err != nil {
 		return
 	}
 
@@ -653,15 +675,24 @@ func (ts *TailStore) AddWALEntry(namespace string, entry *wal.WalEntry) {
 	if entry.Seq > nt.upToSeq {
 		nt.upToSeq = entry.Seq
 	}
+
+	metrics.SetTailEntries(namespace, len(nt.entries))
 }
 
 func (ts *TailStore) Close() error {
 	ts.mu.Lock()
+	var namespaces []string
+	for ns := range ts.namespaces {
+		namespaces = append(namespaces, ns)
+	}
 	defer ts.mu.Unlock()
 
 	ts.namespaces = make(map[string]*namespaceTail)
 	if ts.guardrails != nil {
 		ts.guardrails.Clear()
+	}
+	for _, ns := range namespaces {
+		metrics.SetTailEntries(ns, 0)
 	}
 	return nil
 }
@@ -896,6 +927,47 @@ func (ts *TailStore) enforceGuardrailsCapLocked(nt *namespaceTail) error {
 	return nil
 }
 
+func (ts *TailStore) enforceEntryCapLocked(namespace string, nt *namespaceTail) bool {
+	if ts.cfg.MaxEntries <= 0 {
+		return false
+	}
+
+	over := len(nt.entries) - ts.cfg.MaxEntries
+	if over <= 0 {
+		return false
+	}
+
+	seqs := make([]uint64, 0, len(nt.entries))
+	for seq := range nt.entries {
+		seqs = append(seqs, seq)
+	}
+	sort.Slice(seqs, func(i, j int) bool {
+		return seqs[i] < seqs[j]
+	})
+
+	for i := 0; i < over && i < len(seqs); i++ {
+		seq := seqs[i]
+		entry := nt.entries[seq]
+		delete(nt.entries, seq)
+		if entry != nil {
+			nt.tailBytes -= entry.sizeBytes
+			if entry.inRAM {
+				nt.ramBytes -= entry.sizeBytes
+			}
+			if ts.diskCache != nil {
+				cacheKey := cache.CacheKey{
+					ObjectKey: entry.fullKey,
+					ETag:      "",
+				}
+				_ = ts.diskCache.Delete(cacheKey)
+			}
+		}
+	}
+
+	log.Printf("[tail] namespace=%s entries=%d cap=%d dropped=%d", namespace, len(nt.entries), ts.cfg.MaxEntries, over)
+	return true
+}
+
 func (ts *TailStore) shouldKeepInRAM(nt *namespaceTail, sizeBytes int64) bool {
 	if ts.guardrails == nil {
 		return true
@@ -997,6 +1069,7 @@ func (ts *TailStore) syncGuardrailsNamespaces() {
 	for ns := range ts.namespaces {
 		if _, ok := allowed[ns]; !ok {
 			delete(ts.namespaces, ns)
+			metrics.SetTailEntries(ns, 0)
 		}
 	}
 }
