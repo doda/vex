@@ -116,11 +116,20 @@ func Run(args []string) {
 		}()
 	}
 
+	queryTimeout := time.Duration(cfg.Timeout.GetQueryTimeout()) * time.Millisecond
+	if queryTimeout <= 0 {
+		queryTimeout = 30 * time.Second
+	}
+	writeTimeout := queryTimeout + 5*time.Second
+	if writeTimeout < 30*time.Second {
+		writeTimeout = 30 * time.Second
+	}
+
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
 		Handler:      router,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 
