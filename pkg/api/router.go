@@ -194,7 +194,14 @@ func NewRouterWithStore(cfg *config.Config, clusterRouter *routing.Router, membe
 			r.writeHandler = writeHandler
 		}
 		// Create write batcher for 1/sec batching per namespace
-		writeBatcher, err := write.NewBatcherWithCompatMode(store, r.stateManager, r.tailStore, compatMode)
+		batcherCfg := write.DefaultBatcherConfig()
+		if cfg.Write.BatchWindowMs > 0 {
+			batcherCfg.BatchWindow = time.Duration(cfg.Write.BatchWindowMs) * time.Millisecond
+		}
+		if cfg.Write.MaxBatchSizeMB > 0 {
+			batcherCfg.MaxBatchSize = int64(cfg.Write.MaxBatchSizeMB) * 1024 * 1024
+		}
+		writeBatcher, err := write.NewBatcherWithConfigAndCompatMode(store, r.stateManager, r.tailStore, batcherCfg, compatMode)
 		if err == nil {
 			r.writeBatcher = writeBatcher
 		}
@@ -388,6 +395,15 @@ func (r *Router) validateNamespace(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, req)
+	}
+}
+
+func parseBoolParam(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1251,6 +1267,7 @@ func (r *Router) handleMultiQuery(w http.ResponseWriter, req *http.Request, ns s
 
 func (r *Router) handleDeleteNamespace(w http.ResponseWriter, req *http.Request) {
 	ns := req.PathValue("namespace")
+	purge := parseBoolParam(req.URL.Query().Get("purge"))
 
 	// Check object store availability
 	if err := r.checkObjectStore(); err != nil {
@@ -1260,6 +1277,25 @@ func (r *Router) handleDeleteNamespace(w http.ResponseWriter, req *http.Request)
 
 	// Use state manager to delete the namespace if available
 	if r.stateManager != nil {
+		if purge {
+			err := r.stateManager.DeleteNamespace(req.Context(), ns)
+			if err != nil && !errors.Is(err, namespace.ErrStateNotFound) && !errors.Is(err, namespace.ErrNamespaceTombstoned) {
+				r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
+				return
+			}
+			deleted, err := r.stateManager.PurgeNamespace(req.Context(), ns, namespace.PurgeOptions{KeepMeta: true})
+			if err != nil {
+				r.writeAPIError(w, ErrServiceUnavailable(err.Error()))
+				return
+			}
+			r.writeJSON(w, http.StatusOK, map[string]any{
+				"status":          "ok",
+				"purged":          true,
+				"deleted_objects": deleted,
+			})
+			return
+		}
+
 		err := r.stateManager.DeleteNamespace(req.Context(), ns)
 		if err != nil {
 			if errors.Is(err, namespace.ErrStateNotFound) {

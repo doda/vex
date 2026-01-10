@@ -118,6 +118,56 @@ func TestDeleteNamespace_WritesTombstone(t *testing.T) {
 	}
 }
 
+func TestDeleteNamespace_PurgeRemovesObjects(t *testing.T) {
+	cfg := testConfig()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	body := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "name": "test1"},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/purge-ns", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeAuthed(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("failed to create namespace: %d", w.Result().StatusCode)
+	}
+
+	ctx := context.Background()
+	extraKey := "vex/namespaces/purge-ns/index/segments/seg_extra/docs.col"
+	_, _ = store.Put(ctx, extraKey, bytes.NewReader([]byte("data")), int64(len("data")), nil)
+
+	req = httptest.NewRequest("DELETE", "/v2/namespaces/purge-ns?purge=1", nil)
+	w = httptest.NewRecorder()
+	router.ServeAuthed(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("purge failed: %d", w.Result().StatusCode)
+	}
+
+	if _, err := store.Head(ctx, extraKey); !objectstore.IsNotFoundError(err) {
+		t.Fatalf("expected extra object to be deleted, got %v", err)
+	}
+
+	if _, err := store.Head(ctx, namespace.StateKey("purge-ns")); err != nil {
+		t.Fatalf("expected state.json to remain, got %v", err)
+	}
+	if _, err := store.Head(ctx, namespace.TombstoneKey("purge-ns")); err != nil {
+		t.Fatalf("expected tombstone.json to remain, got %v", err)
+	}
+
+	if _, err := store.Head(ctx, namespace.CatalogKey("purge-ns")); !objectstore.IsNotFoundError(err) {
+		t.Fatalf("expected catalog entry to be deleted, got %v", err)
+	}
+}
+
 // TestDeleteNamespace_UpdatesStateWithTombstoned tests that state.json is updated with tombstoned=true.
 func TestDeleteNamespace_UpdatesStateWithTombstoned(t *testing.T) {
 	cfg := testConfig()
