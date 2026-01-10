@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vexsearch/vex/internal/document"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestEncoderDecoder(t *testing.T) {
@@ -62,6 +63,47 @@ func TestEncoderDecoder(t *testing.T) {
 	}
 	if decoded.SubBatches[0].RequestId != "request-123" {
 		t.Errorf("request_id mismatch: got %q, want %q", decoded.SubBatches[0].RequestId, "request-123")
+	}
+}
+
+func TestDecoder_DecodeReader(t *testing.T) {
+	encoder, err := NewEncoder()
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	defer encoder.Close()
+
+	decoder, err := NewDecoder()
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+	defer decoder.Close()
+
+	entry := NewWalEntry("test-namespace", 1)
+	batch := NewWriteSubBatch("request-123")
+	batch.AddUpsert(
+		&DocumentID{Id: &DocumentID_U64{U64: 42}},
+		map[string]*AttributeValue{
+			"name":   StringValue("test"),
+			"count":  IntValue(100),
+			"active": BoolValue(true),
+		},
+		nil, 0,
+	)
+	entry.SubBatches = append(entry.SubBatches, batch)
+
+	result, err := encoder.Encode(entry)
+	if err != nil {
+		t.Fatalf("failed to encode entry: %v", err)
+	}
+
+	decoded, err := decoder.DecodeReader(bytes.NewReader(result.Data))
+	if err != nil {
+		t.Fatalf("failed to decode reader: %v", err)
+	}
+
+	if !proto.Equal(decoded, entry) {
+		t.Fatalf("decoded entry mismatch")
 	}
 }
 

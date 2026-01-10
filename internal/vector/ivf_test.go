@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math"
 	"math/rand"
+	"reflect"
 	"testing"
 )
 
@@ -65,6 +66,61 @@ func TestIVFBuilder_EmptyBuild(t *testing.T) {
 	_, err := builder.Build()
 	if err != ErrNoVectors {
 		t.Errorf("expected ErrNoVectors, got %v", err)
+	}
+}
+
+func TestIVFBuilder_BuildWithSinglePassStreaming(t *testing.T) {
+	dims := 3
+	nClusters := 2
+	vectors := [][]float32{
+		{1, 0, 0},
+		{0.9, 0.1, 0},
+		{0, 1, 0},
+		{0, 0.9, 0.1},
+		{0, 0, 1},
+	}
+
+	rand.Seed(1)
+	builder := NewIVFBuilder(dims, MetricCosineDistance, nClusters)
+	for i, vec := range vectors {
+		if err := builder.AddVector(uint64(i+1), vec); err != nil {
+			t.Fatalf("AddVector failed: %v", err)
+		}
+	}
+	memIdx, err := builder.BuildWithSinglePass()
+	if err != nil {
+		t.Fatalf("BuildWithSinglePass failed: %v", err)
+	}
+
+	rand.Seed(1)
+	streamBuilder := NewIVFBuilder(dims, MetricCosineDistance, nClusters)
+	for i, vec := range vectors {
+		if err := streamBuilder.AddVector(uint64(i+1), vec); err != nil {
+			t.Fatalf("AddVector failed: %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	streamIdx, size, err := streamBuilder.BuildWithSinglePassStreaming(&buf)
+	if err != nil {
+		t.Fatalf("BuildWithSinglePassStreaming failed: %v", err)
+	}
+
+	if size != int64(buf.Len()) {
+		t.Fatalf("expected stream size %d, got %d", buf.Len(), size)
+	}
+
+	if streamIdx.Dims != memIdx.Dims || streamIdx.NClusters != memIdx.NClusters {
+		t.Fatalf("streamed index dims/clusters mismatch: dims %d/%d clusters %d/%d",
+			streamIdx.Dims, memIdx.Dims, streamIdx.NClusters, memIdx.NClusters)
+	}
+
+	if !reflect.DeepEqual(streamIdx.ClusterOffsets, memIdx.ClusterOffsets) {
+		t.Fatalf("cluster offsets mismatch between streaming and in-memory builds")
+	}
+
+	if !bytes.Equal(buf.Bytes(), memIdx.GetClusterDataBytes()) {
+		t.Fatalf("cluster data mismatch between streaming and in-memory builds")
 	}
 }
 

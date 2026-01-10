@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -531,6 +532,57 @@ func (w *SegmentWriter) WriteIVFClusterData(ctx context.Context, data []byte) (s
 
 	w.mu.Lock()
 	w.written[key] = etag
+	w.mu.Unlock()
+
+	return key, nil
+}
+
+// WriteIVFClusterDataStream writes the IVF packed cluster data by streaming to the object store.
+// Checksums are skipped to avoid buffering the full payload in memory.
+func (w *SegmentWriter) WriteIVFClusterDataStream(ctx context.Context, size int64, writeFn func(io.Writer) error) (string, error) {
+	w.mu.Lock()
+	if w.sealed {
+		w.mu.Unlock()
+		return "", ErrSegmentSealed
+	}
+	w.mu.Unlock()
+
+	if size < 0 {
+		return "", fmt.Errorf("invalid cluster data size: %d", size)
+	}
+
+	key := fmt.Sprintf("%s/vectors.clusters.pack", SegmentKey(w.namespace, w.segmentID))
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		err := writeFn(pw)
+		if err != nil {
+			_ = pw.CloseWithError(err)
+		} else {
+			_ = pw.Close()
+		}
+		errCh <- err
+	}()
+
+	info, err := w.store.PutIfAbsent(ctx, key, pr, size, nil)
+	if err != nil {
+		_ = pw.CloseWithError(err)
+	}
+
+	writeErr := <-errCh
+	if err == nil && writeErr != nil {
+		err = writeErr
+	}
+	if err != nil {
+		return "", err
+	}
+
+	w.mu.Lock()
+	if info != nil {
+		w.written[key] = info.ETag
+	} else {
+		w.written[key] = ""
+	}
 	w.mu.Unlock()
 
 	return key, nil

@@ -95,6 +95,7 @@ func LogicalSize(entry *WalEntry) (int64, error) {
 
 type Decoder struct {
 	decompressor *zstd.Decoder
+	buf          bytes.Buffer
 }
 
 func NewDecoder() (*Decoder, error) {
@@ -115,6 +116,12 @@ func (d *Decoder) Decode(compressed []byte) (*WalEntry, error) {
 	return d.DecodeWithVersionCheck(compressed, true)
 }
 
+// DecodeReader decodes a WAL entry from a compressed reader.
+// This avoids buffering the entire compressed payload in memory.
+func (d *Decoder) DecodeReader(r io.Reader) (*WalEntry, error) {
+	return d.DecodeReaderWithVersionCheck(r, true)
+}
+
 // DecodeWithVersionCheck decodes a WAL entry with optional version checking.
 // When checkVersion is true, it validates the format version is supported.
 func (d *Decoder) DecodeWithVersionCheck(compressed []byte, checkVersion bool) (*WalEntry, error) {
@@ -122,11 +129,29 @@ func (d *Decoder) DecodeWithVersionCheck(compressed []byte, checkVersion bool) (
 		return nil, err
 	}
 
-	decompressed, err := io.ReadAll(d.decompressor)
-	if err != nil {
+	d.buf.Reset()
+	if _, err := d.buf.ReadFrom(d.decompressor); err != nil {
 		return nil, err
 	}
 
+	return d.decodeBytes(d.buf.Bytes(), checkVersion)
+}
+
+// DecodeReaderWithVersionCheck decodes a WAL entry from a compressed reader with optional version checking.
+func (d *Decoder) DecodeReaderWithVersionCheck(r io.Reader, checkVersion bool) (*WalEntry, error) {
+	if err := d.decompressor.Reset(r); err != nil {
+		return nil, err
+	}
+
+	d.buf.Reset()
+	if _, err := d.buf.ReadFrom(d.decompressor); err != nil {
+		return nil, err
+	}
+
+	return d.decodeBytes(d.buf.Bytes(), checkVersion)
+}
+
+func (d *Decoder) decodeBytes(decompressed []byte, checkVersion bool) (*WalEntry, error) {
 	var entry WalEntry
 	if err := proto.Unmarshal(decompressed, &entry); err != nil {
 		return nil, err

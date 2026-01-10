@@ -54,6 +54,12 @@ func Run(args []string) {
 	if cfg.Indexer.WriteManifestVersion != 0 {
 		indexerConfig.WriteManifestVersion = cfg.Indexer.WriteManifestVersion
 	}
+	if cfg.Indexer.MaxWALBytesMB > 0 {
+		indexerConfig.MaxWALBytes = int64(cfg.Indexer.MaxWALBytesMB) * 1024 * 1024
+	}
+	if cfg.Indexer.MaxWALEntries > 0 {
+		indexerConfig.MaxWALEntries = cfg.Indexer.MaxWALEntries
+	}
 	if err := indexerConfig.ValidateVersionConfig(); err != nil {
 		log.Fatalf("Invalid indexer format version config: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -113,6 +114,12 @@ func Run(args []string) {
 
 		// Start the indexer for all-in-one mode
 		indexerConfig := indexer.DefaultConfig()
+		if cfg.Indexer.MaxWALBytesMB > 0 {
+			indexerConfig.MaxWALBytes = int64(cfg.Indexer.MaxWALBytesMB) * 1024 * 1024
+		}
+		if cfg.Indexer.MaxWALEntries > 0 {
+			indexerConfig.MaxWALEntries = cfg.Indexer.MaxWALEntries
+		}
 		idx := indexer.New(store, router.StateManager(), indexerConfig, nil)
 		idx.Start()
 		fmt.Println("Indexer started")
@@ -172,6 +179,11 @@ func Run(args []string) {
 		writeTimeout = 30 * time.Second
 	}
 
+	var pprofSrv *http.Server
+	if addr := strings.TrimSpace(os.Getenv("VEX_PPROF_ADDR")); addr != "" {
+		pprofSrv = startPprofServer(addr)
+	}
+
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
 		Handler:      router,
@@ -199,6 +211,11 @@ func Run(args []string) {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Shutdown error: %v", err)
 	}
+	if pprofSrv != nil {
+		if err := pprofSrv.Shutdown(ctx); err != nil && err != http.ErrServerClosed {
+			log.Printf("pprof shutdown error: %v", err)
+		}
+	}
 
 	if repairCancel != nil {
 		repairCancel()
@@ -219,6 +236,29 @@ func Run(args []string) {
 	membershipMgr.Stop()
 
 	fmt.Println("Server stopped")
+}
+
+func startPprofServer(addr string) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	go func() {
+		log.Printf("pprof listening on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("pprof server error: %v", err)
+		}
+	}()
+
+	return srv
 }
 
 func listCatalogNamespaces(ctx context.Context, store objectstore.Store) ([]string, error) {

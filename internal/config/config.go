@@ -64,6 +64,7 @@ type Config struct {
 	Cache       CacheConfig       `json:"cache"`
 	Membership  MembershipConfig  `json:"membership"`
 	Indexer     IndexerConfig     `json:"indexer"`
+	Write       WriteConfig       `json:"write"`
 	Compaction  CompactionConfig  `json:"compaction"`
 	Guardrails  GuardrailsConfig  `json:"guardrails"`
 	Timeout     TimeoutConfig     `json:"timeout"`
@@ -122,6 +123,22 @@ type IndexerConfig struct {
 	// WriteManifestVersion specifies which manifest format version to write.
 	// 0 means use the current version.
 	WriteManifestVersion int `json:"write_manifest_version,omitempty"`
+	// MaxWALBytesMB caps the total WAL bytes processed per indexing pass.
+	// 0 means no limit.
+	MaxWALBytesMB int `json:"max_wal_bytes_mb,omitempty"`
+	// MaxWALEntries caps the number of WAL entries processed per indexing pass.
+	// 0 means no limit.
+	MaxWALEntries int `json:"max_wal_entries,omitempty"`
+}
+
+// WriteConfig holds write batching configuration.
+type WriteConfig struct {
+	// BatchWindowMs is the maximum time to wait before committing a batch.
+	// 0 means use the default.
+	BatchWindowMs int `json:"batch_window_ms,omitempty"`
+	// MaxBatchSizeMB is the maximum uncompressed batch size before forcing commit.
+	// 0 means use the default.
+	MaxBatchSizeMB int `json:"max_batch_size_mb,omitempty"`
 }
 
 // CompactionConfig holds configuration for segment compaction sizing.
@@ -355,6 +372,28 @@ func Load(path string) (*Config, error) {
 	if env := os.Getenv("VEX_INDEXER_WRITE_MANIFEST_VERSION"); env != "" {
 		if n, err := parseIntEnv(env); err == nil {
 			cfg.Indexer.WriteManifestVersion = n
+		}
+	}
+	if env := os.Getenv("VEX_INDEXER_MAX_WAL_BYTES_MB"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Indexer.MaxWALBytesMB = n
+		}
+	}
+	if env := os.Getenv("VEX_INDEXER_MAX_WAL_ENTRIES"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Indexer.MaxWALEntries = n
+		}
+	}
+
+	// Write batching configuration
+	if env := os.Getenv("VEX_WRITE_BATCH_WINDOW_MS"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Write.BatchWindowMs = n
+		}
+	}
+	if env := os.Getenv("VEX_WRITE_MAX_BATCH_SIZE_MB"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Write.MaxBatchSizeMB = n
 		}
 	}
 

@@ -1,6 +1,7 @@
 package vector
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -210,6 +211,49 @@ func (b *IVFBuilder) Build() (*IVFIndex, error) {
 	}, nil
 }
 
+// BuildStreaming builds the IVF index and returns a writer function for streaming cluster data.
+// This avoids holding the packed cluster data in memory.
+func (b *IVFBuilder) BuildStreaming() (*IVFIndex, int64, func(io.Writer) error, error) {
+	n := len(b.docIDs)
+	if n == 0 {
+		return nil, 0, nil, ErrNoVectors
+	}
+
+	nClusters := b.nClusters
+	if n < nClusters {
+		nClusters = n
+	}
+
+	centroids, assignments, err := kmeans(b.vectors, b.dims, nClusters, b.maxIter, b.tolerance, b.metric)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("k-means clustering failed: %w", err)
+	}
+
+	avgClusterSize := n / nClusters
+	maxClusterSize := avgClusterSize * 2
+	if maxClusterSize < 1000 {
+		maxClusterSize = 1000
+	}
+
+	centroids, assignments, nClusters = splitOversizedClusters(
+		b.vectors, b.dims, centroids, assignments, nClusters, maxClusterSize, b.metric,
+	)
+
+	clusterIDs, clusterOffsets, totalSize := b.planClusterData(nClusters, assignments)
+	writeFn := func(w io.Writer) error {
+		return b.writeClusterDataStream(w, clusterIDs)
+	}
+
+	return &IVFIndex{
+		Dims:           b.dims,
+		DType:          normalizeDType(b.dtype),
+		Metric:         b.metric,
+		NClusters:      nClusters,
+		Centroids:      centroids,
+		ClusterOffsets: clusterOffsets,
+	}, totalSize, writeFn, nil
+}
+
 // BuildWithSinglePass builds the IVF index using single-pass assignment.
 // This is faster than full k-means as it only does initial centroid selection
 // and one assignment pass, without iterative centroid updates.
@@ -226,25 +270,7 @@ func (b *IVFBuilder) BuildWithSinglePass() (*IVFIndex, error) {
 		nClusters = n
 	}
 
-	// Initialize centroids using k-means++ style initialization
-	centroids := initCentroids(b.vectors, b.dims, nClusters, b.metric)
-
-	// Single-pass assignment: assign each vector to nearest centroid (no iteration)
-	assignments := make([]int, n)
-	for i := 0; i < n; i++ {
-		vec := b.vectors[i*b.dims : (i+1)*b.dims]
-		minDist := float32(1e38) // Large value
-		minCluster := 0
-		for j := 0; j < nClusters; j++ {
-			centroid := centroids[j*b.dims : (j+1)*b.dims]
-			dist := computeDistance(vec, centroid, b.metric)
-			if dist < minDist {
-				minDist = dist
-				minCluster = j
-			}
-		}
-		assignments[i] = minCluster
-	}
+	centroids, assignments := b.buildSinglePassAssignments(nClusters)
 
 	// Build cluster data
 	clusterOffsets, clusterData := b.buildClusterData(nClusters, assignments)
@@ -258,6 +284,70 @@ func (b *IVFBuilder) BuildWithSinglePass() (*IVFIndex, error) {
 		ClusterOffsets: clusterOffsets,
 		ClusterData:    clusterData,
 	}, nil
+}
+
+// BuildWithSinglePassStreaming builds the IVF index and streams cluster data to the writer.
+func (b *IVFBuilder) BuildWithSinglePassStreaming(w io.Writer) (*IVFIndex, int64, error) {
+	idx, size, writeFn, err := b.BuildWithSinglePassPlan()
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := writeFn(w); err != nil {
+		return nil, 0, err
+	}
+	return idx, size, nil
+}
+
+// BuildWithSinglePassPlan builds the IVF index and returns a writer function for streaming cluster data.
+func (b *IVFBuilder) BuildWithSinglePassPlan() (*IVFIndex, int64, func(io.Writer) error, error) {
+	n := len(b.docIDs)
+	if n == 0 {
+		return nil, 0, nil, ErrNoVectors
+	}
+
+	// Adjust number of clusters if we have fewer vectors
+	nClusters := b.nClusters
+	if n < nClusters {
+		nClusters = n
+	}
+
+	centroids, assignments := b.buildSinglePassAssignments(nClusters)
+	clusterIDs, clusterOffsets, totalSize := b.planClusterData(nClusters, assignments)
+	writeFn := func(w io.Writer) error {
+		return b.writeClusterDataStream(w, clusterIDs)
+	}
+
+	return &IVFIndex{
+		Dims:           b.dims,
+		DType:          normalizeDType(b.dtype),
+		Metric:         b.metric,
+		NClusters:      nClusters,
+		Centroids:      centroids,
+		ClusterOffsets: clusterOffsets,
+	}, totalSize, writeFn, nil
+}
+
+func (b *IVFBuilder) buildSinglePassAssignments(nClusters int) ([]float32, []int) {
+	n := len(b.docIDs)
+	centroids := initCentroids(b.vectors, b.dims, nClusters, b.metric)
+
+	assignments := make([]int, n)
+	for i := 0; i < n; i++ {
+		vec := b.vectors[i*b.dims : (i+1)*b.dims]
+		minDist := float32(1e38)
+		minCluster := 0
+		for j := 0; j < nClusters; j++ {
+			centroid := centroids[j*b.dims : (j+1)*b.dims]
+			dist := computeDistance(vec, centroid, b.metric)
+			if dist < minDist {
+				minDist = dist
+				minCluster = j
+			}
+		}
+		assignments[i] = minCluster
+	}
+
+	return centroids, assignments
 }
 
 // buildClusterData packs vectors into cluster format.
@@ -312,6 +402,62 @@ func (b *IVFBuilder) buildClusterData(nClusters int, assignments []int) ([]Clust
 	}
 
 	return offsets, buf.Bytes()
+}
+
+func (b *IVFBuilder) planClusterData(nClusters int, assignments []int) ([][]int, []ClusterOffset, int64) {
+	clusterIDs := make([][]int, nClusters)
+	n := len(assignments)
+	for i := 0; i < n; i++ {
+		cluster := assignments[i]
+		clusterIDs[cluster] = append(clusterIDs[cluster], i)
+	}
+
+	dtype := normalizeDType(b.dtype)
+	entrySize := int64(8 + b.dims*dtype.BytesPerElement())
+	offsets := make([]ClusterOffset, nClusters)
+	var offset int64
+	for i := 0; i < nClusters; i++ {
+		docCount := len(clusterIDs[i])
+		length := int64(docCount) * entrySize
+		offsets[i] = ClusterOffset{
+			Offset:   uint64(offset),
+			Length:   uint64(length),
+			DocCount: uint32(docCount),
+		}
+		offset += length
+	}
+
+	return clusterIDs, offsets, offset
+}
+
+func (b *IVFBuilder) writeClusterDataStream(w io.Writer, clusterIDs [][]int) error {
+	bw := bufio.NewWriter(w)
+	dtype := normalizeDType(b.dtype)
+
+	for _, ids := range clusterIDs {
+		for _, idx := range ids {
+			if err := binary.Write(bw, binary.LittleEndian, b.docIDs[idx]); err != nil {
+				return err
+			}
+			vec := b.vectors[idx*b.dims : (idx+1)*b.dims]
+			switch dtype {
+			case DTypeF16:
+				for _, f := range vec {
+					if err := binary.Write(bw, binary.LittleEndian, Float32ToFloat16(f)); err != nil {
+						return err
+					}
+				}
+			default:
+				for _, f := range vec {
+					if err := binary.Write(bw, binary.LittleEndian, f); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
+	return bw.Flush()
 }
 
 // Search performs approximate nearest neighbor search.

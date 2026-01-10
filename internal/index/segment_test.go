@@ -669,6 +669,39 @@ func TestSegmentWriter_Basic(t *testing.T) {
 	}
 }
 
+func TestSegmentWriter_WriteIVFClusterDataStream(t *testing.T) {
+	store := newMockObjectStore()
+	writer := NewSegmentWriter(store, "test-ns", "seg_stream")
+
+	ctx := context.Background()
+	data := []byte("cluster data stream")
+
+	key, err := writer.WriteIVFClusterDataStream(ctx, int64(len(data)), func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("WriteIVFClusterDataStream failed: %v", err)
+	}
+	if key == "" {
+		t.Fatal("WriteIVFClusterDataStream returned empty key")
+	}
+
+	reader, _, err := store.Get(ctx, key, nil)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	defer reader.Close()
+
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("streamed data mismatch: expected %q, got %q", string(data), string(got))
+	}
+}
+
 func TestSegmentWriter_SealPreventsWrites(t *testing.T) {
 	store := newMockObjectStore()
 	writer := NewSegmentWriter(store, "test-ns", "seg_sealed")
