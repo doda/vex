@@ -448,71 +448,73 @@ func (b *Batcher) flushBatch(batch *namespaceBatch) {
 	}
 	defer encoder.Close()
 
-	// Encode the WAL entry
-	result, err := encoder.Encode(walEntry)
-	if err != nil {
-		// Fail all pending writes and release reservations
-		batchErr := fmt.Errorf("failed to encode WAL entry: %w", err)
+	var updatedState *namespace.LoadedState
+	var commitErr error
+	for attempt := 0; attempt <= maxWALConflictRetries; attempt++ {
+		attemptLoaded := loaded
+		if attempt > 0 {
+			attemptLoaded, err = b.stateMan.LoadOrCreate(batchCtx, batch.namespace)
+			if err != nil {
+				commitErr = fmt.Errorf("failed to load namespace state: %w", err)
+				break
+			}
+		}
+
+		nextSeq := attemptLoaded.State.WAL.HeadSeq + 1
+		walEntry.Seq = nextSeq
+		walEntry.CommittedUnixMs = time.Now().UnixMilli()
+
+		result, err := encoder.Encode(walEntry)
+		if err != nil {
+			commitErr = fmt.Errorf("failed to encode WAL entry: %w", err)
+			break
+		}
+
+		// Write WAL entry to object storage (use batchCtx for durability)
+		walKeyRelative := wal.KeyForSeq(nextSeq)
+		walKey := "vex/namespaces/" + batch.namespace + "/" + walKeyRelative
+		_, err = b.store.PutIfAbsent(batchCtx, walKey, bytes.NewReader(result.Data), int64(len(result.Data)), &objectstore.PutOptions{
+			ContentType: "application/octet-stream",
+		})
+		if err != nil {
+			if objectstore.IsConflictError(err) {
+				if confirmErr := confirmExistingWAL(batchCtx, b.store, walKey, result.Data); confirmErr != nil {
+					commitErr = wrapWALConflict(batchCtx, b.store, b.stateMan, batch.namespace, confirmErr)
+					if isRetryableWALConflict(commitErr) && attempt < maxWALConflictRetries {
+						continue
+					}
+					break
+				}
+			} else {
+				commitErr = fmt.Errorf("failed to write WAL entry: %w", err)
+				break
+			}
+		}
+
+		// Update namespace state (use batchCtx for durability)
+		updatedState, err = b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, attemptLoaded.ETag, walKeyRelative, result.LogicalBytes, namespace.AdvanceWALOptions{
+			SchemaDelta:         schemaDelta,
+			DisableBackpressure: anyDisableBackpressure,
+		})
+		if err != nil {
+			commitErr = fmt.Errorf("failed to update namespace state: %w", err)
+			if isRetryableWALConflict(commitErr) && attempt < maxWALConflictRetries {
+				continue
+			}
+			break
+		}
+
+		commitErr = nil
+		break
+	}
+
+	if commitErr != nil {
 		for i, pw := range batch.writes {
 			if results[i] != nil {
 				if pw.reserved {
-					b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
+					b.idempotency.Release(batch.namespace, pw.req.RequestID, commitErr)
 				}
-				pw.result <- batchResult{err: batchErr}
-			}
-		}
-		return
-	}
-
-	// Write WAL entry to object storage (use batchCtx for durability)
-	walKeyRelative := wal.KeyForSeq(nextSeq)
-	walKey := "vex/namespaces/" + batch.namespace + "/" + walKeyRelative
-	_, err = b.store.PutIfAbsent(batchCtx, walKey, bytes.NewReader(result.Data), int64(len(result.Data)), &objectstore.PutOptions{
-		ContentType: "application/octet-stream",
-	})
-	if err != nil {
-		if objectstore.IsConflictError(err) {
-			if confirmErr := confirmExistingWAL(batchCtx, b.store, walKey, result.Data); confirmErr != nil {
-				batchErr := wrapWALConflict(batchCtx, b.store, b.stateMan, batch.namespace, confirmErr)
-				for i, pw := range batch.writes {
-					if results[i] != nil {
-						if pw.reserved {
-							b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
-						}
-						pw.result <- batchResult{err: batchErr}
-					}
-				}
-				return
-			}
-		} else {
-			// Fail all pending writes and release reservations
-			batchErr := fmt.Errorf("failed to write WAL entry: %w", err)
-			for i, pw := range batch.writes {
-				if results[i] != nil {
-					if pw.reserved {
-						b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
-					}
-					pw.result <- batchResult{err: batchErr}
-				}
-			}
-			return
-		}
-	}
-
-	// Update namespace state (use batchCtx for durability)
-	updatedState, err := b.stateMan.AdvanceWALWithOptions(batchCtx, batch.namespace, loaded.ETag, walKeyRelative, result.LogicalBytes, namespace.AdvanceWALOptions{
-		SchemaDelta:         schemaDelta,
-		DisableBackpressure: anyDisableBackpressure,
-	})
-	if err != nil {
-		// Fail all pending writes and release reservations
-		batchErr := fmt.Errorf("failed to update namespace state: %w", err)
-		for i, pw := range batch.writes {
-			if results[i] != nil {
-				if pw.reserved {
-					b.idempotency.Release(batch.namespace, pw.req.RequestID, batchErr)
-				}
-				pw.result <- batchResult{err: batchErr}
+				pw.result <- batchResult{err: commitErr}
 			}
 		}
 		return

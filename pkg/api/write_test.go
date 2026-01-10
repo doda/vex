@@ -2,13 +2,16 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
@@ -54,6 +57,69 @@ func TestWriteAPI_BasicUpsert(t *testing.T) {
 	}
 	if result["rows_patched"] != float64(0) {
 		t.Errorf("expected rows_patched 0, got %v", result["rows_patched"])
+	}
+}
+
+func TestWriteAPI_WALConflictRetries(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig()
+	store := objectstore.NewMemoryStore()
+	router := NewRouterWithStore(cfg, nil, nil, nil, store)
+	defer router.Close()
+
+	ns := "wal-conflict-ns"
+	walKey := "vex/namespaces/" + ns + "/wal/00000000000000000001.wal.zst"
+
+	encoder, err := wal.NewEncoder()
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	conflictEntry := wal.NewWalEntry(ns, 1)
+	conflictBatch := wal.NewWriteSubBatch("conflict")
+	conflictBatch.AddUpsert(wal.DocumentIDFromID(document.NewU64ID(99)), map[string]*wal.AttributeValue{
+		"name": wal.StringValue("conflict"),
+	}, nil, 0)
+	conflictEntry.SubBatches = append(conflictEntry.SubBatches, conflictBatch)
+
+	conflictResult, err := encoder.Encode(conflictEntry)
+	if err != nil {
+		encoder.Close()
+		t.Fatalf("failed to encode conflict WAL: %v", err)
+	}
+	encoder.Close()
+
+	_, err = store.PutIfAbsent(ctx, walKey, bytes.NewReader(conflictResult.Data), int64(len(conflictResult.Data)), &objectstore.PutOptions{
+		ContentType: "application/octet-stream",
+	})
+	if err != nil {
+		t.Fatalf("failed to precreate WAL: %v", err)
+	}
+
+	body := map[string]any{
+		"upsert_rows": []any{
+			map[string]any{"id": 1, "name": "winner"},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/v2/namespaces/"+ns, bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeAuthed(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	stateMan := namespace.NewStateManager(store)
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if loaded.State.WAL.HeadSeq != 2 {
+		t.Errorf("expected head_seq 2 after retry, got %d", loaded.State.WAL.HeadSeq)
 	}
 }
 

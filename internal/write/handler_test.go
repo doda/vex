@@ -50,7 +50,7 @@ func TestHandler_HandleBasicUpsert(t *testing.T) {
 	}
 }
 
-func TestHandlerWALConflictRepairsState(t *testing.T) {
+func TestHandlerWALConflictRetries(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 	stateMan := namespace.NewStateManager(store)
@@ -96,19 +96,16 @@ func TestHandlerWALConflictRepairsState(t *testing.T) {
 	}
 
 	_, err = handler.Handle(ctx, ns, req)
-	if err == nil {
-		t.Fatal("expected WAL conflict error")
-	}
-	if !errors.Is(err, wal.ErrWALSeqConflict) {
-		t.Fatalf("expected WAL seq conflict error, got %v", err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	loaded, err := stateMan.Load(ctx, ns)
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
 	}
-	if loaded.State.WAL.HeadSeq != 1 {
-		t.Errorf("expected head_seq 1 after repair, got %d", loaded.State.WAL.HeadSeq)
+	if loaded.State.WAL.HeadSeq != 2 {
+		t.Errorf("expected head_seq 2 after retry, got %d", loaded.State.WAL.HeadSeq)
 	}
 }
 

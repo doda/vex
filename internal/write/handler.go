@@ -201,12 +201,31 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 		}
 	}
 
-	// Helper to release reservation on error
-	releaseOnError := func(err error) {
-		if reserved && h.idempotency != nil {
-			h.idempotency.Release(ns, req.RequestID, err)
+	var lastErr error
+	for attempt := 0; attempt <= maxWALConflictRetries; attempt++ {
+		resp, err := h.handleOnce(ctx, ns, req)
+		if err == nil {
+			if reserved && h.idempotency != nil {
+				h.idempotency.Complete(ns, req.RequestID, resp)
+			}
+			return resp, nil
+		}
+		lastErr = err
+		if !isRetryableWALConflict(err) || attempt == maxWALConflictRetries {
+			break
 		}
 	}
+
+	if reserved && h.idempotency != nil {
+		h.idempotency.Release(ns, req.RequestID, lastErr)
+	}
+
+	return nil, lastErr
+}
+
+func (h *Handler) handleOnce(ctx context.Context, ns string, req *WriteRequest) (*WriteResponse, error) {
+	// No-op: idempotency is handled by the caller.
+	releaseOnError := func(error) {}
 
 	// Load or create namespace state
 	loaded, err := h.stateMan.LoadOrCreate(ctx, ns)
@@ -490,11 +509,6 @@ func (h *Handler) Handle(ctx context.Context, ns string, req *WriteRequest) (*Wr
 
 	// Record documents indexed metric
 	metrics.AddDocumentsIndexed(ns, subBatch.Stats.RowsUpserted)
-
-	// Complete the idempotency reservation with the successful response
-	if reserved && h.idempotency != nil {
-		h.idempotency.Complete(ns, req.RequestID, resp)
-	}
 
 	return resp, nil
 }
