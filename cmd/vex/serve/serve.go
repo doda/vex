@@ -8,15 +8,20 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/vexsearch/vex/internal/cache"
 	"github.com/vexsearch/vex/internal/config"
+	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/indexer"
 	"github.com/vexsearch/vex/internal/logging"
 	"github.com/vexsearch/vex/internal/membership"
+	"github.com/vexsearch/vex/internal/metrics"
+	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/routing"
+	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/internal/warmer"
 	"github.com/vexsearch/vex/pkg/api"
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -72,6 +77,7 @@ func Run(args []string) {
 	var diskCache *cache.DiskCache
 	var ramCache *cache.MemoryCache
 	var stopWarm func()
+	var stopCompactorSync func()
 	if store != nil {
 		diskCfg := cache.DiskCacheConfig{
 			RootPath:  cfg.Cache.NVMePath,
@@ -114,6 +120,47 @@ func Run(args []string) {
 			fmt.Println("Stopping indexer...")
 			idx.Stop()
 		}()
+
+		// Start background compaction for indexed segments.
+		lsmConfig := index.DefaultLSMConfig()
+		if cfg.Compaction.MaxSegments > 0 {
+			lsmConfig.MaxCompactionSegments = cfg.Compaction.MaxSegments
+		}
+		if cfg.Compaction.MaxBytesMB > 0 {
+			lsmConfig.MaxCompactionBytes = int64(cfg.Compaction.MaxBytesMB) * 1024 * 1024
+		}
+
+		compactor := index.NewBackgroundCompactor(store, lsmConfig, nil)
+		compactor.SetStateManager(router.StateManager())
+		compactor.Start()
+		stopCompactorSync = startCompactorSync(compactor, router.StateManager(), store, indexerConfig.NamespacePollInterval, lsmConfig)
+		fmt.Println("Compactor started")
+		defer func() {
+			if stopCompactorSync != nil {
+				stopCompactorSync()
+			}
+			compactor.Stop()
+		}()
+	}
+
+	var repairTask *wal.RepairTask
+	var repairCancel context.CancelFunc
+	if store != nil && router.StateManager() != nil {
+		namespaces, err := listCatalogNamespaces(context.Background(), store)
+		if err != nil {
+			log.Printf("WAL repair: failed to list namespaces: %v", err)
+		} else if len(namespaces) > 0 {
+			repairer := wal.NewRepairer(store, router.StateManager())
+			repairTask = wal.NewRepairTask(repairer, 0, 0)
+			repairCtx, cancel := context.WithCancel(context.Background())
+			repairCancel = cancel
+			for _, ns := range namespaces {
+				if _, err := repairTask.RepairOnce(repairCtx, ns); err != nil {
+					log.Printf("WAL repair: namespace %s: %v", ns, err)
+				}
+			}
+			repairTask.Start(repairCtx, namespaces)
+		}
 	}
 
 	queryTimeout := time.Duration(cfg.Timeout.GetQueryTimeout()) * time.Millisecond
@@ -153,6 +200,13 @@ func Run(args []string) {
 		log.Fatalf("Shutdown error: %v", err)
 	}
 
+	if repairCancel != nil {
+		repairCancel()
+	}
+	if repairTask != nil {
+		repairTask.Stop()
+	}
+
 	if stopWarm != nil {
 		stopWarm()
 	}
@@ -165,6 +219,182 @@ func Run(args []string) {
 	membershipMgr.Stop()
 
 	fmt.Println("Server stopped")
+}
+
+func listCatalogNamespaces(ctx context.Context, store objectstore.Store) ([]string, error) {
+	if store == nil {
+		return nil, nil
+	}
+
+	namespaces := make(map[string]struct{})
+	marker := ""
+	for {
+		result, err := store.List(ctx, &objectstore.ListOptions{
+			Prefix:  "catalog/namespaces/",
+			Marker:  marker,
+			MaxKeys: 1000,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		for _, obj := range result.Objects {
+			parts := strings.Split(obj.Key, "/")
+			if len(parts) != 3 {
+				continue
+			}
+			if parts[2] == "" {
+				continue
+			}
+			namespaces[parts[2]] = struct{}{}
+		}
+
+		if !result.IsTruncated || result.NextMarker == "" {
+			break
+		}
+		marker = result.NextMarker
+	}
+
+	result := make([]string, 0, len(namespaces))
+	for ns := range namespaces {
+		result = append(result, ns)
+	}
+	return result, nil
+}
+
+func startCompactorSync(compactor *index.BackgroundCompactor, stateMan *namespace.StateManager, store objectstore.Store, interval time.Duration, lsmConfig *index.LSMConfig) func() {
+	if compactor == nil || stateMan == nil || store == nil {
+		return nil
+	}
+
+	syncOnce := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := syncCompactorNamespaces(ctx, compactor, stateMan, store, lsmConfig); err != nil {
+			log.Printf("Compactor namespace sync error: %v", err)
+		}
+	}
+
+	syncOnce()
+
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				syncOnce()
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	return func() {
+		close(stop)
+	}
+}
+
+func syncCompactorNamespaces(ctx context.Context, compactor *index.BackgroundCompactor, stateMan *namespace.StateManager, store objectstore.Store, lsmConfig *index.LSMConfig) error {
+	namespaces, err := listVexNamespaces(ctx, store)
+	if err != nil {
+		return err
+	}
+
+	for _, ns := range namespaces {
+		loaded, err := stateMan.Load(ctx, ns)
+		if err != nil {
+			continue
+		}
+		seq := loaded.State.Index.ManifestSeq
+		if seq == 0 {
+			continue
+		}
+
+		manifest, err := index.LoadManifest(ctx, store, ns, seq)
+		if err != nil || manifest == nil {
+			continue
+		}
+		metrics.SetDocumentsIndexed(ns, manifest.Stats.ApproxRowCount)
+		totalSegments := 0
+		l0Segments := 0
+		l1Segments := 0
+		l2Segments := 0
+		for _, seg := range manifest.Segments {
+			totalSegments++
+			switch seg.Level {
+			case index.L0:
+				l0Segments++
+			case index.L1:
+				l1Segments++
+			case index.L2:
+				l2Segments++
+			}
+		}
+		metrics.SetSegmentCounts(ns, totalSegments, l0Segments, l1Segments, l2Segments)
+		tree := index.LoadLSMTree(ns, store, manifest, lsmConfig)
+		compactor.RegisterNamespace(ns, tree)
+	}
+
+	return nil
+}
+
+func listVexNamespaces(ctx context.Context, store objectstore.Store) ([]string, error) {
+	if store == nil {
+		return nil, nil
+	}
+
+	namespaces := make(map[string]struct{})
+	marker := ""
+	for {
+		result, err := store.List(ctx, &objectstore.ListOptions{
+			Prefix:  "vex/namespaces/",
+			Marker:  marker,
+			MaxKeys: 1000,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		for _, obj := range result.Objects {
+			ns := extractNamespaceFromKey(obj.Key)
+			if ns == "" {
+				continue
+			}
+			namespaces[ns] = struct{}{}
+		}
+
+		if !result.IsTruncated || result.NextMarker == "" {
+			break
+		}
+		marker = result.NextMarker
+	}
+
+	result := make([]string, 0, len(namespaces))
+	for ns := range namespaces {
+		result = append(result, ns)
+	}
+	return result, nil
+}
+
+func extractNamespaceFromKey(key string) string {
+	const base = "vex/namespaces/"
+	if !strings.HasPrefix(key, base) {
+		return ""
+	}
+	rest := strings.TrimPrefix(key, base)
+	if strings.Count(rest, "/") == 1 && strings.HasSuffix(rest, "/") {
+		return strings.TrimSuffix(rest, "/")
+	}
+	if idx := strings.Index(rest, "/"); idx > 0 {
+		return rest[:idx]
+	}
+	return ""
 }
 
 func startWarmLoop(cacheWarmer *warmer.Warmer, cfg config.CacheConfig) func() {
