@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,7 @@ type Reader struct {
 	docOffsetsCache map[string][]uint64
 	docIDRowMu      sync.RWMutex
 	docIDRowCache   map[string]map[uint64]uint32
+	lastManifestSeq map[string]uint64
 }
 
 // ReaderOptions configures index reader behavior.
@@ -83,6 +85,7 @@ func NewReaderWithOptions(store objectstore.Store, diskCache *cache.DiskCache, r
 		ftsTerms:               make(map[string][]string),
 		docOffsetsCache:        make(map[string][]uint64),
 		docIDRowCache:          make(map[string]map[uint64]uint32),
+		lastManifestSeq:        make(map[string]uint64),
 	}
 }
 
@@ -131,6 +134,7 @@ func (r *Reader) LoadManifest(ctx context.Context, manifestKey string) (*Manifes
 			if err == nil {
 				var manifest Manifest
 				if err := json.Unmarshal(data, &manifest); err == nil {
+					r.noteManifest(manifestKey, &manifest)
 					return &manifest, nil
 				}
 			}
@@ -162,7 +166,71 @@ func (r *Reader) LoadManifest(ctx context.Context, manifestKey string) (*Manifes
 		return nil, fmt.Errorf("failed to parse manifest: %w", err)
 	}
 
+	r.noteManifest(manifestKey, &manifest)
 	return &manifest, nil
+}
+
+func (r *Reader) noteManifest(manifestKey string, manifest *Manifest) {
+	if manifest == nil {
+		return
+	}
+
+	namespace := manifest.Namespace
+	if namespace == "" {
+		namespace = parseNamespaceFromManifestKey(manifestKey)
+	}
+	if namespace == "" {
+		return
+	}
+
+	seq, ok := parseManifestSeq(manifestKey)
+	if !ok {
+		return
+	}
+
+	r.mu.Lock()
+	prev, seen := r.lastManifestSeq[namespace]
+	if seen && seq <= prev {
+		r.mu.Unlock()
+		return
+	}
+	r.lastManifestSeq[namespace] = seq
+	r.clearNamespaceCachesLocked(namespace)
+	r.mu.Unlock()
+
+	r.clearDocIDRowCache(namespace)
+}
+
+func parseManifestSeq(manifestKey string) (uint64, bool) {
+	if manifestKey == "" || !strings.HasSuffix(manifestKey, ".idx.json") {
+		return 0, false
+	}
+	base := manifestKey
+	if slash := strings.LastIndexByte(base, '/'); slash >= 0 && slash+1 < len(base) {
+		base = base[slash+1:]
+	}
+	base = strings.TrimSuffix(base, ".idx.json")
+	if base == "" {
+		return 0, false
+	}
+	seq, err := strconv.ParseUint(base, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return seq, true
+}
+
+func parseNamespaceFromManifestKey(manifestKey string) string {
+	const prefix = "vex/namespaces/"
+	if !strings.HasPrefix(manifestKey, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(manifestKey, prefix)
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return ""
+	}
+	return rest[:slash]
 }
 
 // GetIVFReader returns an IVF reader for the given namespace.
@@ -2459,9 +2527,30 @@ func extractAttrNameFromFTSTermsKey(key string) string {
 // Clear removes cached readers for a namespace.
 func (r *Reader) Clear(namespace string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.clearNamespaceCachesLocked(namespace)
+	r.mu.Unlock()
 
-	// Remove all readers for this namespace
+	r.clearDocIDRowCache(namespace)
+}
+
+// Close releases all resources.
+func (r *Reader) Close() error {
+	r.mu.Lock()
+	r.readers = make(map[string]*cachedIVFReader)
+	r.ftsCache = make(map[string]*fts.Index)
+	r.ftsTerms = make(map[string][]string)
+	r.docOffsetsCache = make(map[string][]uint64)
+	r.lastManifestSeq = make(map[string]uint64)
+	r.mu.Unlock()
+
+	r.docIDRowMu.Lock()
+	r.docIDRowCache = make(map[string]map[uint64]uint32)
+	r.docIDRowMu.Unlock()
+	return nil
+}
+
+func (r *Reader) clearNamespaceCachesLocked(namespace string) {
+	// Remove all readers for this namespace.
 	for key := range r.readers {
 		if len(key) > len(namespace) && key[:len(namespace)+1] == namespace+"/" {
 			delete(r.readers, key)
@@ -2488,13 +2577,13 @@ func (r *Reader) Clear(namespace string) {
 	}
 }
 
-// Close releases all resources.
-func (r *Reader) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.readers = make(map[string]*cachedIVFReader)
-	r.ftsCache = make(map[string]*fts.Index)
-	r.ftsTerms = make(map[string][]string)
-	r.docOffsetsCache = make(map[string][]uint64)
-	return nil
+func (r *Reader) clearDocIDRowCache(namespace string) {
+	prefix := "vex/namespaces/" + namespace + "/"
+	r.docIDRowMu.Lock()
+	for key := range r.docIDRowCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.docIDRowCache, key)
+		}
+	}
+	r.docIDRowMu.Unlock()
 }
