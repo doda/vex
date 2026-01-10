@@ -2,8 +2,10 @@
 package index
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +13,11 @@ import (
 	"log"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/vexsearch/vex/internal/document"
 	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/namespace"
@@ -166,19 +170,247 @@ func (c *FullCompactor) Compact(ctx context.Context, plan *CompactionPlan) (*Com
 // MergedDocument represents a document after merging/deduplication.
 type MergedDocument = DocColumn
 
-// readSegmentDocuments reads documents from all source segments.
-func (c *FullCompactor) readSegmentDocuments(ctx context.Context, segments []Segment) ([]MergedDocument, error) {
-	var allDocs []MergedDocument
+type docWinner struct {
+	walSeq     uint64
+	segIndex   int
+	rowID      uint32
+	deleted    bool
+	fromColumn bool
+}
 
-	for _, seg := range segments {
-		docs, err := c.readSegmentDocs(ctx, seg)
+type legacyDoc struct {
+	doc      MergedDocument
+	segIndex int
+}
+
+// readSegmentDocuments reads documents from all source segments.
+// This uses a two-pass approach for columnar docs to avoid loading full rows into memory.
+func (c *FullCompactor) readSegmentDocuments(ctx context.Context, segments []Segment) ([]MergedDocument, error) {
+	winners, legacyDocs, err := c.collectCompactionWinners(ctx, segments)
+	if err != nil {
+		return nil, err
+	}
+
+	rowIDSets := make([]map[uint32]struct{}, len(segments))
+	for _, winner := range winners {
+		if winner.deleted || !winner.fromColumn {
+			continue
+		}
+		if winner.segIndex < 0 || winner.segIndex >= len(segments) {
+			continue
+		}
+		if rowIDSets[winner.segIndex] == nil {
+			rowIDSets[winner.segIndex] = make(map[uint32]struct{})
+		}
+		rowIDSets[winner.segIndex][winner.rowID] = struct{}{}
+	}
+
+	var allDocs []MergedDocument
+	for segIndex, rowIDs := range rowIDSets {
+		if len(rowIDs) == 0 {
+			continue
+		}
+		seg := segments[segIndex]
+		docs, err := c.readDocsForRowIDs(ctx, seg, rowIDs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read segment %s: %w", seg.ID, err)
 		}
 		allDocs = append(allDocs, docs...)
 	}
 
+	for _, doc := range legacyDocs {
+		winner, ok := winners[doc.doc.ID]
+		if !ok || winner.deleted || winner.fromColumn {
+			continue
+		}
+		if winner.segIndex != doc.segIndex || winner.walSeq != doc.doc.WALSeq {
+			continue
+		}
+		allDocs = append(allDocs, doc.doc)
+	}
+
 	return allDocs, nil
+}
+
+func (c *FullCompactor) collectCompactionWinners(ctx context.Context, segments []Segment) (map[string]docWinner, []legacyDoc, error) {
+	winners := make(map[string]docWinner)
+	var legacyDocs []legacyDoc
+
+	for segIndex, seg := range segments {
+		reader, ok, err := c.openDocsColumnReader(ctx, seg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to open segment %s docs: %w", seg.ID, err)
+		}
+		if ok {
+			err := c.scanDocsColumnWinners(reader, segIndex, winners)
+			reader.Close()
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to scan segment %s docs: %w", seg.ID, err)
+			}
+			continue
+		}
+
+		docs, err := c.readSegmentDocs(ctx, seg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read segment %s: %w", seg.ID, err)
+		}
+		for _, doc := range docs {
+			c.applyWinner(winners, doc.ID, docWinner{
+				walSeq:     doc.WALSeq,
+				segIndex:   segIndex,
+				deleted:    doc.Deleted,
+				fromColumn: false,
+			})
+			legacyDocs = append(legacyDocs, legacyDoc{doc: doc, segIndex: segIndex})
+		}
+	}
+
+	return winners, legacyDocs, nil
+}
+
+func (c *FullCompactor) applyWinner(winners map[string]docWinner, id string, candidate docWinner) {
+	existing, ok := winners[id]
+	if !ok || candidate.walSeq > existing.walSeq {
+		winners[id] = candidate
+	}
+}
+
+func (c *FullCompactor) scanDocsColumnWinners(r io.Reader, segIndex int, winners map[string]docWinner) error {
+	docCount, _, err := readDocsColumnHeader(r)
+	if err != nil {
+		return err
+	}
+	if docCount == 0 {
+		return nil
+	}
+
+	numericIDs := make([]uint64, docCount)
+	if err := binary.Read(r, binary.LittleEndian, numericIDs); err != nil {
+		return fmt.Errorf("failed to read numeric IDs: %w", err)
+	}
+
+	walSeqs := make([]uint64, docCount)
+	if err := binary.Read(r, binary.LittleEndian, walSeqs); err != nil {
+		return fmt.Errorf("failed to read WAL sequences: %w", err)
+	}
+
+	deletedFlags := make([]byte, docCount)
+	if _, err := io.ReadFull(r, deletedFlags); err != nil {
+		return fmt.Errorf("failed to read deleted flags: %w", err)
+	}
+
+	for i := 0; i < docCount; i++ {
+		length, err := readUint32(r)
+		if err != nil {
+			return fmt.Errorf("failed to read ID length: %w", err)
+		}
+		var id string
+		if length > 0 {
+			idBytes := make([]byte, length)
+			if _, err := io.ReadFull(r, idBytes); err != nil {
+				return fmt.Errorf("failed to read ID bytes: %w", err)
+			}
+			id = string(idBytes)
+		}
+		c.applyWinner(winners, id, docWinner{
+			walSeq:     walSeqs[i],
+			segIndex:   segIndex,
+			rowID:      uint32(i),
+			deleted:    deletedFlags[i] == 1,
+			fromColumn: true,
+		})
+	}
+
+	return nil
+}
+
+func (c *FullCompactor) readDocsForRowIDs(ctx context.Context, seg Segment, rowIDs map[uint32]struct{}) ([]MergedDocument, error) {
+	if len(rowIDs) == 0 {
+		return nil, nil
+	}
+
+	reader, ok, err := c.openDocsColumnReader(ctx, seg)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("segment %s missing columnar docs", seg.ID)
+	}
+	defer reader.Close()
+
+	docMap, err := DecodeDocsColumnForRowIDs(reader, rowIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	docs := make([]MergedDocument, 0, len(docMap))
+	for _, doc := range docMap {
+		docs = append(docs, doc)
+	}
+	return docs, nil
+}
+
+type multiReadCloser struct {
+	reader   io.Reader
+	closeFns []func() error
+}
+
+func (m *multiReadCloser) Read(p []byte) (int, error) {
+	return m.reader.Read(p)
+}
+
+func (m *multiReadCloser) Close() error {
+	var firstErr error
+	for _, fn := range m.closeFns {
+		if err := fn(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (c *FullCompactor) openDocsColumnReader(ctx context.Context, seg Segment) (io.ReadCloser, bool, error) {
+	if seg.DocsKey == "" {
+		return nil, false, nil
+	}
+
+	reader, _, err := c.store.Get(ctx, seg.DocsKey, nil)
+	if err != nil {
+		if objectstore.IsNotFoundError(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+
+	buf := bufio.NewReader(reader)
+	header, err := buf.Peek(len(zstdMagic))
+	if err != nil {
+		reader.Close()
+		return nil, false, fmt.Errorf("failed to peek docs header: %w", err)
+	}
+
+	if bytes.Equal(header, zstdMagic[:]) {
+		dec, err := zstd.NewReader(buf,
+			zstd.WithDecoderLowmem(true),
+			zstd.WithDecoderMaxWindow(32*1024*1024),
+			zstd.WithDecoderConcurrency(1),
+		)
+		if err != nil {
+			reader.Close()
+			return nil, false, fmt.Errorf("failed to init docs decompressor: %w", err)
+		}
+		return &multiReadCloser{reader: dec, closeFns: []func() error{
+			func() error { dec.Close(); return nil },
+			reader.Close,
+		}}, true, nil
+	}
+
+	if bytes.Equal(header, docsColumnMagic[:]) {
+		return &multiReadCloser{reader: buf, closeFns: []func() error{reader.Close}}, true, nil
+	}
+
+	reader.Close()
+	return nil, false, nil
 }
 
 // readSegmentDocs reads documents from a single segment.
@@ -490,18 +722,20 @@ func (c *FullCompactor) buildIVFIndex(ctx context.Context, writer *SegmentWriter
 	}
 
 	var ivfIndex *vector.IVFIndex
+	var clusterDataSize int64
+	var writeClusterData func(io.Writer) error
 	var err error
 
 	if c.config.Recluster {
 		// Full k-means clustering for optimal cluster assignments
-		ivfIndex, err = builder.Build()
+		ivfIndex, clusterDataSize, writeClusterData, err = builder.BuildStreaming()
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to build IVF with k-means: %w", err)
 		}
 	} else {
 		// Single-pass assignment without k-means iteration
 		// This is faster but produces less optimal clusters
-		ivfIndex, err = builder.BuildWithSinglePass()
+		ivfIndex, clusterDataSize, writeClusterData, err = builder.BuildWithSinglePassPlan()
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to build IVF with single-pass: %w", err)
 		}
@@ -527,8 +761,8 @@ func (c *FullCompactor) buildIVFIndex(ctx context.Context, writer *SegmentWriter
 		return nil, false, fmt.Errorf("failed to write offsets: %w", err)
 	}
 
-	// Write cluster data
-	clusterDataKey, err := writer.WriteIVFClusterData(ctx, ivfIndex.GetClusterDataBytes())
+	// Write cluster data (streamed)
+	clusterDataKey, err := writer.WriteIVFClusterDataStream(ctx, clusterDataSize, writeClusterData)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to write cluster data: %w", err)
 	}
@@ -571,6 +805,8 @@ type BackgroundCompactor struct {
 	stoppedCh chan struct{}
 
 	pollInterval time.Duration
+	syncInterval time.Duration
+	lastSync     time.Time
 }
 
 // NewBackgroundCompactor creates a background compactor.
@@ -585,6 +821,7 @@ func NewBackgroundCompactor(store objectstore.Store, lsmConfig *LSMConfig, compC
 		compConfig:   compConfig,
 		trees:        make(map[string]*LSMTree),
 		pollInterval: 5 * time.Second, // Check for compaction work every 5 seconds
+		syncInterval: 30 * time.Second,
 	}
 }
 
@@ -664,6 +901,8 @@ func (bc *BackgroundCompactor) run() {
 
 // checkAndCompact checks all namespaces for compaction needs.
 func (bc *BackgroundCompactor) checkAndCompact() {
+	bc.syncNamespaces()
+
 	bc.mu.RLock()
 	namespaces := make([]string, 0, len(bc.trees))
 	for ns := range bc.trees {
@@ -697,6 +936,110 @@ func (bc *BackgroundCompactor) checkAndCompact() {
 	}
 }
 
+func (bc *BackgroundCompactor) syncNamespaces() {
+	bc.mu.RLock()
+	store := bc.store
+	stateMan := bc.stateMan
+	lsmConfig := bc.lsmConfig
+	interval := bc.syncInterval
+	lastSync := bc.lastSync
+	bc.mu.RUnlock()
+
+	if store == nil || stateMan == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if !lastSync.IsZero() && time.Since(lastSync) < interval {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	namespaces, err := listNamespacesFromStore(ctx, store)
+	if err != nil {
+		log.Printf("[compaction] namespace sync error: %v", err)
+		return
+	}
+
+	for _, ns := range namespaces {
+		loaded, err := stateMan.Load(ctx, ns)
+		if err != nil {
+			continue
+		}
+		seq := loaded.State.Index.ManifestSeq
+		if seq == 0 {
+			continue
+		}
+		manifest, err := LoadManifest(ctx, store, ns, seq)
+		if err != nil || manifest == nil {
+			continue
+		}
+		tree := LoadLSMTree(ns, store, manifest, lsmConfig)
+		bc.RegisterNamespace(ns, tree)
+	}
+
+	bc.mu.Lock()
+	bc.lastSync = time.Now()
+	bc.mu.Unlock()
+}
+
+func listNamespacesFromStore(ctx context.Context, store objectstore.Store) ([]string, error) {
+	if store == nil {
+		return nil, nil
+	}
+
+	namespaces := make(map[string]struct{})
+	marker := ""
+	for {
+		result, err := store.List(ctx, &objectstore.ListOptions{
+			Prefix:  "vex/namespaces/",
+			Marker:  marker,
+			MaxKeys: 1000,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		for _, obj := range result.Objects {
+			ns := extractNamespaceFromKey(obj.Key)
+			if ns == "" {
+				continue
+			}
+			namespaces[ns] = struct{}{}
+		}
+
+		if !result.IsTruncated || result.NextMarker == "" {
+			break
+		}
+		marker = result.NextMarker
+	}
+
+	result := make([]string, 0, len(namespaces))
+	for ns := range namespaces {
+		result = append(result, ns)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func extractNamespaceFromKey(key string) string {
+	const base = "vex/namespaces/"
+	if !strings.HasPrefix(key, base) {
+		return ""
+	}
+	rest := strings.TrimPrefix(key, base)
+	if strings.Count(rest, "/") == 1 && strings.HasSuffix(rest, "/") {
+		return strings.TrimSuffix(rest, "/")
+	}
+	if idx := strings.Index(rest, "/"); idx > 0 {
+		return rest[:idx]
+	}
+	return ""
+}
+
 // compactL0 performs L0->L1 compaction for a namespace.
 func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
 	level := "l0_l1"
@@ -727,6 +1070,13 @@ func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
 		return err
 	}
 	log.Printf("[compaction] ns=%s level=%s segments=%d bytes=%d rows=%d", ns, level, len(plan.SourceSegments), plan.TotalBytes, plan.TotalRows)
+	if exists, err := bc.compactionRequestExists(context.Background(), ns, plan); err != nil {
+		resultErr = err
+		return err
+	} else if exists {
+		log.Printf("[compaction] ns=%s level=%s request already exists", ns, level)
+		return nil
+	}
 
 	// Execute compaction
 	compactor := NewFullCompactor(bc.store, ns, bc.compConfig)
@@ -736,21 +1086,15 @@ func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
 		return fmt.Errorf("L0->L1 compaction failed: %w", err)
 	}
 
-	if err := bc.publishCompaction(context.Background(), ns, tree, plan, *result.NewSegment); err != nil {
-		if errors.Is(err, ErrCompactionStale) {
-			log.Printf("[compaction] ns=%s level=%s stale: %v", ns, level, err)
-			return nil
-		}
+	enqueued, err := bc.enqueueCompactionRequest(context.Background(), ns, plan, *result.NewSegment)
+	if err != nil {
 		resultErr = err
 		return err
 	}
-
-	if err := tree.ApplyCompaction(plan, *result.NewSegment); err != nil {
-		resultErr = err
-		return fmt.Errorf("failed to apply compaction: %w", err)
-	}
-	if err := bc.cleanupObsoleteSegments(context.Background(), plan.SourceSegments); err != nil {
-		log.Printf("[compaction] ns=%s level=%s cleanup_error=%v", ns, level, err)
+	if enqueued {
+		log.Printf("[compaction] ns=%s level=%s enqueued request for %d segments", ns, level, len(plan.SourceSegments))
+	} else {
+		log.Printf("[compaction] ns=%s level=%s request already exists", ns, level)
 	}
 
 	return nil
@@ -784,6 +1128,13 @@ func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
 		return err
 	}
 	log.Printf("[compaction] ns=%s level=%s segments=%d bytes=%d rows=%d", ns, level, len(plan.SourceSegments), plan.TotalBytes, plan.TotalRows)
+	if exists, err := bc.compactionRequestExists(context.Background(), ns, plan); err != nil {
+		resultErr = err
+		return err
+	} else if exists {
+		log.Printf("[compaction] ns=%s level=%s request already exists", ns, level)
+		return nil
+	}
 
 	// Enable reclustering for L1->L2 compaction
 	config := *bc.compConfig
@@ -796,154 +1147,66 @@ func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
 		return fmt.Errorf("L1->L2 compaction failed: %w", err)
 	}
 
-	if err := bc.publishCompaction(context.Background(), ns, tree, plan, *result.NewSegment); err != nil {
-		if errors.Is(err, ErrCompactionStale) {
-			log.Printf("[compaction] ns=%s level=%s stale: %v", ns, level, err)
-			return nil
-		}
+	enqueued, err := bc.enqueueCompactionRequest(context.Background(), ns, plan, *result.NewSegment)
+	if err != nil {
 		resultErr = err
 		return err
 	}
-
-	if err := tree.ApplyCompaction(plan, *result.NewSegment); err != nil {
-		resultErr = err
-		return fmt.Errorf("failed to apply compaction: %w", err)
-	}
-	if err := bc.cleanupObsoleteSegments(context.Background(), plan.SourceSegments); err != nil {
-		log.Printf("[compaction] ns=%s level=%s cleanup_error=%v", ns, level, err)
+	if enqueued {
+		log.Printf("[compaction] ns=%s level=%s enqueued request for %d segments", ns, level, len(plan.SourceSegments))
+	} else {
+		log.Printf("[compaction] ns=%s level=%s request already exists", ns, level)
 	}
 
 	return nil
 }
 
-func (bc *BackgroundCompactor) publishCompaction(ctx context.Context, ns string, tree *LSMTree, plan *CompactionPlan, newSegment Segment) error {
+func (bc *BackgroundCompactor) enqueueCompactionRequest(ctx context.Context, ns string, plan *CompactionPlan, newSegment Segment) (bool, error) {
 	bc.mu.RLock()
 	stateMan := bc.stateMan
 	bc.mu.RUnlock()
 	if stateMan == nil {
-		return fmt.Errorf("compaction state manager not configured")
+		return false, fmt.Errorf("compaction state manager not configured")
 	}
 
-	const maxAttempts = 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		loaded, err := stateMan.Load(ctx, ns)
-		if err != nil {
-			return fmt.Errorf("failed to load state: %w", err)
-		}
-		if loaded.State.Index.ManifestSeq == 0 {
-			return ErrCompactionStale
-		}
-
-		baseManifest, err := LoadManifest(ctx, bc.store, ns, loaded.State.Index.ManifestSeq)
-		if err != nil {
-			return fmt.Errorf("failed to load manifest: %w", err)
-		}
-		if baseManifest == nil {
-			return fmt.Errorf("failed to load manifest from store")
-		}
-
-		if err := tree.ReplaceManifest(baseManifest); err != nil {
-			return err
-		}
-		if !manifestHasSegments(baseManifest, plan.SourceSegments) {
-			return ErrCompactionStale
-		}
-
-		manifest := baseManifest.Clone()
-		if manifest == nil {
-			return fmt.Errorf("failed to clone manifest")
-		}
-
-		for _, src := range plan.SourceSegments {
-			manifest.RemoveSegment(src.ID)
-		}
-		newSegment.Level = plan.TargetLevel
-		manifest.AddSegment(newSegment)
-		manifest.UpdateIndexedWALSeq()
-		manifest.GeneratedAt = time.Now().UTC()
-
-		if err := manifest.Validate(); err != nil {
-			return fmt.Errorf("manifest invalid after compaction: %w", err)
-		}
-
-		if err := VerifyManifestReferences(ctx, bc.store, manifest); err != nil {
-			return fmt.Errorf("manifest references missing objects: %w", err)
-		}
-
-		manifestData, err := manifest.MarshalJSON()
-		if err != nil {
-			return fmt.Errorf("failed to serialize manifest: %w", err)
-		}
-
-		newManifestSeq := loaded.State.Index.ManifestSeq + 1
-		newManifestKey := ManifestKey(ns, newManifestSeq)
-		_, err = bc.store.PutIfAbsent(ctx, newManifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), &objectstore.PutOptions{
-			ContentType: "application/json",
-		})
-		if err != nil {
-			if objectstore.IsConflictError(err) {
-				existing, loadErr := LoadManifest(ctx, bc.store, ns, newManifestSeq)
-				if loadErr != nil {
-					return fmt.Errorf("manifest already exists and failed to load: %w", loadErr)
-				}
-				if existing != nil && manifestMatchesCompaction(existing, plan, newSegment) {
-					if err := bc.updateStateForManifest(ctx, ns, newManifestKey, newManifestSeq, existing.IndexedWALSeq); err != nil {
-						if errors.Is(err, ErrCompactionStale) {
-							return err
-						}
-						return fmt.Errorf("failed to update state after manifest conflict: %w", err)
-					}
-					return nil
-				}
-
-				current, loadErr := stateMan.Load(ctx, ns)
-				if loadErr != nil {
-					return fmt.Errorf("failed to reload state: %w", loadErr)
-				}
-				if current.State.Index.ManifestSeq >= newManifestSeq {
-					return ErrCompactionStale
-				}
-				continue
-			}
-			return fmt.Errorf("failed to write manifest: %w", err)
-		}
-
-		_, err = stateMan.UpdateIndexManifest(ctx, ns, loaded.ETag, newManifestKey, newManifestSeq, manifest.IndexedWALSeq)
-		if err != nil {
-			if errors.Is(err, namespace.ErrCASRetryExhausted) {
-				current, loadErr := stateMan.Load(ctx, ns)
-				if loadErr == nil && current.State.Index.ManifestSeq >= newManifestSeq {
-					return ErrCompactionStale
-				}
-			}
-			return fmt.Errorf("failed to update state: %w", err)
-		}
-
-		return nil
+	requestID := CompactionRequestID(ns, plan.TargetLevel, plan.SourceSegments)
+	requestKey := CompactionRequestKey(ns, requestID)
+	if _, err := bc.store.Head(ctx, requestKey); err == nil {
+		return false, nil
+	} else if err != nil && !objectstore.IsNotFoundError(err) {
+		return false, fmt.Errorf("failed to check compaction request: %w", err)
 	}
 
-	return ErrCompactionStale
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil {
+		return false, fmt.Errorf("failed to load state: %w", err)
+	}
+	if loaded.State.Index.ManifestSeq == 0 || loaded.State.Index.ManifestKey == "" {
+		return false, fmt.Errorf("namespace %s has no manifest", ns)
+	}
+
+	req := NewCompactionRequest(ns, loaded.State.Index.ManifestSeq, loaded.State.Index.ManifestKey, plan.SourceSegments, newSegment)
+	req.ID = requestID
+	_, created, err := WriteCompactionRequest(ctx, bc.store, req)
+	if err != nil {
+		return false, err
+	}
+	return created, nil
 }
 
-func manifestHasSegments(manifest *Manifest, segments []Segment) bool {
-	for _, seg := range segments {
-		if manifest.GetSegment(seg.ID) == nil {
-			return false
-		}
+func (bc *BackgroundCompactor) compactionRequestExists(ctx context.Context, ns string, plan *CompactionPlan) (bool, error) {
+	if bc.store == nil {
+		return false, fmt.Errorf("object store not configured")
 	}
-	return true
-}
-
-func manifestMatchesCompaction(manifest *Manifest, plan *CompactionPlan, newSegment Segment) bool {
-	if manifest.GetSegment(newSegment.ID) == nil {
-		return false
+	requestID := CompactionRequestID(ns, plan.TargetLevel, plan.SourceSegments)
+	requestKey := CompactionRequestKey(ns, requestID)
+	if _, err := bc.store.Head(ctx, requestKey); err == nil {
+		return true, nil
+	} else if objectstore.IsNotFoundError(err) {
+		return false, nil
+	} else {
+		return false, err
 	}
-	for _, src := range plan.SourceSegments {
-		if manifest.GetSegment(src.ID) != nil {
-			return false
-		}
-	}
-	return true
 }
 
 func (bc *BackgroundCompactor) updateStateForManifest(ctx context.Context, ns, manifestKey string, manifestSeq uint64, indexedWALSeq uint64) error {
@@ -952,13 +1215,13 @@ func (bc *BackgroundCompactor) updateStateForManifest(ctx context.Context, ns, m
 		return err
 	}
 	if loaded.State.Index.ManifestSeq > manifestSeq {
-		return ErrCompactionStale
+		return fmt.Errorf("%w: state manifest seq %d ahead of %d", ErrCompactionStale, loaded.State.Index.ManifestSeq, manifestSeq)
 	}
 	if loaded.State.Index.ManifestSeq == manifestSeq {
 		if loaded.State.Index.ManifestKey == manifestKey {
 			return nil
 		}
-		return ErrCompactionStale
+		return fmt.Errorf("%w: state manifest key mismatch for seq %d", ErrCompactionStale, manifestSeq)
 	}
 
 	_, err = bc.stateMan.UpdateIndexManifest(ctx, ns, loaded.ETag, manifestKey, manifestSeq, indexedWALSeq)
@@ -966,12 +1229,45 @@ func (bc *BackgroundCompactor) updateStateForManifest(ctx context.Context, ns, m
 		if errors.Is(err, namespace.ErrCASRetryExhausted) {
 			current, loadErr := bc.stateMan.Load(ctx, ns)
 			if loadErr == nil && current.State.Index.ManifestSeq >= manifestSeq {
-				return ErrCompactionStale
+				return fmt.Errorf("%w: state manifest seq advanced to %d (target %d)", ErrCompactionStale, current.State.Index.ManifestSeq, manifestSeq)
 			}
 		}
 		return err
 	}
 	return nil
+}
+
+func (bc *BackgroundCompactor) updateStateForManifestWithRetry(ctx context.Context, ns, manifestKey string, manifestSeq uint64, indexedWALSeq uint64) error {
+	const maxAttempts = 10
+	baseDelay := 50 * time.Millisecond
+	maxDelay := 500 * time.Millisecond
+	var lastErr error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err := bc.updateStateForManifest(ctx, ns, manifestKey, manifestSeq, indexedWALSeq)
+		if err == nil || errors.Is(err, ErrCompactionStale) {
+			return err
+		}
+		lastErr = err
+		sleepWithBackoff(ctx, attempt, baseDelay, maxDelay)
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("%w: state update retries exhausted: %v", ErrCompactionStale, lastErr)
+	}
+	return fmt.Errorf("%w: state update retries exhausted", ErrCompactionStale)
+}
+
+func sleepWithBackoff(ctx context.Context, attempt int, baseDelay, maxDelay time.Duration) {
+	delay := baseDelay * time.Duration(attempt+1)
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(delay):
+	}
 }
 
 func (bc *BackgroundCompactor) cleanupObsoleteSegments(ctx context.Context, segments []Segment) error {

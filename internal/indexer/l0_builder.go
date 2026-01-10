@@ -80,16 +80,34 @@ func (p *L0SegmentProcessor) AsWALProcessor() WALProcessor {
 func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq, endSeq uint64, state *namespace.State, etag string) (*WALProcessResult, error) {
 	fmt.Printf("[l0_builder] ProcessWAL starting for %s: range (%d, %d]\n", ns, startSeq, endSeq)
 
-	// Read WAL entries
-	entries, totalBytes, lastSeq, err := p.indexer.ProcessWALRange(ctx, ns, startSeq, endSeq)
+	acc := newDocAccumulator()
+	var baseDocs map[uint64]baseDocument
+	baseDocsLoaded := false
+
+	totalBytes, lastSeq, err := p.indexer.ProcessWALRangeStream(ctx, ns, startSeq, endSeq, func(entry *wal.WalEntry, _ int64) error {
+		if !baseDocsLoaded && entryHasPatch(entry) {
+			fmt.Printf("[l0_builder] Loading base documents for %s...\n", ns)
+			var err error
+			baseDocs, err = p.loadBaseDocuments(ctx, ns, state)
+			if err != nil {
+				return fmt.Errorf("failed to load base documents: %w", err)
+			}
+			baseDocsLoaded = true
+			fmt.Printf("[l0_builder] Loaded %d base documents for %s\n", len(baseDocs), ns)
+		}
+
+		acc.applyEntry(entry, baseDocs)
+		return nil
+	})
 	if err != nil {
 		fmt.Printf("[l0_builder] Failed to read WAL range for %s: %v\n", ns, err)
 		return nil, fmt.Errorf("failed to read WAL range: %w", err)
 	}
 
-	fmt.Printf("[l0_builder] Read %d WAL entries for %s, totalBytes=%d, lastSeq=%d\n", len(entries), ns, totalBytes, lastSeq)
+	entriesProcessed := int(lastSeq - startSeq)
+	fmt.Printf("[l0_builder] Read %d WAL entries for %s, totalBytes=%d, lastSeq=%d\n", entriesProcessed, ns, totalBytes, lastSeq)
 
-	if len(entries) == 0 {
+	if entriesProcessed == 0 {
 		return &WALProcessResult{
 			BytesIndexed:       0,
 			ProcessedWALSeq:    lastSeq,
@@ -97,20 +115,9 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 		}, nil
 	}
 
-	fmt.Printf("[l0_builder] Checking for patch mutations in %s...\n", ns)
-	var baseDocs map[uint64]baseDocument
-	if hasPatchMutations(entries) {
-		fmt.Printf("[l0_builder] Loading base documents for %s...\n", ns)
-		baseDocs, err = p.loadBaseDocuments(ctx, ns, state)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load base documents: %w", err)
-		}
-		fmt.Printf("[l0_builder] Loaded %d base documents for %s\n", len(baseDocs), ns)
-	}
-
 	// Extract documents from WAL entries (including non-vector upserts)
-	fmt.Printf("[l0_builder] Extracting documents from %d entries for %s...\n", len(entries), ns)
-	docs, dims := extractDocuments(entries, baseDocs)
+	fmt.Printf("[l0_builder] Extracting documents from %d entries for %s...\n", entriesProcessed, ns)
+	docs, dims := acc.finalize()
 	fmt.Printf("[l0_builder] Extracted %d documents (dims=%d) for %s\n", len(docs), dims, ns)
 
 	if len(docs) == 0 {
@@ -189,106 +196,111 @@ type baseDocument struct {
 	deleted bool
 }
 
-// extractDocuments extracts documents from WAL entries.
-// Returns the deduped documents and the vector dimensions (if any).
-func extractDocuments(entries []*wal.WalEntry, baseDocs map[uint64]baseDocument) ([]vectorDocument, int) {
-	// Track latest version of each document (last-write-wins)
-	docMap := make(map[string]*vectorDocument)
-	var dims int
+type docAccumulator struct {
+	docMap map[string]*vectorDocument
+	dims   int
+}
 
-	for _, entry := range entries {
-		for _, batch := range entry.SubBatches {
-			for _, mutation := range batch.Mutations {
-				if mutation.Id == nil {
-					continue
+func newDocAccumulator() *docAccumulator {
+	return &docAccumulator{
+		docMap: make(map[string]*vectorDocument),
+	}
+}
+
+func (a *docAccumulator) applyEntry(entry *wal.WalEntry, baseDocs map[uint64]baseDocument) {
+	for _, batch := range entry.SubBatches {
+		for _, mutation := range batch.Mutations {
+			if mutation.Id == nil {
+				continue
+			}
+			docID, err := wal.DocumentIDToID(mutation.Id)
+			if err != nil {
+				continue
+			}
+			docKey := documentIDKey(mutation.Id)
+			if docKey == "" {
+				continue
+			}
+			numericID := numericIDForKey(docKey)
+
+			switch mutation.Type {
+			case wal.MutationType_MUTATION_TYPE_DELETE:
+				a.docMap[docKey] = &vectorDocument{
+					id:        docID,
+					idKey:     docKey,
+					walSeq:    entry.Seq,
+					numericID: numericID,
+					deleted:   true,
 				}
-				docID, err := wal.DocumentIDToID(mutation.Id)
-				if err != nil {
-					continue
+
+			case wal.MutationType_MUTATION_TYPE_UPSERT:
+				attrs := make(map[string]any, len(mutation.Attributes))
+				for name, value := range mutation.Attributes {
+					attrs[name] = attributeValueToAny(value)
 				}
-				docKey := documentIDKey(mutation.Id)
-				if docKey == "" {
-					continue
+
+				var vec []float32
+				if len(mutation.Vector) > 0 && mutation.VectorDims > 0 {
+					vec = decodeVector(mutation.Vector, mutation.VectorDims)
+					if vec != nil && a.dims == 0 {
+						a.dims = int(mutation.VectorDims)
+					}
 				}
-				numericID := numericIDForKey(docKey)
 
-				switch mutation.Type {
-				case wal.MutationType_MUTATION_TYPE_DELETE:
-					docMap[docKey] = &vectorDocument{
-						id:        docID,
-						idKey:     docKey,
-						walSeq:    entry.Seq,
-						numericID: numericID,
-						deleted:   true,
-					}
+				a.docMap[docKey] = &vectorDocument{
+					id:        docID,
+					idKey:     docKey,
+					walSeq:    entry.Seq,
+					numericID: numericID,
+					vec:       vec,
+					attrs:     attrs,
+					deleted:   false,
+				}
 
-				case wal.MutationType_MUTATION_TYPE_UPSERT:
-					attrs := make(map[string]any, len(mutation.Attributes))
-					for name, value := range mutation.Attributes {
-						attrs[name] = attributeValueToAny(value)
-					}
+			case wal.MutationType_MUTATION_TYPE_PATCH:
+				patchAttrs := make(map[string]any, len(mutation.Attributes))
+				for name, value := range mutation.Attributes {
+					patchAttrs[name] = attributeValueToAny(value)
+				}
 
-					var vec []float32
-					if len(mutation.Vector) > 0 && mutation.VectorDims > 0 {
-						vec = decodeVector(mutation.Vector, mutation.VectorDims)
-						if vec != nil && dims == 0 {
-							dims = int(mutation.VectorDims)
-						}
-					}
-
-					docMap[docKey] = &vectorDocument{
-						id:        docID,
-						idKey:     docKey,
-						walSeq:    entry.Seq,
-						numericID: numericID,
-						vec:       vec,
-						attrs:     attrs,
-						deleted:   false,
-					}
-
-				case wal.MutationType_MUTATION_TYPE_PATCH:
-					patchAttrs := make(map[string]any, len(mutation.Attributes))
-					for name, value := range mutation.Attributes {
-						patchAttrs[name] = attributeValueToAny(value)
-					}
-
-					if existing, ok := docMap[docKey]; ok {
-						if existing.deleted {
-							continue
-						}
-						existing.attrs = mergeAttributes(existing.attrs, patchAttrs)
-						existing.walSeq = entry.Seq
+				if existing, ok := a.docMap[docKey]; ok {
+					if existing.deleted {
 						continue
 					}
+					existing.attrs = mergeAttributes(existing.attrs, patchAttrs)
+					existing.walSeq = entry.Seq
+					continue
+				}
 
-					if baseDocs == nil {
-						continue
-					}
-					base, ok := baseDocs[numericID]
-					if !ok || base.deleted {
-						continue
-					}
-					merged := mergeAttributes(base.attrs, patchAttrs)
-					if dims == 0 && len(base.vec) > 0 {
-						dims = len(base.vec)
-					}
-					docMap[docKey] = &vectorDocument{
-						id:        docID,
-						idKey:     docKey,
-						walSeq:    entry.Seq,
-						numericID: numericID,
-						vec:       base.vec,
-						attrs:     merged,
-						deleted:   false,
-					}
+				if baseDocs == nil {
+					continue
+				}
+				base, ok := baseDocs[numericID]
+				if !ok || base.deleted {
+					continue
+				}
+				merged := mergeAttributes(base.attrs, patchAttrs)
+				if a.dims == 0 && len(base.vec) > 0 {
+					a.dims = len(base.vec)
+				}
+				a.docMap[docKey] = &vectorDocument{
+					id:        docID,
+					idKey:     docKey,
+					walSeq:    entry.Seq,
+					numericID: numericID,
+					vec:       base.vec,
+					attrs:     merged,
+					deleted:   false,
 				}
 			}
 		}
 	}
+}
 
+func (a *docAccumulator) finalize() ([]vectorDocument, int) {
 	// Convert map to slice
-	docs := make([]vectorDocument, 0, len(docMap))
-	for _, doc := range docMap {
+	docs := make([]vectorDocument, 0, len(a.docMap))
+	for _, doc := range a.docMap {
 		docs = append(docs, *doc)
 	}
 
@@ -304,7 +316,17 @@ func extractDocuments(entries []*wal.WalEntry, baseDocs map[uint64]baseDocument)
 		}
 	}
 
-	return docs, dims
+	return docs, a.dims
+}
+
+// extractDocuments extracts documents from WAL entries.
+// Returns the deduped documents and the vector dimensions (if any).
+func extractDocuments(entries []*wal.WalEntry, baseDocs map[uint64]baseDocument) ([]vectorDocument, int) {
+	acc := newDocAccumulator()
+	for _, entry := range entries {
+		acc.applyEntry(entry, baseDocs)
+	}
+	return acc.finalize()
 }
 
 func mergeAttributes(base map[string]any, patch map[string]any) map[string]any {
@@ -521,6 +543,8 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 	var centroidsKey string
 	var offsetsKey string
 	var clusterDataKey string
+	var clusterDataSize int64
+	var writeClusterData func(io.Writer) error
 	if len(vectorDocs) > 0 {
 		// Build IVF index
 		builder := vector.NewIVFBuilderWithDType(dims, dtype, metric, nClusters)
@@ -532,7 +556,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 
 		var err error
 		// Use single-pass build for speed - full k-means is too slow for large indexes
-		ivfIndex, err = builder.BuildWithSinglePass()
+		ivfIndex, clusterDataSize, writeClusterData, err = builder.BuildWithSinglePassPlan()
 		if err != nil {
 			return nil, fmt.Errorf("failed to build IVF index: %w", err)
 		}
@@ -556,7 +580,7 @@ func (p *L0SegmentProcessor) buildL0Segment(ctx context.Context, ns string, star
 		}
 
 		// Write cluster data (large file, range-read)
-		clusterDataKey, err = writer.WriteIVFClusterData(ctx, ivfIndex.GetClusterDataBytes())
+		clusterDataKey, err = writer.WriteIVFClusterDataStream(ctx, clusterDataSize, writeClusterData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to write cluster data: %w", err)
 		}
@@ -777,11 +801,16 @@ func (p *L0SegmentProcessor) publishSegment(ctx context.Context, ns string, segm
 
 	// Write manifest to object storage with new sequence number
 	newManifestSeq := state.Index.ManifestSeq + 1
-	newManifestKey := index.ManifestKey(ns, newManifestSeq)
-	_, err = p.store.PutIfAbsent(ctx, newManifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), &objectstore.PutOptions{
-		ContentType: "application/json",
-	})
-	if err != nil {
+	newManifestKey := ""
+	const maxSeqBumps = 5
+	for attempt := 0; attempt < maxSeqBumps; attempt++ {
+		newManifestKey = index.ManifestKey(ns, newManifestSeq)
+		_, err = p.store.PutIfAbsent(ctx, newManifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), &objectstore.PutOptions{
+			ContentType: "application/json",
+		})
+		if err == nil {
+			break
+		}
 		if objectstore.IsConflictError(err) {
 			// Manifest already exists - recover by reading existing and advancing state
 			fmt.Printf("[l0_builder] Manifest %s already exists, attempting recovery...\n", newManifestKey)
@@ -790,6 +819,10 @@ func (p *L0SegmentProcessor) publishSegment(ctx context.Context, ns string, segm
 				return nil, fmt.Errorf("manifest already exists and failed to load: %w", loadErr)
 			}
 			if existingManifest != nil {
+				if existingManifest.GetSegment(segment.ID) == nil {
+					newManifestSeq++
+					continue
+				}
 				_, advErr := p.stateMan.AdvanceIndex(ctx, ns, etag, newManifestKey, newManifestSeq, existingManifest.IndexedWALSeq, segment.Stats.LogicalBytes)
 				if advErr != nil {
 					return nil, fmt.Errorf("manifest exists, failed to advance state: %w", advErr)
@@ -797,9 +830,13 @@ func (p *L0SegmentProcessor) publishSegment(ctx context.Context, ns string, segm
 				fmt.Printf("[l0_builder] Recovered from existing manifest %s\n", newManifestKey)
 				return &WALProcessResult{ManifestKey: newManifestKey, ManifestSeq: newManifestSeq, IndexedWALSeq: existingManifest.IndexedWALSeq, ManifestWritten: false}, nil
 			}
-			return nil, fmt.Errorf("manifest already exists: %w", err)
+			newManifestSeq++
+			continue
 		}
 		return nil, fmt.Errorf("failed to write manifest: %w", err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to write manifest after retries: %w", err)
 	}
 
 	// Update namespace state via StateManager to record the new indexed_wal_seq and manifest
@@ -824,13 +861,11 @@ func (p *L0SegmentProcessor) publishSegment(ctx context.Context, ns string, segm
 	}, nil
 }
 
-func hasPatchMutations(entries []*wal.WalEntry) bool {
-	for _, entry := range entries {
-		for _, batch := range entry.SubBatches {
-			for _, mutation := range batch.Mutations {
-				if mutation.Type == wal.MutationType_MUTATION_TYPE_PATCH {
-					return true
-				}
+func entryHasPatch(entry *wal.WalEntry) bool {
+	for _, batch := range entry.SubBatches {
+		for _, mutation := range batch.Mutations {
+			if mutation.Type == wal.MutationType_MUTATION_TYPE_PATCH {
+				return true
 			}
 		}
 	}

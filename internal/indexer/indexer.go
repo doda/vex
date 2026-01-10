@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +26,12 @@ type IndexerConfig struct {
 	PollInterval time.Duration
 	// NamespacePollInterval is how often to scan for new namespaces.
 	NamespacePollInterval time.Duration
+	// MaxWALBytes caps the total WAL bytes processed per indexing pass.
+	// 0 means no limit.
+	MaxWALBytes int64
+	// MaxWALEntries caps the number of WAL entries processed per indexing pass.
+	// 0 means no limit.
+	MaxWALEntries int
 
 	// Format version configuration for upgrade strategy support.
 	// These allow the indexer to be configured to write old format versions
@@ -45,6 +50,8 @@ func DefaultConfig() *IndexerConfig {
 	return &IndexerConfig{
 		PollInterval:          time.Second,
 		NamespacePollInterval: 10 * time.Second,
+		MaxWALBytes:           0,
+		MaxWALEntries:         0,
 		WriteWALVersion:       wal.FormatVersion,
 		WriteManifestVersion:  0, // 0 means use current
 	}
@@ -379,7 +386,8 @@ func (w *namespaceWatcher) checkAndProcess() {
 	endSeq := state.WAL.HeadSeq
 
 	if startSeq >= endSeq {
-		// Nothing to index
+		// Nothing to index, but still try to apply any pending compactions.
+		w.applyCompactionRequests(ctx)
 		return
 	}
 
@@ -431,6 +439,9 @@ func (w *namespaceWatcher) checkAndProcess() {
 	// Mark any pending rebuilds as ready now that we've caught up.
 	// A rebuild is considered ready when we've indexed up to the WAL head.
 	w.markPendingRebuildsReady(ctx, updatedState)
+
+	// Apply any queued compaction requests using the single-writer path.
+	w.applyCompactionRequests(ctx)
 }
 
 // markPendingRebuildsReady marks all not-ready pending rebuilds as ready.
@@ -486,6 +497,41 @@ func (w *namespaceWatcher) markPendingRebuildsReady(ctx context.Context, loaded 
 			break
 		}
 		currentETag = updated.ETag
+	}
+}
+
+func (w *namespaceWatcher) applyCompactionRequests(ctx context.Context) {
+	const maxRequests = 3
+	if w.indexer.store == nil || w.indexer.stateManager == nil {
+		return
+	}
+
+	keys, err := index.ListCompactionRequestKeys(ctx, w.indexer.store, w.namespace, maxRequests)
+	if err != nil || len(keys) == 0 {
+		return
+	}
+
+	for _, key := range keys {
+		req, err := index.LoadCompactionRequest(ctx, w.indexer.store, key)
+		if err != nil {
+			continue
+		}
+		if req == nil || req.ID == "" || req.Namespace == "" {
+			_ = w.indexer.store.Delete(ctx, key)
+			continue
+		}
+		if req.Namespace != w.namespace {
+			continue
+		}
+
+		result, err := index.ApplyCompactionRequest(ctx, w.indexer.store, w.indexer.stateManager, req, index.CompactionApplyOptions{})
+		if err != nil {
+			fmt.Printf("[indexer] Compaction apply failed for %s: %v\n", w.namespace, err)
+			continue
+		}
+		if result != nil && result.Applied {
+			fmt.Printf("[indexer] Applied compaction request for %s: manifest_seq=%d\n", w.namespace, result.ManifestSeq)
+		}
 	}
 }
 
@@ -547,12 +593,26 @@ func rebuildArtifactKey(seg index.Segment, kind, attribute string) string {
 // This is a helper method that can be used by index builders.
 func (i *Indexer) ProcessWALRange(ctx context.Context, ns string, startSeq, endSeq uint64) ([]*wal.WalEntry, int64, uint64, error) {
 	var entries []*wal.WalEntry
+	totalBytes, lastSeq, err := i.ProcessWALRangeStream(ctx, ns, startSeq, endSeq, func(entry *wal.WalEntry, _ int64) error {
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, 0, startSeq, err
+	}
+	return entries, totalBytes, lastSeq, nil
+}
+
+// ProcessWALRangeStream reads WAL entries in the range (startSeq, endSeq] and calls fn for each entry.
+// Returns total bytes processed and the last successfully read WAL sequence.
+func (i *Indexer) ProcessWALRangeStream(ctx context.Context, ns string, startSeq, endSeq uint64, fn func(*wal.WalEntry, int64) error) (int64, uint64, error) {
 	var totalBytes int64
 	lastSeq := startSeq
+	count := 0
 
 	decoder, err := wal.NewDecoder()
 	if err != nil {
-		return nil, 0, startSeq, fmt.Errorf("failed to create decoder: %w", err)
+		return 0, startSeq, fmt.Errorf("failed to create decoder: %w", err)
 	}
 	defer decoder.Close()
 
@@ -565,23 +625,37 @@ func (i *Indexer) ProcessWALRange(ctx context.Context, ns string, startSeq, endS
 			if objectstore.IsNotFoundError(err) {
 				// WAL entry doesn't exist yet - possible race condition
 				// Return what we have so far
-				fmt.Printf("[indexer] WAL entry %d not found for %s, stopping at %d entries\n", seq, ns, len(entries))
+				fmt.Printf("[indexer] WAL entry %d not found for %s, stopping at %d entries\n", seq, ns, count)
 				break
 			}
-			return nil, 0, startSeq, fmt.Errorf("failed to read WAL entry %d: %w", seq, err)
+			return 0, startSeq, fmt.Errorf("failed to read WAL entry %d: %w", seq, err)
 		}
-		entries = append(entries, entry)
+
+		if err := fn(entry, bytes); err != nil {
+			return 0, startSeq, err
+		}
+
 		totalBytes += bytes
 		lastSeq = seq
+		count++
 
 		// Log progress every 50 entries
-		if len(entries)%50 == 0 {
-			fmt.Printf("[indexer] Read %d/%d WAL entries for %s (%.1f MB)\n", len(entries), total, ns, float64(totalBytes)/(1024*1024))
+		if count%50 == 0 {
+			fmt.Printf("[indexer] Read %d/%d WAL entries for %s (%.1f MB)\n", count, total, ns, float64(totalBytes)/(1024*1024))
+		}
+
+		if i.config.MaxWALEntries > 0 && count >= i.config.MaxWALEntries {
+			fmt.Printf("[indexer] Reached max WAL entries for %s: %d\n", ns, i.config.MaxWALEntries)
+			break
+		}
+		if i.config.MaxWALBytes > 0 && totalBytes >= i.config.MaxWALBytes {
+			fmt.Printf("[indexer] Reached max WAL bytes for %s: %.1f MB\n", ns, float64(totalBytes)/(1024*1024))
+			break
 		}
 	}
 
-	fmt.Printf("[indexer] Finished reading %d WAL entries for %s (%.1f MB)\n", len(entries), ns, float64(totalBytes)/(1024*1024))
-	return entries, totalBytes, lastSeq, nil
+	fmt.Printf("[indexer] Finished reading %d WAL entries for %s (%.1f MB)\n", count, ns, float64(totalBytes)/(1024*1024))
+	return totalBytes, lastSeq, nil
 }
 
 // readWALEntry reads and decodes a single WAL entry.
@@ -594,12 +668,7 @@ func (i *Indexer) readWALEntry(ctx context.Context, ns string, seq uint64, decod
 	}
 	defer reader.Close()
 
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to read WAL data: %w", err)
-	}
-
-	entry, err := decoder.Decode(data)
+	entry, err := decoder.DecodeReader(reader)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to decode WAL entry: %w", err)
 	}

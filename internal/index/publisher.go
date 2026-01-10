@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/vexsearch/vex/pkg/objectstore"
@@ -19,6 +21,19 @@ var (
 	ErrStateUpdateFailed    = errors.New("failed to update state")
 	ErrObjectMissing        = errors.New("segment object missing from storage")
 )
+
+var verifyManifestReferencesEnabled = func() bool {
+	env := strings.TrimSpace(os.Getenv("VEX_VERIFY_MANIFEST_REFERENCES"))
+	if env == "" {
+		return true
+	}
+	switch strings.ToLower(env) {
+	case "0", "false", "no":
+		return false
+	default:
+		return true
+	}
+}()
 
 // Publisher handles atomic publishing of index segments and manifests.
 // It ensures:
@@ -289,7 +304,7 @@ func (p *Publisher) syncManifestSegment(manifest *Manifest, seg Segment) {
 
 // PublishConfig holds configuration for the publish operation.
 type PublishConfig struct {
-	VerifyObjects bool // Whether to verify objects exist before manifest upload
+	VerifyObjects   bool // Whether to verify objects exist before manifest upload
 	SkipStateUpdate bool // Skip state.json update (for testing)
 }
 
@@ -420,6 +435,9 @@ func (t *TransactionBuilder) Build() (*Publisher, *Manifest, error) {
 
 // VerifyManifestReferences checks that all objects referenced by a manifest exist.
 func VerifyManifestReferences(ctx context.Context, store objectstore.Store, manifest *Manifest) error {
+	if !verifyManifestReferencesEnabled {
+		return nil
+	}
 	keys := manifest.AllObjectKeys()
 	for _, key := range keys {
 		_, err := store.Head(ctx, key)

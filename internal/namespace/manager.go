@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vexsearch/vex/internal/metrics"
@@ -24,14 +25,15 @@ var (
 )
 
 const (
-	maxCASRetries   = 10
-	stateKeyFmt     = "vex/namespaces/%s/meta/state.json"
-	catalogKeyFmt   = "catalog/namespaces/%s"
+	maxCASRetries = 10
+	stateKeyFmt   = "vex/namespaces/%s/meta/state.json"
+	catalogKeyFmt = "catalog/namespaces/%s"
 )
 
 // StateManager manages namespace state in object storage with ETag-based CAS.
 type StateManager struct {
 	store objectstore.Store
+	locks sync.Map
 }
 
 // NewStateManager creates a new StateManager.
@@ -147,6 +149,10 @@ type UpdateFunc func(state *State) error
 // Update applies an update function to the namespace state using CAS.
 // It retries on ETag mismatch up to maxCASRetries times.
 func (m *StateManager) Update(ctx context.Context, namespace string, etag string, update UpdateFunc) (*LoadedState, error) {
+	lock := m.namespaceLock(namespace)
+	lock.Lock()
+	defer lock.Unlock()
+
 	var lastErr error
 	currentETag := etag
 
@@ -261,7 +267,7 @@ func validateSchemaTypeImmutability(old, new *Schema) error {
 
 // AdvanceWALOptions contains optional parameters for AdvanceWAL.
 type AdvanceWALOptions struct {
-	SchemaDelta        *Schema
+	SchemaDelta         *Schema
 	DisableBackpressure bool
 }
 
@@ -274,6 +280,10 @@ func (m *StateManager) AdvanceWAL(ctx context.Context, namespace string, etag st
 // AdvanceWALWithOptions advances the WAL head sequence by 1 and updates related fields.
 // Supports additional options like disabling backpressure tracking.
 func (m *StateManager) AdvanceWALWithOptions(ctx context.Context, namespace string, etag string, walKey string, bytesWritten int64, opts AdvanceWALOptions) (*LoadedState, error) {
+	lock := m.namespaceLock(namespace)
+	lock.Lock()
+	defer lock.Unlock()
+
 	walSeq, err := parseWALSeq(walKey)
 	if err != nil {
 		return nil, err
@@ -363,6 +373,14 @@ func (m *StateManager) AdvanceWALWithOptions(ctx context.Context, namespace stri
 	}
 
 	return nil, fmt.Errorf("%w: %v", ErrCASRetryExhausted, lastErr)
+}
+
+func (m *StateManager) namespaceLock(namespace string) *sync.Mutex {
+	if namespace == "" {
+		return &sync.Mutex{}
+	}
+	lock, _ := m.locks.LoadOrStore(namespace, &sync.Mutex{})
+	return lock.(*sync.Mutex)
 }
 
 func parseWALSeq(walKey string) (uint64, error) {

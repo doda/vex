@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -116,7 +117,7 @@ func (m *mockStore) List(ctx context.Context, opts *objectstore.ListOptions) (*o
 	var objects []objectstore.ObjectInfo
 
 	for key := range m.objects {
-		if opts.Prefix != "" && len(key) >= len(opts.Prefix) && key[:len(opts.Prefix)] != opts.Prefix {
+		if opts.Prefix != "" && !strings.HasPrefix(key, opts.Prefix) {
 			continue
 		}
 		if opts.Marker != "" && key <= opts.Marker {
@@ -316,6 +317,38 @@ func TestIndexerProcessesWALRange(t *testing.T) {
 		if entry.Seq != expectedSeq {
 			t.Errorf("entry %d: expected seq %d, got %d", i, expectedSeq, entry.Seq)
 		}
+	}
+}
+
+func TestProcessWALRangeStreamRespectsMaxBytes(t *testing.T) {
+	store := newMockStore()
+	stateManager := namespace.NewStateManager(store)
+	ns := "stream-limit-ns"
+
+	for seq := uint64(1); seq <= 3; seq++ {
+		createWALEntry(t, store, ns, seq)
+	}
+
+	cfg := DefaultConfig()
+	cfg.MaxWALBytes = 1
+	indexer := New(store, stateManager, cfg, nil)
+
+	var processed []uint64
+	totalBytes, lastSeq, err := indexer.ProcessWALRangeStream(context.Background(), ns, 0, 3, func(entry *wal.WalEntry, _ int64) error {
+		processed = append(processed, entry.Seq)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ProcessWALRangeStream failed: %v", err)
+	}
+	if len(processed) != 1 {
+		t.Fatalf("expected 1 WAL entry, got %d", len(processed))
+	}
+	if lastSeq != 1 {
+		t.Fatalf("expected lastSeq=1, got %d", lastSeq)
+	}
+	if totalBytes <= 0 {
+		t.Fatalf("expected totalBytes > 0, got %d", totalBytes)
 	}
 }
 
@@ -724,11 +757,11 @@ func TestRebuildReadyGate(t *testing.T) {
 	manifest.AddSegment(index.Segment{
 		ID:          segmentID,
 		Level:       index.L0,
-		StartWALSeq:  1,
-		EndWALSeq:    1,
-		DocsKey:      docsKey,
-		Stats:        index.SegmentStats{RowCount: 1, LogicalBytes: 10},
-		CreatedAt:    time.Now().UTC(),
+		StartWALSeq: 1,
+		EndWALSeq:   1,
+		DocsKey:     docsKey,
+		Stats:       index.SegmentStats{RowCount: 1, LogicalBytes: 10},
+		CreatedAt:   time.Now().UTC(),
 	})
 	manifest.UpdateIndexedWALSeq()
 

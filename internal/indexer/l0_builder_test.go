@@ -8,6 +8,7 @@ import (
 
 	"github.com/vexsearch/vex/internal/index"
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/wal"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
 
@@ -43,21 +44,32 @@ func TestL0PublishSegment_ManifestConflict(t *testing.T) {
 	conflictKey := index.ManifestKey(ns, loaded.State.Index.ManifestSeq+1)
 	_, _ = store.Put(ctx, conflictKey, bytes.NewReader(existingData), int64(len(existingData)), nil)
 
+	walKey := "vex/namespaces/" + ns + "/" + wal.KeyForSeq(1)
+	loaded, err = stateMan.AdvanceWAL(ctx, ns, loaded.ETag, walKey, 0, nil)
+	if err != nil {
+		t.Fatalf("failed to advance WAL: %v", err)
+	}
+
 	processor := NewL0SegmentProcessor(store, stateMan, nil, nil)
 	_, err = processor.publishSegment(ctx, ns, segment, loaded.State, loaded.ETag)
-	if err == nil {
-		t.Fatal("expected manifest conflict error")
-	}
-	if !objectstore.IsConflictError(err) {
-		t.Fatalf("expected conflict error, got: %v", err)
+	if err != nil {
+		t.Fatalf("unexpected publish error: %v", err)
 	}
 
 	updated, err := stateMan.Load(ctx, ns)
 	if err != nil {
 		t.Fatalf("failed to reload namespace: %v", err)
 	}
-	if updated.State.Index.ManifestSeq != 0 {
-		t.Errorf("expected manifest seq to remain 0, got %d", updated.State.Index.ManifestSeq)
+	if updated.State.Index.ManifestSeq != 2 {
+		t.Errorf("expected manifest seq 2 after conflict recovery, got %d", updated.State.Index.ManifestSeq)
+	}
+
+	manifest, err := index.LoadManifest(ctx, store, ns, updated.State.Index.ManifestSeq)
+	if err != nil {
+		t.Fatalf("failed to load updated manifest: %v", err)
+	}
+	if manifest.GetSegment(segID) == nil {
+		t.Fatalf("expected published segment to exist after conflict recovery")
 	}
 }
 

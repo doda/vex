@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -309,22 +310,21 @@ func TestBackgroundCompactor_L0Compaction(t *testing.T) {
 		t.Fatalf("TriggerCompaction failed: %v", err)
 	}
 
-	// Verify L0 segments were replaced with L1 segment
-	l0Segs := tree.GetL0Segments()
-	if len(l0Segs) != 0 {
-		t.Errorf("expected 0 L0 segments after compaction, got %d", len(l0Segs))
+	// Verify compaction request was enqueued (manifest not updated yet)
+	keys, err := ListCompactionRequestKeys(ctx, store, "test-ns", 10)
+	if err != nil {
+		t.Fatalf("failed to list compaction requests: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 compaction request, got %d", len(keys))
 	}
 
-	l1Segs := tree.GetL1Segments()
-	if len(l1Segs) != 1 {
-		t.Errorf("expected 1 L1 segment after compaction, got %d", len(l1Segs))
+	// Tree should still reflect the original L0 segments.
+	if got := len(tree.GetL0Segments()); got != 2 {
+		t.Errorf("expected 2 L0 segments to remain, got %d", got)
 	}
-
-	// Verify L1 segment has correct WAL range
-	if len(l1Segs) > 0 {
-		if l1Segs[0].StartWALSeq != 1 || l1Segs[0].EndWALSeq != 20 {
-			t.Errorf("expected L1 segment WAL range 1-20, got %d-%d", l1Segs[0].StartWALSeq, l1Segs[0].EndWALSeq)
-		}
+	if got := len(tree.GetL1Segments()); got != 0 {
+		t.Errorf("expected 0 L1 segments before apply, got %d", got)
 	}
 }
 
@@ -364,15 +364,19 @@ func TestBackgroundCompactor_L1ToL2Compaction(t *testing.T) {
 		t.Fatalf("TriggerCompaction failed: %v", err)
 	}
 
-	// Verify L1 segments were replaced with L2 segment
-	l1Segs := tree.GetL1Segments()
-	if len(l1Segs) != 0 {
-		t.Errorf("expected 0 L1 segments after compaction, got %d", len(l1Segs))
+	keys, err := ListCompactionRequestKeys(ctx, store, "test-ns", 10)
+	if err != nil {
+		t.Fatalf("failed to list compaction requests: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 compaction request, got %d", len(keys))
 	}
 
-	l2Segs := tree.GetL2Segments()
-	if len(l2Segs) != 1 {
-		t.Errorf("expected 1 L2 segment after compaction, got %d", len(l2Segs))
+	if got := len(tree.GetL1Segments()); got != 2 {
+		t.Errorf("expected 2 L1 segments to remain, got %d", got)
+	}
+	if got := len(tree.GetL2Segments()); got != 0 {
+		t.Errorf("expected 0 L2 segments before apply, got %d", got)
 	}
 }
 
@@ -408,19 +412,23 @@ func TestBackgroundCompactor_AutomaticPolling(t *testing.T) {
 	// Wait for background compaction
 	time.Sleep(200 * time.Millisecond)
 
-	// Verify compaction happened
-	l0Segs := tree.GetL0Segments()
-	l1Segs := tree.GetL1Segments()
-
-	if len(l0Segs) != 0 {
-		t.Errorf("expected 0 L0 segments after background compaction, got %d", len(l0Segs))
+	keys, err := ListCompactionRequestKeys(ctx, store, "test-ns", 10)
+	if err != nil {
+		t.Fatalf("failed to list compaction requests: %v", err)
 	}
-	if len(l1Segs) != 1 {
-		t.Errorf("expected 1 L1 segment after background compaction, got %d", len(l1Segs))
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 compaction request, got %d", len(keys))
+	}
+
+	if got := len(tree.GetL0Segments()); got != 2 {
+		t.Errorf("expected 2 L0 segments to remain, got %d", got)
+	}
+	if got := len(tree.GetL1Segments()); got != 0 {
+		t.Errorf("expected 0 L1 segments before apply, got %d", got)
 	}
 }
 
-func TestBackgroundCompactor_PublishesManifestAndCleansSegments(t *testing.T) {
+func TestBackgroundCompactor_EnqueuesCompactionRequest(t *testing.T) {
 	ctx := context.Background()
 	store := objectstore.NewMemoryStore()
 
@@ -460,8 +468,8 @@ func TestBackgroundCompactor_PublishesManifestAndCleansSegments(t *testing.T) {
 	seg1 := Segment{
 		ID:          "seg_1",
 		Level:       L0,
-		StartWALSeq:  1,
-		EndWALSeq:    1,
+		StartWALSeq: 1,
+		EndWALSeq:   1,
 		CreatedAt:   createdAt,
 		DocsKey:     seg1Key,
 		Stats: SegmentStats{
@@ -472,8 +480,8 @@ func TestBackgroundCompactor_PublishesManifestAndCleansSegments(t *testing.T) {
 	seg2 := Segment{
 		ID:          "seg_2",
 		Level:       L0,
-		StartWALSeq:  2,
-		EndWALSeq:    2,
+		StartWALSeq: 2,
+		EndWALSeq:   2,
 		CreatedAt:   createdAt,
 		DocsKey:     seg2Key,
 		Stats: SegmentStats{
@@ -503,50 +511,33 @@ func TestBackgroundCompactor_PublishesManifestAndCleansSegments(t *testing.T) {
 		t.Fatalf("failed to load state: %v", err)
 	}
 
-	if loaded.State.Index.ManifestSeq != 2 {
-		t.Fatalf("expected manifest seq 2, got %d", loaded.State.Index.ManifestSeq)
+	if loaded.State.Index.ManifestSeq != 1 {
+		t.Fatalf("expected manifest seq 1, got %d", loaded.State.Index.ManifestSeq)
 	}
 
-	manifestKey := ManifestKey(ns, loaded.State.Index.ManifestSeq)
-	updatedManifest, err := LoadManifest(ctx, store, ns, loaded.State.Index.ManifestSeq)
+	keys, err := ListCompactionRequestKeys(ctx, store, ns, 10)
 	if err != nil {
-		t.Fatalf("failed to load manifest: %v", err)
+		t.Fatalf("failed to list compaction requests: %v", err)
 	}
-	if len(updatedManifest.Segments) != 1 {
-		t.Fatalf("expected 1 compacted segment, got %d", len(updatedManifest.Segments))
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 compaction request, got %d", len(keys))
 	}
-	if updatedManifest.Segments[0].Level != L1 {
-		t.Errorf("expected compacted segment to be L1, got %d", updatedManifest.Segments[0].Level)
-	}
-
-	reader := NewReader(store, nil, nil)
-	docs, err := reader.LoadSegmentDocs(ctx, manifestKey)
+	req, err := LoadCompactionRequest(ctx, store, keys[0])
 	if err != nil {
-		t.Fatalf("failed to load compacted docs: %v", err)
+		t.Fatalf("failed to load compaction request: %v", err)
 	}
-	if len(docs) != 3 {
-		t.Fatalf("expected 3 docs after compaction, got %d", len(docs))
+	if len(req.SourceSegmentIDs) != 2 {
+		t.Fatalf("expected 2 source segments in request, got %d", len(req.SourceSegmentIDs))
 	}
-
-	var doc1 *IndexedDocument
-	for i := range docs {
-		if docs[i].ID == "1" {
-			doc1 = &docs[i]
-			break
-		}
-	}
-	if doc1 == nil || doc1.WALSeq != 2 {
-		t.Fatalf("expected doc 1 to have wal seq 2, got %+v", doc1)
-	}
-	if name, ok := doc1.Attributes["name"].(string); !ok || name != "alpha2" {
-		t.Fatalf("expected doc 1 to have name alpha2, got %v", doc1.Attributes["name"])
+	if req.NewSegment.ID == "" {
+		t.Fatalf("expected request to include new segment")
 	}
 
-	if _, err := store.Head(ctx, seg1Key); !objectstore.IsNotFoundError(err) {
-		t.Fatalf("expected seg1 docs to be deleted, got %v", err)
+	if _, err := store.Head(ctx, seg1Key); err != nil {
+		t.Fatalf("expected seg1 docs to remain, got %v", err)
 	}
-	if _, err := store.Head(ctx, seg2Key); !objectstore.IsNotFoundError(err) {
-		t.Fatalf("expected seg2 docs to be deleted, got %v", err)
+	if _, err := store.Head(ctx, seg2Key); err != nil {
+		t.Fatalf("expected seg2 docs to remain, got %v", err)
 	}
 }
 
@@ -670,6 +661,121 @@ func TestFullCompactor_WithVectors(t *testing.T) {
 	}
 	if result.NewSegment.IVFKeys != nil && result.NewSegment.IVFKeys.VectorCount != 5 {
 		t.Errorf("expected 5 vectors in IVF, got %d", result.NewSegment.IVFKeys.VectorCount)
+	}
+}
+
+func TestFullCompactor_CompactDocsColumnStreaming(t *testing.T) {
+	store := objectstore.NewMemoryStore()
+	ctx := context.Background()
+	ns := "test-ns"
+
+	seg1Docs := []DocColumn{
+		{ID: "doc-a", WALSeq: 1, Attributes: map[string]any{"name": "old"}},
+		{ID: "doc-b", WALSeq: 1, Attributes: map[string]any{"name": "remove"}},
+		{ID: "doc-c", WALSeq: 1, Attributes: map[string]any{"name": "keep"}},
+	}
+	seg2Docs := []DocColumn{
+		{ID: "doc-a", WALSeq: 2, Attributes: map[string]any{"name": "new"}},
+		{ID: "doc-b", WALSeq: 2, Deleted: true},
+		{ID: "doc-d", WALSeq: 2, Attributes: map[string]any{"name": "add"}},
+	}
+
+	writeDocsColumn := func(segID string, docs []DocColumn) string {
+		t.Helper()
+		raw, err := EncodeDocsColumn(docs)
+		if err != nil {
+			t.Fatalf("EncodeDocsColumn failed: %v", err)
+		}
+		compressed, err := CompressDocsColumn(raw)
+		if err != nil {
+			t.Fatalf("CompressDocsColumn failed: %v", err)
+		}
+		writer := NewSegmentWriter(store, ns, segID)
+		writer.SetChecksumEnabled(false)
+		key, err := writer.WriteDocsData(ctx, compressed)
+		if err != nil {
+			t.Fatalf("WriteDocsData failed: %v", err)
+		}
+		writer.Seal()
+		return key
+	}
+
+	seg1Key := writeDocsColumn("seg_docs_1", seg1Docs)
+	seg2Key := writeDocsColumn("seg_docs_2", seg2Docs)
+
+	seg1 := Segment{
+		ID:          "seg_docs_1",
+		Level:       L0,
+		StartWALSeq: 1,
+		EndWALSeq:   1,
+		DocsKey:     seg1Key,
+		Stats:       SegmentStats{RowCount: int64(len(seg1Docs))},
+	}
+	seg2 := Segment{
+		ID:          "seg_docs_2",
+		Level:       L0,
+		StartWALSeq: 2,
+		EndWALSeq:   2,
+		DocsKey:     seg2Key,
+		Stats:       SegmentStats{RowCount: int64(len(seg2Docs))},
+	}
+
+	plan := &CompactionPlan{
+		SourceSegments: []Segment{seg1, seg2},
+		TargetLevel:    L1,
+		MinWALSeq:      1,
+		MaxWALSeq:      2,
+		TotalRows:      6,
+	}
+
+	compactor := NewFullCompactor(store, ns, &CompactorConfig{DisableChecksums: true})
+	result, err := compactor.Compact(ctx, plan)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	reader, _, err := store.Get(ctx, result.NewSegment.DocsKey, nil)
+	if err != nil {
+		t.Fatalf("failed to read compacted docs: %v", err)
+	}
+	data, err := io.ReadAll(reader)
+	reader.Close()
+	if err != nil {
+		t.Fatalf("failed to read docs data: %v", err)
+	}
+	if IsZstdCompressed(data) {
+		data, err = DecompressZstd(data)
+		if err != nil {
+			t.Fatalf("failed to decompress docs: %v", err)
+		}
+	}
+
+	docs, err := DecodeDocsColumn(data)
+	if err != nil {
+		t.Fatalf("failed to decode docs: %v", err)
+	}
+	if len(docs) != 3 {
+		t.Fatalf("expected 3 docs after compaction, got %d", len(docs))
+	}
+
+	found := make(map[string]DocColumn, len(docs))
+	for _, doc := range docs {
+		found[doc.ID] = doc
+	}
+	if _, ok := found["doc-b"]; ok {
+		t.Fatalf("expected doc-b to be deleted, got %+v", found["doc-b"])
+	}
+	if doc, ok := found["doc-a"]; !ok || doc.WALSeq != 2 {
+		t.Fatalf("expected doc-a wal seq 2, got %+v", doc)
+	}
+	if name, ok := found["doc-a"].Attributes["name"].(string); !ok || name != "new" {
+		t.Fatalf("expected doc-a name new, got %v", found["doc-a"].Attributes["name"])
+	}
+	if _, ok := found["doc-c"]; !ok {
+		t.Fatalf("expected doc-c to be present")
+	}
+	if _, ok := found["doc-d"]; !ok {
+		t.Fatalf("expected doc-d to be present")
 	}
 }
 
