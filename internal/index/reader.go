@@ -183,6 +183,24 @@ func (r *Reader) noteManifest(manifestKey string, manifest *Manifest) {
 		return
 	}
 
+	totalSegments := 0
+	l0Segments := 0
+	l1Segments := 0
+	l2Segments := 0
+	for _, seg := range manifest.Segments {
+		totalSegments++
+		switch seg.Level {
+		case L0:
+			l0Segments++
+		case L1:
+			l1Segments++
+		case L2:
+			l2Segments++
+		}
+	}
+	metrics.SetSegmentCounts(namespace, totalSegments, l0Segments, l1Segments, l2Segments)
+	metrics.SetDocumentsIndexed(namespace, manifest.Stats.ApproxRowCount)
+
 	seq, ok := parseManifestSeq(manifestKey)
 	if !ok {
 		return

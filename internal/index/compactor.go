@@ -8,16 +8,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/vexsearch/vex/internal/document"
+	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/namespace"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
+
+var ErrCompactionStale = errors.New("compaction is stale")
 
 // CompactorConfig holds configuration for segment compaction.
 type CompactorConfig struct {
@@ -678,7 +682,7 @@ func (bc *BackgroundCompactor) checkAndCompact() {
 		// Try L0->L1 compaction first
 		if tree.NeedsL0Compaction() {
 			if err := bc.compactL0(ns, tree); err != nil {
-				// Log error but continue
+				log.Printf("[compaction] ns=%s level=l0_l1 error=%v", ns, err)
 				continue
 			}
 		}
@@ -686,6 +690,7 @@ func (bc *BackgroundCompactor) checkAndCompact() {
 		// Then check L1->L2 compaction
 		if tree.NeedsL1Compaction() {
 			if err := bc.compactL1(ns, tree); err != nil {
+				log.Printf("[compaction] ns=%s level=l1_l2 error=%v", ns, err)
 				continue
 			}
 		}
@@ -694,8 +699,23 @@ func (bc *BackgroundCompactor) checkAndCompact() {
 
 // compactL0 performs L0->L1 compaction for a namespace.
 func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
+	level := "l0_l1"
+	start := time.Now()
+	metrics.IncCompactionInProgress(ns, level)
+	var resultErr error
+	defer func() {
+		metrics.DecCompactionInProgress(ns, level)
+		metrics.ObserveCompaction(ns, level, time.Since(start).Seconds(), resultErr)
+		if resultErr == nil {
+			log.Printf("[compaction] ns=%s level=%s success dur=%s", ns, level, time.Since(start))
+		} else {
+			log.Printf("[compaction] ns=%s level=%s failed dur=%s err=%v", ns, level, time.Since(start), resultErr)
+		}
+	}()
+
 	// Mark compaction in progress
 	if err := tree.SetCompacting(true); err != nil {
+		resultErr = err
 		return err
 	}
 	defer tree.SetCompacting(false)
@@ -703,39 +723,67 @@ func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
 	// Plan compaction
 	plan, err := tree.PlanL0Compaction()
 	if err != nil {
+		resultErr = err
 		return err
 	}
+	log.Printf("[compaction] ns=%s level=%s segments=%d bytes=%d rows=%d", ns, level, len(plan.SourceSegments), plan.TotalBytes, plan.TotalRows)
 
 	// Execute compaction
 	compactor := NewFullCompactor(bc.store, ns, bc.compConfig)
 	result, err := compactor.Compact(context.Background(), plan)
 	if err != nil {
+		resultErr = err
 		return fmt.Errorf("L0->L1 compaction failed: %w", err)
 	}
 
 	if err := bc.publishCompaction(context.Background(), ns, tree, plan, *result.NewSegment); err != nil {
+		if errors.Is(err, ErrCompactionStale) {
+			log.Printf("[compaction] ns=%s level=%s stale: %v", ns, level, err)
+			return nil
+		}
+		resultErr = err
 		return err
 	}
 
 	if err := tree.ApplyCompaction(plan, *result.NewSegment); err != nil {
+		resultErr = err
 		return fmt.Errorf("failed to apply compaction: %w", err)
 	}
-	_ = bc.cleanupObsoleteSegments(context.Background(), plan.SourceSegments)
+	if err := bc.cleanupObsoleteSegments(context.Background(), plan.SourceSegments); err != nil {
+		log.Printf("[compaction] ns=%s level=%s cleanup_error=%v", ns, level, err)
+	}
 
 	return nil
 }
 
 // compactL1 performs L1->L2 compaction for a namespace.
 func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
+	level := "l1_l2"
+	start := time.Now()
+	metrics.IncCompactionInProgress(ns, level)
+	var resultErr error
+	defer func() {
+		metrics.DecCompactionInProgress(ns, level)
+		metrics.ObserveCompaction(ns, level, time.Since(start).Seconds(), resultErr)
+		if resultErr == nil {
+			log.Printf("[compaction] ns=%s level=%s success dur=%s", ns, level, time.Since(start))
+		} else {
+			log.Printf("[compaction] ns=%s level=%s failed dur=%s err=%v", ns, level, time.Since(start), resultErr)
+		}
+	}()
+
 	if err := tree.SetCompacting(true); err != nil {
+		resultErr = err
 		return err
 	}
 	defer tree.SetCompacting(false)
 
 	plan, err := tree.PlanL1Compaction()
 	if err != nil {
+		resultErr = err
 		return err
 	}
+	log.Printf("[compaction] ns=%s level=%s segments=%d bytes=%d rows=%d", ns, level, len(plan.SourceSegments), plan.TotalBytes, plan.TotalRows)
 
 	// Enable reclustering for L1->L2 compaction
 	config := *bc.compConfig
@@ -744,17 +792,26 @@ func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
 	compactor := NewFullCompactor(bc.store, ns, &config)
 	result, err := compactor.Compact(context.Background(), plan)
 	if err != nil {
+		resultErr = err
 		return fmt.Errorf("L1->L2 compaction failed: %w", err)
 	}
 
 	if err := bc.publishCompaction(context.Background(), ns, tree, plan, *result.NewSegment); err != nil {
+		if errors.Is(err, ErrCompactionStale) {
+			log.Printf("[compaction] ns=%s level=%s stale: %v", ns, level, err)
+			return nil
+		}
+		resultErr = err
 		return err
 	}
 
 	if err := tree.ApplyCompaction(plan, *result.NewSegment); err != nil {
+		resultErr = err
 		return fmt.Errorf("failed to apply compaction: %w", err)
 	}
-	_ = bc.cleanupObsoleteSegments(context.Background(), plan.SourceSegments)
+	if err := bc.cleanupObsoleteSegments(context.Background(), plan.SourceSegments); err != nil {
+		log.Printf("[compaction] ns=%s level=%s cleanup_error=%v", ns, level, err)
+	}
 
 	return nil
 }
@@ -767,54 +824,153 @@ func (bc *BackgroundCompactor) publishCompaction(ctx context.Context, ns string,
 		return fmt.Errorf("compaction state manager not configured")
 	}
 
-	loaded, err := stateMan.Load(ctx, ns)
-	if err != nil {
-		return fmt.Errorf("failed to load state: %w", err)
-	}
-
-	manifest := tree.Manifest()
-	if manifest == nil {
-		return fmt.Errorf("failed to load manifest from tree")
-	}
-
-	for _, src := range plan.SourceSegments {
-		manifest.RemoveSegment(src.ID)
-	}
-	newSegment.Level = plan.TargetLevel
-	manifest.AddSegment(newSegment)
-	manifest.UpdateIndexedWALSeq()
-	manifest.GeneratedAt = time.Now().UTC()
-
-	if err := manifest.Validate(); err != nil {
-		return fmt.Errorf("manifest invalid after compaction: %w", err)
-	}
-
-	if err := VerifyManifestReferences(ctx, bc.store, manifest); err != nil {
-		return fmt.Errorf("manifest references missing objects: %w", err)
-	}
-
-	manifestData, err := manifest.MarshalJSON()
-	if err != nil {
-		return fmt.Errorf("failed to serialize manifest: %w", err)
-	}
-
-	newManifestSeq := loaded.State.Index.ManifestSeq + 1
-	newManifestKey := ManifestKey(ns, newManifestSeq)
-	_, err = bc.store.PutIfAbsent(ctx, newManifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), &objectstore.PutOptions{
-		ContentType: "application/json",
-	})
-	if err != nil {
-		if objectstore.IsConflictError(err) {
-			return fmt.Errorf("manifest already exists: %w", err)
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		loaded, err := stateMan.Load(ctx, ns)
+		if err != nil {
+			return fmt.Errorf("failed to load state: %w", err)
 		}
-		return fmt.Errorf("failed to write manifest: %w", err)
+		if loaded.State.Index.ManifestSeq == 0 {
+			return ErrCompactionStale
+		}
+
+		baseManifest, err := LoadManifest(ctx, bc.store, ns, loaded.State.Index.ManifestSeq)
+		if err != nil {
+			return fmt.Errorf("failed to load manifest: %w", err)
+		}
+		if baseManifest == nil {
+			return fmt.Errorf("failed to load manifest from store")
+		}
+
+		if err := tree.ReplaceManifest(baseManifest); err != nil {
+			return err
+		}
+		if !manifestHasSegments(baseManifest, plan.SourceSegments) {
+			return ErrCompactionStale
+		}
+
+		manifest := baseManifest.Clone()
+		if manifest == nil {
+			return fmt.Errorf("failed to clone manifest")
+		}
+
+		for _, src := range plan.SourceSegments {
+			manifest.RemoveSegment(src.ID)
+		}
+		newSegment.Level = plan.TargetLevel
+		manifest.AddSegment(newSegment)
+		manifest.UpdateIndexedWALSeq()
+		manifest.GeneratedAt = time.Now().UTC()
+
+		if err := manifest.Validate(); err != nil {
+			return fmt.Errorf("manifest invalid after compaction: %w", err)
+		}
+
+		if err := VerifyManifestReferences(ctx, bc.store, manifest); err != nil {
+			return fmt.Errorf("manifest references missing objects: %w", err)
+		}
+
+		manifestData, err := manifest.MarshalJSON()
+		if err != nil {
+			return fmt.Errorf("failed to serialize manifest: %w", err)
+		}
+
+		newManifestSeq := loaded.State.Index.ManifestSeq + 1
+		newManifestKey := ManifestKey(ns, newManifestSeq)
+		_, err = bc.store.PutIfAbsent(ctx, newManifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), &objectstore.PutOptions{
+			ContentType: "application/json",
+		})
+		if err != nil {
+			if objectstore.IsConflictError(err) {
+				existing, loadErr := LoadManifest(ctx, bc.store, ns, newManifestSeq)
+				if loadErr != nil {
+					return fmt.Errorf("manifest already exists and failed to load: %w", loadErr)
+				}
+				if existing != nil && manifestMatchesCompaction(existing, plan, newSegment) {
+					if err := bc.updateStateForManifest(ctx, ns, newManifestKey, newManifestSeq, existing.IndexedWALSeq); err != nil {
+						if errors.Is(err, ErrCompactionStale) {
+							return err
+						}
+						return fmt.Errorf("failed to update state after manifest conflict: %w", err)
+					}
+					return nil
+				}
+
+				current, loadErr := stateMan.Load(ctx, ns)
+				if loadErr != nil {
+					return fmt.Errorf("failed to reload state: %w", loadErr)
+				}
+				if current.State.Index.ManifestSeq >= newManifestSeq {
+					return ErrCompactionStale
+				}
+				continue
+			}
+			return fmt.Errorf("failed to write manifest: %w", err)
+		}
+
+		_, err = stateMan.UpdateIndexManifest(ctx, ns, loaded.ETag, newManifestKey, newManifestSeq, manifest.IndexedWALSeq)
+		if err != nil {
+			if errors.Is(err, namespace.ErrCASRetryExhausted) {
+				current, loadErr := stateMan.Load(ctx, ns)
+				if loadErr == nil && current.State.Index.ManifestSeq >= newManifestSeq {
+					return ErrCompactionStale
+				}
+			}
+			return fmt.Errorf("failed to update state: %w", err)
+		}
+
+		return nil
 	}
 
-	_, err = stateMan.UpdateIndexManifest(ctx, ns, loaded.ETag, newManifestKey, newManifestSeq, manifest.IndexedWALSeq)
+	return ErrCompactionStale
+}
+
+func manifestHasSegments(manifest *Manifest, segments []Segment) bool {
+	for _, seg := range segments {
+		if manifest.GetSegment(seg.ID) == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func manifestMatchesCompaction(manifest *Manifest, plan *CompactionPlan, newSegment Segment) bool {
+	if manifest.GetSegment(newSegment.ID) == nil {
+		return false
+	}
+	for _, src := range plan.SourceSegments {
+		if manifest.GetSegment(src.ID) != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (bc *BackgroundCompactor) updateStateForManifest(ctx context.Context, ns, manifestKey string, manifestSeq uint64, indexedWALSeq uint64) error {
+	loaded, err := bc.stateMan.Load(ctx, ns)
 	if err != nil {
-		return fmt.Errorf("failed to update state: %w", err)
+		return err
+	}
+	if loaded.State.Index.ManifestSeq > manifestSeq {
+		return ErrCompactionStale
+	}
+	if loaded.State.Index.ManifestSeq == manifestSeq {
+		if loaded.State.Index.ManifestKey == manifestKey {
+			return nil
+		}
+		return ErrCompactionStale
 	}
 
+	_, err = bc.stateMan.UpdateIndexManifest(ctx, ns, loaded.ETag, manifestKey, manifestSeq, indexedWALSeq)
+	if err != nil {
+		if errors.Is(err, namespace.ErrCASRetryExhausted) {
+			current, loadErr := bc.stateMan.Load(ctx, ns)
+			if loadErr == nil && current.State.Index.ManifestSeq >= manifestSeq {
+				return ErrCompactionStale
+			}
+		}
+		return err
+	}
 	return nil
 }
 

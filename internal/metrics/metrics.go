@@ -29,6 +29,16 @@ var (
 		[]string{"namespace"},
 	)
 
+	// TailEntries tracks number of WAL entries retained in tail per namespace.
+	TailEntries = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "tail_entries",
+			Help:      "Unindexed WAL entry count per namespace",
+		},
+		[]string{"namespace"},
+	)
+
 	// CacheHits tracks cache hits per cache type and namespace.
 	CacheHits = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -149,6 +159,16 @@ var (
 		[]string{"namespace"},
 	)
 
+	// DocumentsIndexedCurrent tracks current documents indexed (approximate).
+	DocumentsIndexedCurrent = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "documents_indexed",
+			Help:      "Current documents indexed (approximate)",
+		},
+		[]string{"namespace"},
+	)
+
 	// QueryLatency tracks query execution latency.
 	QueryLatency = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -158,6 +178,47 @@ var (
 			Buckets:   prometheus.DefBuckets,
 		},
 		[]string{"namespace", "query_type"},
+	)
+
+	// SegmentCounts tracks index segment counts by level.
+	SegmentCounts = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "segment_count",
+			Help:      "Indexed segment counts by namespace and level",
+		},
+		[]string{"namespace", "level"}, // level: total/l0/l1/l2
+	)
+
+	// CompactionsTotal tracks compaction attempts by namespace and level.
+	CompactionsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "compactions_total",
+			Help:      "Total compactions by namespace and level",
+		},
+		[]string{"namespace", "level", "status"}, // level: l0_l1/l1_l2, status: success/error
+	)
+
+	// CompactionDuration tracks compaction duration by namespace and level.
+	CompactionDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "compaction_duration_seconds",
+			Help:      "Compaction duration in seconds",
+			Buckets:   prometheus.DefBuckets,
+		},
+		[]string{"namespace", "level"}, // level: l0_l1/l1_l2
+	)
+
+	// CompactionsInProgress tracks running compactions by namespace and level.
+	CompactionsInProgress = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "compactions_in_progress",
+			Help:      "Compactions currently running",
+		},
+		[]string{"namespace", "level"},
 	)
 
 	// CacheTemperature tracks cache temperature classification per cache type.
@@ -206,6 +267,14 @@ func DecQueryConcurrency(ns string) {
 // SetTailBytes sets the unindexed tail bytes for a namespace.
 func SetTailBytes(ns string, bytes int64) {
 	TailBytes.WithLabelValues(ns).Set(float64(bytes))
+}
+
+// SetTailEntries sets the tail entry count for a namespace.
+func SetTailEntries(ns string, count int) {
+	if count < 0 {
+		count = 0
+	}
+	TailEntries.WithLabelValues(ns).Set(float64(count))
 }
 
 // IncCacheHit increments the cache hit counter.
@@ -264,6 +333,39 @@ func ObserveQuery(ns, queryType string, latencySeconds float64, err error) {
 	}
 	QueriesTotal.WithLabelValues(ns, queryType, status).Inc()
 	QueryLatency.WithLabelValues(ns, queryType).Observe(latencySeconds)
+}
+
+// SetSegmentCounts updates segment count metrics for a namespace.
+func SetSegmentCounts(ns string, total, l0, l1, l2 int) {
+	SegmentCounts.WithLabelValues(ns, "total").Set(float64(total))
+	SegmentCounts.WithLabelValues(ns, "l0").Set(float64(l0))
+	SegmentCounts.WithLabelValues(ns, "l1").Set(float64(l1))
+	SegmentCounts.WithLabelValues(ns, "l2").Set(float64(l2))
+}
+
+// IncCompactionInProgress increments the in-progress compaction gauge.
+func IncCompactionInProgress(ns, level string) {
+	CompactionsInProgress.WithLabelValues(ns, level).Inc()
+}
+
+// DecCompactionInProgress decrements the in-progress compaction gauge.
+func DecCompactionInProgress(ns, level string) {
+	CompactionsInProgress.WithLabelValues(ns, level).Dec()
+}
+
+// ObserveCompaction records a compaction result and duration.
+func ObserveCompaction(ns, level string, durationSeconds float64, err error) {
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	CompactionsTotal.WithLabelValues(ns, level, status).Inc()
+	CompactionDuration.WithLabelValues(ns, level).Observe(durationSeconds)
+}
+
+// SetDocumentsIndexed sets the current documents indexed gauge.
+func SetDocumentsIndexed(ns string, count int64) {
+	DocumentsIndexedCurrent.WithLabelValues(ns).Set(float64(count))
 }
 
 // AddDocumentsIndexed increments the documents indexed counter by the given count.

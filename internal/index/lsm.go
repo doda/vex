@@ -52,6 +52,14 @@ type LSMConfig struct {
 	// L1CompactionThreshold is the number of L1 segments that triggers L1->L2 compaction.
 	L1CompactionThreshold int
 
+	// MaxCompactionSegments caps the number of segments merged in a single compaction.
+	// 0 means no limit.
+	MaxCompactionSegments int
+
+	// MaxCompactionBytes caps the total logical bytes merged in a single compaction.
+	// 0 means no limit.
+	MaxCompactionBytes int64
+
 	// L0TargetSizeBytes is the approximate target size for L0 segments.
 	L0TargetSizeBytes int64
 
@@ -84,6 +92,23 @@ type LSMTree struct {
 	// compacting tracks whether compaction is in progress
 	compacting bool
 	closed     bool
+}
+
+// ReplaceManifest swaps the in-memory manifest with a new snapshot.
+func (t *LSMTree) ReplaceManifest(manifest *Manifest) error {
+	if manifest == nil {
+		return errors.New("manifest cannot be nil")
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return ErrLSMTreeClosed
+	}
+
+	t.manifest = manifest
+	return nil
 }
 
 // NewLSMTree creates a new LSM tree for a namespace.
@@ -277,10 +302,11 @@ func (t *LSMTree) PlanL0Compaction() (*CompactionPlan, error) {
 		return l0Segments[i].StartWALSeq < l0Segments[j].StartWALSeq
 	})
 
-	// Select segments to compact (all L0 segments)
+	selected := t.selectCompactionSegments(l0Segments)
+
 	var minSeq, maxSeq uint64
 	var totalBytes, totalRows int64
-	for i, seg := range l0Segments {
+	for i, seg := range selected {
 		if i == 0 {
 			minSeq = seg.StartWALSeq
 		}
@@ -292,7 +318,7 @@ func (t *LSMTree) PlanL0Compaction() (*CompactionPlan, error) {
 	}
 
 	return &CompactionPlan{
-		SourceSegments: l0Segments,
+		SourceSegments: selected,
 		TargetLevel:    L1,
 		MinWALSeq:      minSeq,
 		MaxWALSeq:      maxSeq,
@@ -320,9 +346,11 @@ func (t *LSMTree) PlanL1Compaction() (*CompactionPlan, error) {
 		return l1Segments[i].StartWALSeq < l1Segments[j].StartWALSeq
 	})
 
+	selected := t.selectCompactionSegments(l1Segments)
+
 	var minSeq, maxSeq uint64
 	var totalBytes, totalRows int64
-	for i, seg := range l1Segments {
+	for i, seg := range selected {
 		if i == 0 {
 			minSeq = seg.StartWALSeq
 		}
@@ -334,13 +362,40 @@ func (t *LSMTree) PlanL1Compaction() (*CompactionPlan, error) {
 	}
 
 	return &CompactionPlan{
-		SourceSegments: l1Segments,
+		SourceSegments: selected,
 		TargetLevel:    L2,
 		MinWALSeq:      minSeq,
 		MaxWALSeq:      maxSeq,
 		TotalBytes:     totalBytes,
 		TotalRows:      totalRows,
 	}, nil
+}
+
+func (t *LSMTree) selectCompactionSegments(segments []Segment) []Segment {
+	maxSegments := t.config.MaxCompactionSegments
+	maxBytes := t.config.MaxCompactionBytes
+	if maxSegments <= 0 && maxBytes <= 0 {
+		return segments
+	}
+
+	selected := make([]Segment, 0, len(segments))
+	var totalBytes int64
+	for _, seg := range segments {
+		if maxSegments > 0 && len(selected) >= maxSegments {
+			break
+		}
+		if maxBytes > 0 && len(selected) > 0 && totalBytes+seg.Stats.LogicalBytes > maxBytes {
+			break
+		}
+		selected = append(selected, seg)
+		totalBytes += seg.Stats.LogicalBytes
+	}
+
+	if len(selected) == 0 && len(segments) > 0 {
+		selected = append(selected, segments[0])
+	}
+
+	return selected
 }
 
 // ApplyCompaction applies a compaction result, replacing source segments with the new segment.
@@ -648,14 +703,14 @@ func (c *Compactor) CompactSegments(ctx context.Context, plan *CompactionPlan) (
 
 // MergeResult contains the result of a merge operation.
 type MergeResult struct {
-	Segment      *Segment
-	DocsKey      string
-	VectorsKey   string
-	FilterKeys   []string
-	FTSKeys      []string
-	MergedDocs   int64
-	RemovedDocs  int64
-	TotalBytes   int64
+	Segment     *Segment
+	DocsKey     string
+	VectorsKey  string
+	FilterKeys  []string
+	FTSKeys     []string
+	MergedDocs  int64
+	RemovedDocs int64
+	TotalBytes  int64
 }
 
 // SegmentReader reads documents from segments for query execution.
@@ -740,10 +795,10 @@ type QuerySegmentIterator struct {
 // Tail docs should also be sorted by WAL seq (newest first).
 func NewQuerySegmentIterator(reader *SegmentReader, segments []Segment, tailDocs []DocumentEntry) *QuerySegmentIterator {
 	return &QuerySegmentIterator{
-		segments:  segments,
-		tailDocs:  tailDocs,
-		seenIDs:   make(map[string]bool),
-		reader:    reader,
+		segments: segments,
+		tailDocs: tailDocs,
+		seenIDs:  make(map[string]bool),
+		reader:   reader,
 	}
 }
 

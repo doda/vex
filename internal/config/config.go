@@ -64,6 +64,7 @@ type Config struct {
 	Cache       CacheConfig       `json:"cache"`
 	Membership  MembershipConfig  `json:"membership"`
 	Indexer     IndexerConfig     `json:"indexer"`
+	Compaction  CompactionConfig  `json:"compaction"`
 	Guardrails  GuardrailsConfig  `json:"guardrails"`
 	Timeout     TimeoutConfig     `json:"timeout"`
 }
@@ -121,6 +122,16 @@ type IndexerConfig struct {
 	// WriteManifestVersion specifies which manifest format version to write.
 	// 0 means use the current version.
 	WriteManifestVersion int `json:"write_manifest_version,omitempty"`
+}
+
+// CompactionConfig holds configuration for segment compaction sizing.
+type CompactionConfig struct {
+	// MaxSegments caps the number of segments per compaction run.
+	// 0 means no limit.
+	MaxSegments int `json:"max_segments"`
+	// MaxBytesMB caps the total logical bytes per compaction run in MB.
+	// 0 means no limit.
+	MaxBytesMB int `json:"max_bytes_mb"`
 }
 
 type ObjectStoreConfig struct {
@@ -344,6 +355,18 @@ func Load(path string) (*Config, error) {
 	if env := os.Getenv("VEX_INDEXER_WRITE_MANIFEST_VERSION"); env != "" {
 		if n, err := parseIntEnv(env); err == nil {
 			cfg.Indexer.WriteManifestVersion = n
+		}
+	}
+
+	// Compaction configuration
+	if env := os.Getenv("VEX_COMPACTION_MAX_SEGMENTS"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Compaction.MaxSegments = n
+		}
+	}
+	if env := os.Getenv("VEX_COMPACTION_MAX_BYTES_MB"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Compaction.MaxBytesMB = n
 		}
 	}
 

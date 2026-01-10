@@ -170,6 +170,45 @@ func TestLSMTree_L0Compaction(t *testing.T) {
 	}
 }
 
+func TestLSMTree_PlanL0Compaction_LimitsSegments(t *testing.T) {
+	config := &LSMConfig{
+		L0CompactionThreshold: 4,
+		L1CompactionThreshold: 4,
+		MaxCompactionSegments: 2,
+	}
+	tree := NewLSMTree("test-ns", nil, config)
+
+	for i := 1; i <= 4; i++ {
+		seg := Segment{
+			ID:          GenerateSegmentID(),
+			Level:       L0,
+			StartWALSeq: uint64((i-1)*10 + 1),
+			EndWALSeq:   uint64(i * 10),
+			Stats: SegmentStats{
+				RowCount:     100,
+				LogicalBytes: 1024,
+			},
+		}
+		tree.AddL0Segment(seg)
+	}
+
+	if !tree.NeedsL0Compaction() {
+		t.Fatal("expected L0 compaction to be needed")
+	}
+
+	plan, err := tree.PlanL0Compaction()
+	if err != nil {
+		t.Fatalf("PlanL0Compaction failed: %v", err)
+	}
+
+	if len(plan.SourceSegments) != 2 {
+		t.Errorf("expected 2 source segments, got %d", len(plan.SourceSegments))
+	}
+	if plan.MinWALSeq != 1 || plan.MaxWALSeq != 20 {
+		t.Errorf("expected WAL range 1-20, got %d-%d", plan.MinWALSeq, plan.MaxWALSeq)
+	}
+}
+
 func TestLSMTree_ApplyCompaction(t *testing.T) {
 	config := DefaultLSMConfig()
 	config.L0CompactionThreshold = 2
@@ -299,6 +338,47 @@ func TestLSMTree_L1ToL2Compaction(t *testing.T) {
 	}
 	if stats.L2SegmentCount != 1 {
 		t.Errorf("expected L2 count 1, got %d", stats.L2SegmentCount)
+	}
+}
+
+func TestLSMTree_PlanL1Compaction_LimitsBytes(t *testing.T) {
+	config := &LSMConfig{
+		L0CompactionThreshold: 2,
+		L1CompactionThreshold: 2,
+		MaxCompactionBytes:    12 * 1024,
+	}
+	tree := NewLSMTree("test-ns", nil, config)
+
+	for i := 1; i <= 2; i++ {
+		seg := Segment{
+			ID:          GenerateSegmentID(),
+			Level:       L1,
+			StartWALSeq: uint64((i-1)*100 + 1),
+			EndWALSeq:   uint64(i * 100),
+			Stats: SegmentStats{
+				RowCount:     1000,
+				LogicalBytes: 10 * 1024,
+			},
+		}
+		tree.mu.Lock()
+		tree.manifest.AddSegment(seg)
+		tree.mu.Unlock()
+	}
+
+	if !tree.NeedsL1Compaction() {
+		t.Fatal("expected L1 compaction to be needed")
+	}
+
+	plan, err := tree.PlanL1Compaction()
+	if err != nil {
+		t.Fatalf("PlanL1Compaction failed: %v", err)
+	}
+
+	if len(plan.SourceSegments) != 1 {
+		t.Errorf("expected 1 source segment, got %d", len(plan.SourceSegments))
+	}
+	if plan.MinWALSeq != 1 || plan.MaxWALSeq != 100 {
+		t.Errorf("expected WAL range 1-100, got %d-%d", plan.MinWALSeq, plan.MaxWALSeq)
 	}
 }
 

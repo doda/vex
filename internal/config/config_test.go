@@ -562,6 +562,25 @@ func TestConfig_GetCompatMode(t *testing.T) {
 	}
 }
 
+func TestCompactionConfigFromEnv(t *testing.T) {
+	os.Setenv("VEX_COMPACTION_MAX_SEGMENTS", "6")
+	os.Setenv("VEX_COMPACTION_MAX_BYTES_MB", "512")
+	defer os.Unsetenv("VEX_COMPACTION_MAX_SEGMENTS")
+	defer os.Unsetenv("VEX_COMPACTION_MAX_BYTES_MB")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Compaction.MaxSegments != 6 {
+		t.Errorf("expected max segments 6, got %d", cfg.Compaction.MaxSegments)
+	}
+	if cfg.Compaction.MaxBytesMB != 512 {
+		t.Errorf("expected max bytes MB 512, got %d", cfg.Compaction.MaxBytesMB)
+	}
+}
+
 func TestGuardrailsConfig(t *testing.T) {
 	os.Setenv("VEX_GUARDRAILS_MAX_NAMESPACES", "500")
 	os.Setenv("VEX_GUARDRAILS_MAX_TAIL_BYTES_MB", "128")
@@ -646,5 +665,31 @@ func TestGuardrailsConfigFromFile(t *testing.T) {
 	}
 	if cfg.Guardrails.MaxConcurrentColdFills != 2 {
 		t.Errorf("expected max concurrent cold fills 2, got %d", cfg.Guardrails.MaxConcurrentColdFills)
+	}
+}
+
+func TestCompactionConfigFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"compaction": {
+			"max_segments": 4,
+			"max_bytes_mb": 256
+		}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Compaction.MaxSegments != 4 {
+		t.Errorf("expected max segments 4, got %d", cfg.Compaction.MaxSegments)
+	}
+	if cfg.Compaction.MaxBytesMB != 256 {
+		t.Errorf("expected max bytes MB 256, got %d", cfg.Compaction.MaxBytesMB)
 	}
 }
