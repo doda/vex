@@ -87,9 +87,7 @@ func TestServeMode(t *testing.T) {
 	}
 	defer cmd.Process.Kill()
 
-	time.Sleep(2 * time.Second)
-
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	resp, err := waitForHealth(port)
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}
@@ -124,9 +122,7 @@ func TestQueryMode(t *testing.T) {
 	}
 	defer cmd.Process.Kill()
 
-	time.Sleep(2 * time.Second)
-
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	resp, err := waitForHealth(port)
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}
@@ -175,9 +171,7 @@ func TestConfigLoading(t *testing.T) {
 	}
 	defer cmd.Process.Kill()
 
-	time.Sleep(2 * time.Second)
-
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	resp, err := waitForHealth(port)
 	if err != nil {
 		t.Fatalf("health check on config port failed: %v", err)
 	}
@@ -199,4 +193,18 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func waitForHealth(port int) (*http.Response, error) {
+	url := fmt.Sprintf("http://localhost:%d/health", port)
+	var lastErr error
+	for i := 0; i < 20; i++ {
+		resp, err := http.Get(url)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("health check failed after retries: %w", lastErr)
 }
