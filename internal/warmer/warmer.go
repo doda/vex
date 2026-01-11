@@ -255,7 +255,7 @@ func (w *Warmer) prefetchToCache(ctx context.Context, key string, toRAM bool, it
 		ns := extractNamespace(key)
 		ramCacheKey := cache.MemoryCacheKey{
 			Namespace: ns,
-			ShardID:   "warm",
+			ShardID:   index.RAMCacheShardID,
 			ItemID:    key,
 			ItemType:  itemType,
 		}
@@ -280,7 +280,7 @@ func (w *Warmer) prefetchDocsHeader(ctx context.Context, key string) {
 		ns := extractNamespace(key)
 		ramCacheKey := cache.MemoryCacheKey{
 			Namespace: ns,
-			ShardID:   "warm",
+			ShardID:   index.RAMCacheShardID,
 			ItemID:    key,
 			ItemType:  cache.TypeDocColumn,
 		}

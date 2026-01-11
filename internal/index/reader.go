@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,7 +59,13 @@ type ReaderOptions struct {
 	LargeClusterChunkBytes int
 }
 
-const DefaultLargeClusterChunkBytes = 5 * 1024 * 1024
+const (
+	DefaultLargeClusterChunkBytes = 8 * 1024 * 1024
+	multiRangeMergeGapBytes       = 64 * 1024
+
+	// RAMCacheShardID is the shard identifier used for index objects cached in RAM.
+	RAMCacheShardID = "warm"
+)
 
 // cachedIVFReader holds a cached IVF reader for a segment.
 type cachedIVFReader struct {
@@ -92,7 +100,7 @@ func NewReaderWithOptions(store objectstore.Store, diskCache *cache.DiskCache, r
 // readAllWithContext reads all bytes from a reader, honoring context cancellation.
 // This prevents S3 reads from blocking indefinitely when the context is cancelled.
 func readAllWithContext(ctx context.Context, r io.Reader) ([]byte, error) {
-	if ctx == nil {
+	if ctx == nil || ctx.Done() == nil {
 		return io.ReadAll(r)
 	}
 	type result struct {
@@ -119,46 +127,84 @@ func readAllWithContext(ctx context.Context, r io.Reader) ([]byte, error) {
 	}
 }
 
+func readAllLocal(r io.Reader) ([]byte, error) {
+	return io.ReadAll(r)
+}
+
+type objectLoadOptions struct {
+	useRAM     bool
+	ramItem    cache.CacheItemType
+	ramKey     cache.MemoryCacheKey
+	ramEnabled bool
+}
+
+type objectLoadOption func(*objectLoadOptions)
+
+func withRAMCache(itemType cache.CacheItemType) objectLoadOption {
+	return func(opts *objectLoadOptions) {
+		opts.useRAM = true
+		opts.ramItem = itemType
+	}
+}
+
+func namespaceFromObjectKey(key string) string {
+	const marker = "/namespaces/"
+	if idx := strings.Index(key, marker); idx != -1 {
+		start := idx + len(marker)
+		if start >= len(key) {
+			return ""
+		}
+		rest := key[start:]
+		if slash := strings.IndexByte(rest, '/'); slash != -1 {
+			return rest[:slash]
+		}
+		return rest
+	}
+	if strings.HasPrefix(key, "namespaces/") {
+		rest := strings.TrimPrefix(key, "namespaces/")
+		if slash := strings.IndexByte(rest, '/'); slash != -1 {
+			return rest[:slash]
+		}
+		return rest
+	}
+	if strings.HasPrefix(key, "/namespaces/") {
+		rest := strings.TrimPrefix(key, "/namespaces/")
+		if slash := strings.IndexByte(rest, '/'); slash != -1 {
+			return rest[:slash]
+		}
+		return rest
+	}
+	return ""
+}
+
+func (r *Reader) ramCacheKey(objectKey string, itemType cache.CacheItemType) (cache.MemoryCacheKey, bool) {
+	if r.ramCache == nil {
+		return cache.MemoryCacheKey{}, false
+	}
+	ns := namespaceFromObjectKey(objectKey)
+	if ns == "" {
+		return cache.MemoryCacheKey{}, false
+	}
+	return cache.MemoryCacheKey{
+		Namespace: ns,
+		ShardID:   RAMCacheShardID,
+		ItemID:    objectKey,
+		ItemType:  itemType,
+	}, true
+}
+
 // LoadManifest loads the manifest for a namespace from the given key.
 func (r *Reader) LoadManifest(ctx context.Context, manifestKey string) (*Manifest, error) {
 	if manifestKey == "" {
 		return nil, nil
 	}
 
-	// Try to load from cache first
-	cacheKey := cache.CacheKey{ObjectKey: manifestKey}
-	if r.diskCache != nil {
-		if reader, err := r.diskCache.GetReader(cacheKey); err == nil {
-			data, err := readAllWithContext(ctx, reader)
-			reader.Close()
-			if err == nil {
-				var manifest Manifest
-				if err := json.Unmarshal(data, &manifest); err == nil {
-					r.noteManifest(manifestKey, &manifest)
-					return &manifest, nil
-				}
-			}
-		}
-	}
-
-	// Load from object storage
-	reader, _, err := r.store.Get(ctx, manifestKey, nil)
+	data, err := r.loadObject(ctx, manifestKey, withRAMCache(cache.TypePostingDict))
 	if err != nil {
 		if objectstore.IsNotFoundError(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to load manifest: %w", err)
-	}
-	defer reader.Close()
-
-	data, err := readAllWithContext(ctx, reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read manifest: %w", err)
-	}
-
-	// Cache the manifest
-	if r.diskCache != nil {
-		r.diskCache.PutBytes(cacheKey, data)
 	}
 
 	var manifest Manifest
@@ -251,9 +297,54 @@ func parseNamespaceFromManifestKey(manifestKey string) string {
 	return rest[:slash]
 }
 
+func selectIVFSegment(segments []Segment) *Segment {
+	candidates := make([]Segment, 0, len(segments))
+	for _, seg := range segments {
+		if seg.IVFKeys != nil && seg.IVFKeys.HasIVF() {
+			candidates = append(candidates, seg)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Prefer the segment that is most up-to-date, then the largest, then higher LSM levels.
+	sort.Slice(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if a.EndWALSeq != b.EndWALSeq {
+			return a.EndWALSeq > b.EndWALSeq
+		}
+		av, bv := ivfVectorCount(a), ivfVectorCount(b)
+		if av != bv {
+			return av > bv
+		}
+		if a.Level != b.Level {
+			return a.Level > b.Level
+		}
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.After(b.CreatedAt)
+		}
+		return a.ID > b.ID
+	})
+
+	return &candidates[0]
+}
+
+func ivfVectorCount(seg Segment) int64 {
+	switch {
+	case seg.IVFKeys != nil && seg.IVFKeys.VectorCount > 0:
+		return int64(seg.IVFKeys.VectorCount)
+	case seg.Stats.RowCount > 0:
+		return seg.Stats.RowCount
+	default:
+		return seg.Stats.LogicalBytes
+	}
+}
+
 // GetIVFReader returns an IVF reader for the given namespace.
-// It loads the manifest and creates a reader for the first segment with IVF data.
-// The reader is cached for subsequent queries.
+// It loads the manifest and creates a reader for the best available IVF segment
+// (preferring newer, larger, higher-level segments). The reader is cached for
+// subsequent queries.
 func (r *Reader) GetIVFReader(ctx context.Context, namespace string, manifestKey string, manifestSeq uint64) (*vector.IVFReader, string, error) {
 	if manifestKey == "" {
 		return nil, "", nil
@@ -277,27 +368,19 @@ func (r *Reader) GetIVFReader(ctx context.Context, namespace string, manifestKey
 		return nil, "", nil
 	}
 
-	// Find the first segment with IVF data
-	// In production, we'd want to search all segments; for now pick the first one with IVF
-	var ivfSegment *Segment
-	for i := range manifest.Segments {
-		if manifest.Segments[i].IVFKeys.HasIVF() {
-			ivfSegment = &manifest.Segments[i]
-			break
-		}
-	}
+	ivfSegment := selectIVFSegment(manifest.Segments)
 	if ivfSegment == nil {
 		return nil, "", nil
 	}
 
 	// Load centroids
-	centroidsData, err := r.loadObject(ctx, ivfSegment.IVFKeys.CentroidsKey)
+	centroidsData, err := r.loadObject(ctx, ivfSegment.IVFKeys.CentroidsKey, withRAMCache(cache.TypeCentroid))
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to load centroids: %w", err)
 	}
 
 	// Load cluster offsets
-	offsetsData, err := r.loadObject(ctx, ivfSegment.IVFKeys.ClusterOffsetsKey)
+	offsetsData, err := r.loadObject(ctx, ivfSegment.IVFKeys.ClusterOffsetsKey, withRAMCache(cache.TypeCentroid))
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to load cluster offsets: %w", err)
 	}
@@ -326,7 +409,7 @@ func (r *Reader) GetIVFReader(ctx context.Context, namespace string, manifestKey
 	return ivfReader, clusterDataKey, nil
 }
 
-// GetIVFSegment returns the first segment with IVF data for the manifest.
+// GetIVFSegment returns the preferred segment with IVF data for the manifest.
 func (r *Reader) GetIVFSegment(ctx context.Context, namespace string, manifestKey string, manifestSeq uint64) (*Segment, error) {
 	if manifestKey == "" {
 		return nil, nil
@@ -349,25 +432,46 @@ func (r *Reader) GetIVFSegment(ctx context.Context, namespace string, manifestKe
 		return nil, nil
 	}
 
-	for i := range manifest.Segments {
-		if manifest.Segments[i].IVFKeys.HasIVF() {
-			seg := manifest.Segments[i]
-			return &seg, nil
-		}
+	ivfSegment := selectIVFSegment(manifest.Segments)
+	if ivfSegment != nil {
+		seg := *ivfSegment
+		return &seg, nil
 	}
 
 	return nil, nil
 }
 
 // loadObject loads an object from storage, using cache if available.
-func (r *Reader) loadObject(ctx context.Context, key string) ([]byte, error) {
+func (r *Reader) loadObject(ctx context.Context, key string, opts ...objectLoadOption) ([]byte, error) {
+	if key == "" {
+		return nil, nil
+	}
+
+	cfg := objectLoadOptions{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	if cfg.useRAM {
+		if ramKey, ok := r.ramCacheKey(key, cfg.ramItem); ok {
+			cfg.ramEnabled = true
+			cfg.ramKey = ramKey
+			if data, err := r.ramCache.Get(ramKey); err == nil {
+				return data, nil
+			}
+		}
+	}
+
 	// Try cache first
 	cacheKey := cache.CacheKey{ObjectKey: key}
 	if r.diskCache != nil {
 		if reader, err := r.diskCache.GetReader(cacheKey); err == nil {
-			data, err := readAllWithContext(ctx, reader)
+			data, err := readAllLocal(reader)
 			reader.Close()
 			if err == nil {
+				if cfg.ramEnabled {
+					_ = r.ramCache.Put(cfg.ramKey, data)
+				}
 				return data, nil
 			}
 		}
@@ -389,6 +493,9 @@ func (r *Reader) loadObject(ctx context.Context, key string) ([]byte, error) {
 	if r.diskCache != nil {
 		r.diskCache.PutBytes(cacheKey, data)
 	}
+	if cfg.ramEnabled {
+		_ = r.ramCache.Put(cfg.ramKey, data)
+	}
 
 	return data, nil
 }
@@ -405,7 +512,7 @@ func (r *Reader) loadObjectRange(ctx context.Context, key string, start, length 
 
 	if r.diskCache != nil {
 		if reader, err := r.diskCache.GetReader(cacheKey); err == nil {
-			data, err := readAllWithContext(ctx, reader)
+			data, err := readAllLocal(reader)
 			reader.Close()
 			if err == nil {
 				return data, nil
@@ -440,7 +547,7 @@ func (r *Reader) loadObjectRange(ctx context.Context, key string, start, length 
 
 // createClusterDataFetcher creates a ClusterDataFetcher that uses range reads.
 func (r *Reader) createClusterDataFetcher(ctx context.Context, clusterDataKey string) vector.ClusterDataFetcher {
-	ns := namespaceFromClusterDataKey(clusterDataKey)
+	ns := namespaceFromObjectKey(clusterDataKey)
 	return func(fetchCtx context.Context, offset, length uint64) ([]byte, error) {
 		// Create a cache key specific to this range
 		cacheKey := cache.CacheKey{
@@ -451,7 +558,7 @@ func (r *Reader) createClusterDataFetcher(ctx context.Context, clusterDataKey st
 		if r.diskCache != nil {
 			if reader, err := r.diskCache.GetReader(cacheKey); err == nil {
 				metrics.IncANNClusterRangeCacheHit(ns)
-				data, err := readAllWithContext(ctx, reader)
+				data, err := readAllLocal(reader)
 				reader.Close()
 				if err == nil {
 					return data, nil
@@ -501,12 +608,16 @@ type MultiRangeClusterDataFetcher struct {
 
 // NewMultiRangeClusterDataFetcher creates a new multi-range fetcher.
 func NewMultiRangeClusterDataFetcher(store objectstore.Store, diskCache *cache.DiskCache, clusterDataKey string) *MultiRangeClusterDataFetcher {
+	maxParallel := runtime.NumCPU()
+	if maxParallel < 4 {
+		maxParallel = 4
+	}
 	return &MultiRangeClusterDataFetcher{
 		store:          store,
 		diskCache:      diskCache,
 		clusterDataKey: clusterDataKey,
-		maxParallel:    4,
-		namespace:      namespaceFromClusterDataKey(clusterDataKey),
+		maxParallel:    maxParallel,
+		namespace:      namespaceFromObjectKey(clusterDataKey),
 	}
 }
 
@@ -528,7 +639,7 @@ func (f *MultiRangeClusterDataFetcher) FetchRanges(ctx context.Context, ranges [
 		if f.diskCache != nil {
 			if reader, err := f.diskCache.GetReader(cacheKey); err == nil {
 				metrics.IncANNClusterRangeCacheHit(f.namespace)
-				data, err := readAllWithContext(ctx, reader)
+				data, err := readAllLocal(reader)
 				reader.Close()
 				if err == nil {
 					result[r.ClusterID] = data
@@ -546,8 +657,7 @@ func (f *MultiRangeClusterDataFetcher) FetchRanges(ctx context.Context, ranges [
 	}
 
 	// Merge adjacent ranges to reduce number of requests
-	// Use a 4KB gap tolerance for merging
-	merged := vector.MergeAdjacentRanges(uncached, 4096)
+	merged := vector.MergeAdjacentRanges(uncached, multiRangeMergeGapBytes)
 
 	maxParallel := f.maxParallel
 	if maxParallel <= 0 {
@@ -651,36 +761,6 @@ func (f *MultiRangeClusterDataFetcher) FetchRanges(ctx context.Context, ranges [
 	return result, nil
 }
 
-func namespaceFromClusterDataKey(key string) string {
-	const marker = "/namespaces/"
-	if idx := strings.Index(key, marker); idx != -1 {
-		start := idx + len(marker)
-		if start >= len(key) {
-			return ""
-		}
-		rest := key[start:]
-		if slash := strings.IndexByte(rest, '/'); slash != -1 {
-			return rest[:slash]
-		}
-		return rest
-	}
-	if strings.HasPrefix(key, "namespaces/") {
-		rest := strings.TrimPrefix(key, "namespaces/")
-		if slash := strings.IndexByte(rest, '/'); slash != -1 {
-			return rest[:slash]
-		}
-		return rest
-	}
-	if strings.HasPrefix(key, "/namespaces/") {
-		rest := strings.TrimPrefix(key, "/namespaces/")
-		if slash := strings.IndexByte(rest, '/'); slash != -1 {
-			return rest[:slash]
-		}
-		return rest
-	}
-	return ""
-}
-
 // MaxClusterSizeForBatch is the max cluster size to load into memory.
 // Larger clusters are streamed to avoid OOM.
 const MaxClusterSizeForBatch = 10 * 1024 * 1024 // 10MB
@@ -778,22 +858,25 @@ func (r *Reader) searchANN(ctx context.Context, ivfReader *vector.IVFReader, clu
 		return nil, nil, nil
 	}
 
+	distCalc := newDistanceCalculator(query, ivfReader.Metric)
 	collector := newTopKCollector(topK)
-	if err := r.collectANN(ctx, ivfReader, clusterDataKey, query, nProbe, filterBitmap, collector); err != nil {
+	if err := r.collectANN(ctx, ivfReader, clusterDataKey, distCalc, nProbe, filterBitmap, collector); err != nil {
 		return nil, collector, err
 	}
 
 	return collector.results(), collector, nil
 }
 
-func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, query []float32, nProbe int, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
+func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, clusterDataKey string, distCalc distanceCalculator, nProbe int, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
 	t0 := time.Now()
 	// Find nearest centroids
-	nearestClusters := findNearestCentroids(ivfReader, query, nProbe)
+	nearestClusters := findNearestCentroids(ivfReader, distCalc, nProbe)
 
 	// Get byte ranges for all selected clusters
 	ranges := ivfReader.GetClusterRanges(nearestClusters)
 	centroidMs := time.Since(t0).Milliseconds()
+
+	debug := indexDebugEnabled()
 
 	// Separate small clusters (can batch) from large clusters (must stream)
 	var smallRanges []vector.ByteRange
@@ -808,8 +891,10 @@ func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, cl
 			totalLargeBytes += rng.Length
 		}
 	}
-	fmt.Printf("[TIMING] collectANN setup: %dms (nProbe=%d, small=%d/%dMB, large=%d/%dMB)\n",
-		centroidMs, nProbe, len(smallRanges), totalSmallBytes/1024/1024, len(largeRanges), totalLargeBytes/1024/1024)
+	if debug {
+		indexDebugf("[index] collectANN setup nProbe=%d small=%d/%dMB large=%d/%dMB dur=%dms",
+			nProbe, len(smallRanges), totalSmallBytes/1024/1024, len(largeRanges), totalLargeBytes/1024/1024, centroidMs)
+	}
 
 	// Process small clusters in batch
 	if len(smallRanges) > 0 {
@@ -823,12 +908,14 @@ func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, cl
 
 		t2 := time.Now()
 		for clusterID, data := range clusterData {
-			if err := searchClusterDataInto(data, query, clusterID, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap, collector); err != nil {
+			if err := searchClusterDataInto(data, distCalc, clusterID, ivfReader.Dims, ivfReader.DType, filterBitmap, collector); err != nil {
 				return fmt.Errorf("failed to search cluster %d: %w", clusterID, err)
 			}
 		}
 		searchMs := time.Since(t2).Milliseconds()
-		fmt.Printf("[TIMING] smallClusters: fetch=%dms, search=%dms\n", fetchMs, searchMs)
+		if debug {
+			indexDebugf("[index] collectANN small_clusters fetch_ms=%d search_ms=%d", fetchMs, searchMs)
+		}
 	}
 
 	// Stream large clusters in parallel to utilize all CPU cores
@@ -841,12 +928,20 @@ func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, cl
 			collectors[i] = newTopKCollector(collector.limit)
 		}
 
+		maxParallel := runtime.NumCPU()
+		if maxParallel < 1 {
+			maxParallel = 1
+		}
+		sem := make(chan struct{}, maxParallel)
+
 		for i, rng := range largeRanges {
 			wg.Add(1)
+			sem <- struct{}{}
 			go func(idx int, byteRange vector.ByteRange) {
 				defer wg.Done()
+				defer func() { <-sem }()
 				// Each goroutine uses its own collector
-				if err := r.searchClusterStreaming(ctx, clusterDataKey, byteRange, query, ivfReader.Dims, ivfReader.DType, ivfReader.Metric, filterBitmap, collectors[idx]); err != nil {
+				if err := r.searchClusterStreaming(ctx, clusterDataKey, byteRange, distCalc, ivfReader.Dims, ivfReader.DType, filterBitmap, collectors[idx]); err != nil {
 					// Skip failed clusters
 				}
 			}(i, rng)
@@ -864,7 +959,9 @@ func (r *Reader) collectANN(ctx context.Context, ivfReader *vector.IVFReader, cl
 			}
 		}
 		mergeMs := time.Since(t4).Milliseconds()
-		fmt.Printf("[TIMING] largeClusters: parallel=%dms, merge=%dms, results=%d\n", parallelMs, mergeMs, totalResults)
+		if debug {
+			indexDebugf("[index] collectANN large_clusters parallel_ms=%d merge_ms=%d results=%d", parallelMs, mergeMs, totalResults)
+		}
 	}
 
 	return nil
@@ -887,12 +984,12 @@ func (r *Reader) streamingChunkSize(entrySize int) int {
 
 // searchClusterStreaming searches a large cluster by streaming data in chunks.
 // Uses disk cache to avoid repeated S3 fetches for the same chunks.
-func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey string, rng vector.ByteRange, query []float32, dims int, dtype vector.DType, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
+func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey string, rng vector.ByteRange, distCalc distanceCalculator, dims int, dtype vector.DType, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
 	// Each vector entry is: 8 bytes (docID) + dims*element bytes (vector data)
 	entrySize := 8 + dims*vectorBytesPerElement(dtype)
 	chunkSize := r.streamingChunkSize(entrySize)
 
-	ns := namespaceFromClusterDataKey(clusterDataKey)
+	ns := namespaceFromObjectKey(clusterDataKey)
 	offset := rng.Offset
 	remaining := rng.Length
 
@@ -914,7 +1011,7 @@ func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey stri
 		if r.diskCache != nil {
 			if cacheReader, cacheErr := r.diskCache.GetReader(cacheKey); cacheErr == nil {
 				metrics.IncANNClusterRangeCacheHit(ns)
-				data, err = readAllWithContext(ctx, cacheReader)
+				data, err = readAllLocal(cacheReader)
 				cacheReader.Close()
 				if err == nil {
 					cacheHit = true
@@ -953,7 +1050,7 @@ func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey stri
 		}
 
 		// Search this chunk
-		if err := searchClusterDataInto(data, query, rng.ClusterID, dims, dtype, metric, filterBitmap, collector); err != nil {
+		if err := searchClusterDataInto(data, distCalc, rng.ClusterID, dims, dtype, filterBitmap, collector); err != nil {
 			return err
 		}
 
@@ -965,7 +1062,7 @@ func (r *Reader) searchClusterStreaming(ctx context.Context, clusterDataKey stri
 }
 
 // findNearestCentroids finds the nProbe nearest centroids to the query vector.
-func findNearestCentroids(ivfReader *vector.IVFReader, query []float32, nProbe int) []int {
+func findNearestCentroids(ivfReader *vector.IVFReader, distCalc distanceCalculator, nProbe int) []int {
 	if nProbe <= 0 {
 		nProbe = vector.DefaultNProbe
 	}
@@ -981,7 +1078,7 @@ func findNearestCentroids(ivfReader *vector.IVFReader, query []float32, nProbe i
 	distances := make([]centroidDist, ivfReader.NClusters)
 	for i := 0; i < ivfReader.NClusters; i++ {
 		centroid := ivfReader.Centroids[i*ivfReader.Dims : (i+1)*ivfReader.Dims]
-		dist := computeDistance(query, centroid, ivfReader.Metric)
+		dist := distCalc.distance(centroid)
 		distances[i] = centroidDist{idx: i, dist: dist}
 	}
 
@@ -1004,43 +1101,51 @@ func findNearestCentroids(ivfReader *vector.IVFReader, query []float32, nProbe i
 }
 
 // searchClusterDataInto searches a cluster's data and computes exact distances.
-func searchClusterDataInto(data []byte, query []float32, clusterID int, dims int, dtype vector.DType, metric vector.DistanceMetric, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
-	if len(data) == 0 {
+func searchClusterDataInto(data []byte, distCalc distanceCalculator, clusterID int, dims int, dtype vector.DType, filterBitmap *roaring.Bitmap, collector *topKCollector) error {
+	if len(data) == 0 || dims == 0 {
 		return nil
 	}
 
-	reader := bytes.NewReader(data)
 	entrySize := 8 + dims*vectorBytesPerElement(dtype)
+	if entrySize <= 0 {
+		return nil
+	}
 	numEntries := len(data) / entrySize
+	if numEntries == 0 {
+		return nil
+	}
 
-	docIDBuf := make([]byte, 8)
-	vec := make([]float32, dims)
+	var vecBuf []float32
+	if dtype == vector.DTypeF16 {
+		vecBuf = make([]float32, dims)
+	}
 
 	for i := 0; i < numEntries; i++ {
-		// Read docID
-		if _, err := io.ReadFull(reader, docIDBuf); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
-		docID := uint64(docIDBuf[0]) | uint64(docIDBuf[1])<<8 | uint64(docIDBuf[2])<<16 | uint64(docIDBuf[3])<<24 |
-			uint64(docIDBuf[4])<<32 | uint64(docIDBuf[5])<<40 | uint64(docIDBuf[6])<<48 | uint64(docIDBuf[7])<<56
+		entryStart := i * entrySize
+		entry := data[entryStart : entryStart+entrySize]
 
-		// Read vector
-		if err := readVectorElements(reader, vec, dtype); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
-
+		docID := binary.LittleEndian.Uint64(entry[:8])
 		if filterBitmap != nil && !filterBitmap.Contains(uint32(docID)) {
 			continue
 		}
 
-		// Compute exact distance
-		dist := computeDistance(query, vec, metric)
+		rawVec := entry[8:]
+		var vec []float32
+		switch dtype {
+		case vector.DTypeF16:
+			if err := decodeFloat16Vector(rawVec, vecBuf); err != nil {
+				return err
+			}
+			vec = vecBuf
+		default:
+			var err error
+			vec, err = vectorBytesToFloat32(rawVec, dims)
+			if err != nil {
+				return err
+			}
+		}
+
+		dist := distCalc.distance(vec)
 		if collector != nil {
 			collector.consider(vector.IVFSearchResult{
 				DocID:     docID,
@@ -1053,32 +1158,61 @@ func searchClusterDataInto(data []byte, query []float32, clusterID int, dims int
 	return nil
 }
 
-// computeDistance calculates the distance between two vectors.
-func computeDistance(a, b []float32, metric vector.DistanceMetric) float32 {
-	switch metric {
+type distanceCalculator struct {
+	metric    vector.DistanceMetric
+	query     []float32
+	queryNorm float64
+}
+
+func newDistanceCalculator(query []float32, metric vector.DistanceMetric) distanceCalculator {
+	calculator := distanceCalculator{
+		metric: metric,
+		query:  query,
+	}
+	calculator.queryNorm = vectorNorm(query)
+	return calculator
+}
+
+func (d distanceCalculator) distance(vec []float32) float32 {
+	switch d.metric {
 	case vector.MetricCosineDistance:
-		return cosineDistance(a, b)
+		return d.cosine(vec)
 	case vector.MetricEuclideanSquared:
-		return euclideanSquared(a, b)
+		return euclideanSquared(d.query, vec)
 	case vector.MetricDotProduct:
-		return -dotProduct(a, b)
+		return -dotProduct(d.query, vec)
 	default:
-		return cosineDistance(a, b)
+		return d.cosine(vec)
 	}
 }
 
-func cosineDistance(a, b []float32) float32 {
-	var dot, normA, normB float32
-	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-	if normA == 0 || normB == 0 {
+func (d distanceCalculator) cosine(vec []float32) float32 {
+	if d.queryNorm == 0 {
 		return 1.0
 	}
-	cosine := dot / (sqrt32(normA) * sqrt32(normB))
-	return 1.0 - cosine
+	var dot, normB float64
+	for i := range d.query {
+		a := float64(d.query[i])
+		b := float64(vec[i])
+		dot += a * b
+		normB += b * b
+	}
+	if normB == 0 {
+		return 1.0
+	}
+	denom := d.queryNorm * math.Sqrt(normB)
+	if denom == 0 {
+		return 1.0
+	}
+	return 1.0 - float32(dot/denom)
+}
+
+func vectorNorm(a []float32) float64 {
+	var sum float64
+	for _, v := range a {
+		sum += float64(v) * float64(v)
+	}
+	return math.Sqrt(sum)
 }
 
 func euclideanSquared(a, b []float32) float32 {
@@ -1098,22 +1232,6 @@ func dotProduct(a, b []float32) float32 {
 	return sum
 }
 
-func sqrt32(x float32) float32 {
-	// Newton-Raphson approximation
-	if x <= 0 {
-		return 0
-	}
-	guess := x / 2
-	for i := 0; i < 10; i++ {
-		guess = (guess + x/guess) / 2
-	}
-	return guess
-}
-
-func float32frombits(b uint32) float32 {
-	return *(*float32)(unsafe.Pointer(&b))
-}
-
 func vectorBytesPerElement(dtype vector.DType) int {
 	if dtype == vector.DTypeF16 {
 		return 2
@@ -1121,26 +1239,23 @@ func vectorBytesPerElement(dtype vector.DType) int {
 	return 4
 }
 
-func readVectorElements(r io.Reader, out []float32, dtype vector.DType) error {
-	switch dtype {
-	case vector.DTypeF16:
-		buf := make([]byte, len(out)*2)
-		if _, err := io.ReadFull(r, buf); err != nil {
-			return err
-		}
-		for i := range out {
-			bits := binary.LittleEndian.Uint16(buf[i*2:])
-			out[i] = vector.Float16ToFloat32(bits)
-		}
-	default:
-		buf := make([]byte, len(out)*4)
-		if _, err := io.ReadFull(r, buf); err != nil {
-			return err
-		}
-		for i := range out {
-			bits := binary.LittleEndian.Uint32(buf[i*4:])
-			out[i] = float32frombits(bits)
-		}
+func vectorBytesToFloat32(data []byte, dims int) ([]float32, error) {
+	expected := dims * 4
+	if len(data) < expected || dims == 0 {
+		return nil, fmt.Errorf("invalid vector data length: got=%d want=%d", len(data), expected)
+	}
+	// Cluster pack layout is 8-byte aligned, so reinterpreting as float32 is safe and avoids allocations.
+	return unsafe.Slice((*float32)(unsafe.Pointer(&data[0])), dims), nil
+}
+
+func decodeFloat16Vector(data []byte, out []float32) error {
+	expected := len(out) * 2
+	if len(data) < expected {
+		return fmt.Errorf("invalid float16 vector length: got=%d want=%d", len(data), expected)
+	}
+	for i := range out {
+		bits := binary.LittleEndian.Uint16(data[i*2:])
+		out[i] = vector.Float16ToFloat32(bits)
 	}
 	return nil
 }
@@ -1355,7 +1470,7 @@ func (r *Reader) LoadSegmentDocs(ctx context.Context, manifestKey string) ([]Ind
 	return allDocs, nil
 }
 
-// LoadIVFSegmentDocs loads documents for the first IVF segment in a manifest.
+// LoadIVFSegmentDocs loads documents for the preferred IVF segment in a manifest.
 // Returns nil when no IVF segment or docs column exists.
 func (r *Reader) LoadIVFSegmentDocs(ctx context.Context, manifestKey string) ([]IndexedDocument, error) {
 	if manifestKey == "" || r.store == nil {
@@ -1370,13 +1485,7 @@ func (r *Reader) LoadIVFSegmentDocs(ctx context.Context, manifestKey string) ([]
 		return nil, nil
 	}
 
-	var ivfSegment *Segment
-	for i := range manifest.Segments {
-		if manifest.Segments[i].IVFKeys.HasIVF() {
-			ivfSegment = &manifest.Segments[i]
-			break
-		}
-	}
+	ivfSegment := selectIVFSegment(manifest.Segments)
 	if ivfSegment == nil {
 		return nil, nil
 	}
@@ -1492,12 +1601,14 @@ func (r *Reader) LoadDocsForIDsInSegment(ctx context.Context, seg Segment, ids [
 // LoadDocsForIDs loads only the documents matching the specified numeric IDs.
 // This is more memory-efficient than LoadSegmentDocs when you only need a subset
 // of documents (e.g., top-k results from IVF search).
-// Important: This searches ALL segments to find tombstones that may exist in later segments.
+// Important: This scans segments newest-first to honor tombstones in later segments,
+// stopping per ID once the freshest version is found.
 func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []uint64) ([]IndexedDocument, error) {
 	if manifestKey == "" || r.store == nil || len(ids) == 0 {
 		return nil, nil
 	}
 
+	debug := indexDebugEnabled()
 	t0 := time.Now()
 	manifest, err := r.LoadManifest(ctx, manifestKey)
 	if err != nil {
@@ -1506,47 +1617,57 @@ func (r *Reader) LoadDocsForIDs(ctx context.Context, manifestKey string, ids []u
 	if manifest == nil {
 		return nil, nil
 	}
-	manifestMs := time.Since(t0).Milliseconds()
+	if debug {
+		indexDebugf("[index] load_docs_for_ids manifest=%s segments=%d dur=%s ids=%v", manifestKey, len(manifest.Segments), time.Since(t0), ids)
+	}
 
-	fmt.Printf("[TIMING] LoadDocsForIDs: manifest=%dms, segments=%d, requestedIDs=%v\n",
-		manifestMs, len(manifest.Segments), ids)
+	segments := append([]Segment(nil), manifest.Segments...)
+	sort.Slice(segments, func(i, j int) bool {
+		if segments[i].EndWALSeq != segments[j].EndWALSeq {
+			return segments[i].EndWALSeq > segments[j].EndWALSeq
+		}
+		if !segments[i].CreatedAt.Equal(segments[j].CreatedAt) {
+			return segments[i].CreatedAt.After(segments[j].CreatedAt)
+		}
+		if segments[i].Level != segments[j].Level {
+			return segments[i].Level > segments[j].Level
+		}
+		return segments[i].ID > segments[j].ID
+	})
 
-	// Collect all versions of requested docs from all segments.
-	// We must search all segments because a tombstone in a later segment
-	// should override a document in an earlier segment.
-	var allDocs []IndexedDocument
-	for i, seg := range manifest.Segments {
-		t1 := time.Now()
-		docs, err := r.LoadDocsForIDsInSegment(ctx, seg, ids)
-		segMs := time.Since(t1).Milliseconds()
+	docsByID := make(map[uint64]IndexedDocument, len(ids))
+	pending := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		pending[id] = struct{}{}
+	}
+
+	for i, seg := range segments {
+		if len(pending) == 0 {
+			break
+		}
+
+		idsToFetch := make([]uint64, 0, len(pending))
+		for id := range pending {
+			idsToFetch = append(idsToFetch, id)
+		}
+
+		segStart := time.Now()
+		docs, err := r.LoadDocsForIDsInSegment(ctx, seg, idsToFetch)
+		if debug {
+			indexDebugf("[index] load_docs_for_ids segment=%s level=%d idx=%d ids=%d dur=%s err=%v", seg.ID, seg.Level, i, len(idsToFetch), time.Since(segStart), err)
+		}
 		if err != nil {
-			fmt.Printf("[TIMING] LoadDocsForIDs: segment[%d] error=%v (%dms)\n", i, err, segMs)
 			continue
 		}
-		fmt.Printf("[TIMING] LoadDocsForIDs: segment[%d] found=%d (%dms) docsKey=%s\n",
-			i, len(docs), segMs, seg.DocsKey)
-		allDocs = append(allDocs, docs...)
-	}
 
-	fmt.Printf("[TIMING] LoadDocsForIDs: totalFound=%d before dedup\n", len(allDocs))
-
-	// Deduplicate: keep the document with the highest WAL seq for each ID
-	// This ensures tombstones (higher WAL seq) properly shadow earlier versions
-	docsByID := make(map[uint64]IndexedDocument)
-	for _, doc := range allDocs {
-		if existing, ok := docsByID[doc.NumericID]; !ok || doc.WALSeq > existing.WALSeq {
+		for _, doc := range docs {
+			if _, ok := pending[doc.NumericID]; !ok {
+				continue
+			}
 			docsByID[doc.NumericID] = doc
+			delete(pending, doc.NumericID)
 		}
 	}
-
-	// Count non-deleted docs
-	nonDeleted := 0
-	for _, doc := range docsByID {
-		if !doc.Deleted {
-			nonDeleted++
-		}
-	}
-	fmt.Printf("[TIMING] LoadDocsForIDs: afterDedup=%d, nonDeleted=%d\n", len(docsByID), nonDeleted)
 
 	result := make([]IndexedDocument, 0, len(docsByID))
 	for _, doc := range docsByID {
@@ -1731,7 +1852,7 @@ func (r *Reader) loadDocOffsets(ctx context.Context, docsKey string) ([]uint64, 
 		return cached, nil
 	}
 
-	data, err := r.loadObject(ctx, offsetsKey)
+	data, err := r.loadObject(ctx, offsetsKey, withRAMCache(cache.TypeDocColumn))
 	if err != nil {
 		if objectstore.IsNotFoundError(err) {
 			return nil, nil
@@ -1793,7 +1914,7 @@ func (r *Reader) buildDocIDRowMap(ctx context.Context, seg Segment) (map[uint64]
 
 	start := time.Now()
 	if idMapKey := DocsIDMapKey(seg.DocsKey); idMapKey != "" {
-		data, err := r.loadObject(ctx, idMapKey)
+		data, err := r.loadObject(ctx, idMapKey, withRAMCache(cache.TypeDocColumn))
 		if err == nil && len(data) > 0 {
 			ids, err := DecodeDocIDMap(data)
 			if err == nil {
