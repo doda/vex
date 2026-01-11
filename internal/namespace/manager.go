@@ -61,11 +61,34 @@ type LoadedState struct {
 // Returns ErrStateNotFound if the state doesn't exist.
 func (m *StateManager) Load(ctx context.Context, namespace string) (*LoadedState, error) {
 	key := StateKey(namespace)
-	reader, info, err := m.store.Get(ctx, key, nil)
-	if err != nil {
+	var (
+		reader io.ReadCloser
+		info   *objectstore.ObjectInfo
+		err    error
+	)
+	for attempt := 0; attempt < 10; attempt++ {
+		reader, info, err = m.store.Get(ctx, key, nil)
+		if err == nil {
+			break
+		}
 		if objectstore.IsNotFoundError(err) {
 			return nil, ErrStateNotFound
 		}
+		if objectstore.IsPreconditionError(err) {
+			// If the backend insists on a matching ETag, try to fetch it and retry with If-Match.
+			if headInfo, headErr := m.store.Head(ctx, key); headErr == nil {
+				reader, info, err = m.store.Get(ctx, key, &objectstore.GetOptions{IfMatch: headInfo.ETag})
+				if err == nil {
+					break
+				}
+			}
+			// Some backends (e.g., S3 gateways) can briefly return 412s on concurrent updates.
+			time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+			continue
+		}
+		return nil, fmt.Errorf("failed to load state: %w", err)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("failed to load state: %w", err)
 	}
 	defer reader.Close()
