@@ -849,6 +849,7 @@ func expectedVectorDims(state *namespace.State) (int, bool, error) {
 // executeVectorQuery executes a vector ANN query.
 // tailByteCap of 0 means no limit (strong consistency); >0 means eventual consistency byte cap.
 func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *namespace.LoadedState, parsed *ParsedRankBy, f *filter.Filter, req *QueryRequest, tailByteCap int64) ([]Row, error) {
+	debug := queryDebugEnabled()
 	// Determine distance metric from namespace config or use default
 	metric := tail.MetricCosineDistance
 	vectorMetric := vector.MetricCosineDistance
@@ -882,9 +883,13 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 		getIVFReaderMs := time.Since(t0).Milliseconds()
 		if err != nil {
 			// Log error but fall back to exhaustive search
-			fmt.Printf("[TIMING] GetIVFReader error after %dms: %v\n", getIVFReaderMs, err)
+			if debug {
+				debugLogf("[query] get_ivf_reader namespace=%s err=%v dur_ms=%d", ns, err, getIVFReaderMs)
+			}
 		} else if ivfReader != nil {
-			fmt.Printf("[TIMING] GetIVFReader: %dms (clusters=%d, vectors=%d)\n", getIVFReaderMs, ivfReader.NClusters, len(ivfReader.ClusterOffsets))
+			if debug {
+				debugLogf("[query] get_ivf_reader namespace=%s clusters=%d vectors=%d dur_ms=%d", ns, ivfReader.NClusters, len(ivfReader.ClusterOffsets), getIVFReaderMs)
+			}
 			nProbe := DefaultNProbe
 			candidates := req.Limit
 
@@ -894,22 +899,32 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 				indexResults, err = h.indexReader.SearchWithMultiRange(ctx, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe)
 				searchMs := time.Since(t1).Milliseconds()
 				if err != nil {
-					fmt.Printf("[TIMING] SearchWithMultiRange error after %dms: %v\n", searchMs, err)
+					if debug {
+						debugLogf("[query] search_with_multi_range namespace=%s err=%v dur_ms=%d", ns, err, searchMs)
+					}
 					indexResults = nil
 				} else {
-					fmt.Printf("[TIMING] SearchWithMultiRange: %dms (nProbe=%d, candidates=%d, results=%d)\n", searchMs, nProbe, candidates, len(indexResults))
+					if debug {
+						debugLogf("[query] search_with_multi_range namespace=%s dur_ms=%d nProbe=%d candidates=%d results=%d", ns, searchMs, nProbe, candidates, len(indexResults))
+					}
 				}
 			} else {
 				// Filter present - try to use filter bitmap indexes
 				t1 := time.Now()
 				indexResults = h.searchIndexWithFilter(ctx, ns, loaded, ivfReader, clusterDataKey, parsed.QueryVector, candidates, nProbe, f)
-				fmt.Printf("[TIMING] searchIndexWithFilter: %dms (results=%d)\n", time.Since(t1).Milliseconds(), len(indexResults))
+				if debug {
+					debugLogf("[query] search_index_with_filter namespace=%s dur_ms=%d results=%d", ns, time.Since(t1).Milliseconds(), len(indexResults))
+				}
 			}
 		} else {
-			fmt.Printf("[TIMING] GetIVFReader: %dms - ivfReader is nil\n", getIVFReaderMs)
+			if debug {
+				debugLogf("[query] get_ivf_reader namespace=%s dur_ms=%d reader=nil", ns, getIVFReaderMs)
+			}
 		}
 	} else {
-		fmt.Printf("[TIMING] useIndex=false manifestKey=%q\n", loaded.State.Index.ManifestKey)
+		if debug {
+			debugLogf("[query] ann_use_index=false namespace=%s manifestKey=%q", ns, loaded.State.Index.ManifestKey)
+		}
 	}
 
 	// Get results from tail (unindexed data)
@@ -923,7 +938,9 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 		} else {
 			tailResults, err = h.tailStore.VectorScan(ctx, ns, parsed.QueryVector, req.Limit, metric, f)
 		}
-		fmt.Printf("[TIMING] TailSearch: %dms (results=%d, byteCap=%d)\n", time.Since(t2).Milliseconds(), len(tailResults), tailByteCap)
+		if debug {
+			debugLogf("[query] tail_search namespace=%s dur_ms=%d results=%d byte_cap=%d", ns, time.Since(t2).Milliseconds(), len(tailResults), tailByteCap)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -988,7 +1005,9 @@ func (h *Handler) executeVectorQuery(ctx context.Context, ns string, loaded *nam
 		var err error
 		var indexedDocs []index.IndexedDocument
 		indexedDocs, err = h.indexReader.LoadDocsForIDs(ctx, loaded.State.Index.ManifestKey, resultIDs)
-		fmt.Printf("[TIMING] LoadDocsForIDs: %dms (requested=%d, loaded=%d)\n", time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs))
+		if debug {
+			debugLogf("[query] load_docs_for_ids namespace=%s dur_ms=%d requested=%d loaded=%d err=%v", ns, time.Since(t3).Milliseconds(), len(resultIDs), len(indexedDocs), err)
+		}
 		if err == nil && len(indexedDocs) > 0 {
 			indexDocIDs = make(map[uint64]document.ID, len(indexedDocs))
 			indexDocAttrs = make(map[uint64]map[string]any, len(indexedDocs))
