@@ -83,6 +83,7 @@ type entry struct {
 	size       int64
 	accessTime time.Time
 	element    *list.Element
+	lastTouch  time.Time
 }
 
 // DiskCache implements an NVMe SSD cache with LRU eviction.
@@ -93,6 +94,8 @@ type DiskCache struct {
 	maxBytes  int64
 	usedBytes int64
 	budgetPct int
+	// touchInterval throttles filesystem timestamp updates on cache hits.
+	touchInterval time.Duration
 
 	entries map[string]*entry // hash -> entry
 	lruList *list.List        // LRU list (front = most recently used)
@@ -108,6 +111,9 @@ type DiskCacheConfig struct {
 	RootPath  string // Path to store cached files
 	MaxBytes  int64  // Maximum cache size in bytes (0 = use BudgetPct)
 	BudgetPct int    // Percentage of disk to use (default 95)
+	// TouchInterval controls how often access times are refreshed on cache hits.
+	// 0 uses the default interval; negative disables touching.
+	TouchInterval time.Duration
 }
 
 // NewDiskCache creates a new disk cache.
@@ -120,6 +126,13 @@ func NewDiskCache(cfg DiskCacheConfig) (*DiskCache, error) {
 	}
 	if cfg.BudgetPct > 100 {
 		cfg.BudgetPct = 100
+	}
+	touchInterval := cfg.TouchInterval
+	if touchInterval < 0 {
+		touchInterval = 0
+	}
+	if touchInterval == 0 {
+		touchInterval = time.Minute
 	}
 
 	if err := os.MkdirAll(cfg.RootPath, 0755); err != nil {
@@ -138,13 +151,14 @@ func NewDiskCache(cfg DiskCacheConfig) (*DiskCache, error) {
 	}
 
 	dc := &DiskCache{
-		rootPath:    cfg.RootPath,
-		maxBytes:    maxBytes,
-		budgetPct:   cfg.BudgetPct,
-		entries:     make(map[string]*entry),
-		lruList:     list.New(),
-		pinned:      make(map[string]struct{}),
-		tempTracker: NewTemperatureTracker(),
+		rootPath:      cfg.RootPath,
+		maxBytes:      maxBytes,
+		budgetPct:     cfg.BudgetPct,
+		touchInterval: touchInterval,
+		entries:       make(map[string]*entry),
+		lruList:       list.New(),
+		pinned:        make(map[string]struct{}),
+		tempTracker:   NewTemperatureTracker(),
 	}
 
 	// Load existing cached files
@@ -191,6 +205,7 @@ func (dc *DiskCache) loadExisting() error {
 			path:       path,
 			size:       info.Size(),
 			accessTime: accessTime,
+			lastTouch:  accessTime,
 		}
 		ent.element = dc.lruList.PushBack(ent)
 		dc.entries[hash] = ent
@@ -217,12 +232,17 @@ func (dc *DiskCache) Get(key CacheKey) (string, error) {
 	}
 
 	// Update access time and move to front of LRU
-	ent.accessTime = time.Now()
+	now := time.Now()
+	ent.accessTime = now
 	dc.lruList.MoveToFront(ent.element)
 
-	// Touch file to update mtime for persistence
-	now := time.Now()
-	os.Chtimes(ent.path, now, now)
+	// Touch file to update mtime for persistence, throttled to reduce syscalls
+	if dc.touchInterval > 0 {
+		if now.Sub(ent.lastTouch) >= dc.touchInterval {
+			os.Chtimes(ent.path, now, now)
+			ent.lastTouch = now
+		}
+	}
 
 	namespace := extractNamespaceFromKey(key.ObjectKey)
 	metrics.IncCacheHit("disk", namespace)
@@ -276,7 +296,9 @@ func (dc *DiskCache) Put(key CacheKey, data io.Reader, size int64) (string, erro
 
 	// Check if already cached
 	if ent, ok := dc.entries[hash]; ok {
-		ent.accessTime = time.Now()
+		now := time.Now()
+		ent.accessTime = now
+		ent.lastTouch = now
 		dc.lruList.MoveToFront(ent.element)
 		return ent.path, nil
 	}
@@ -305,12 +327,14 @@ func (dc *DiskCache) Put(key CacheKey, data io.Reader, size int64) (string, erro
 	}
 
 	// Add to cache
+	now := time.Now()
 	ent := &entry{
 		key:        key,
 		hash:       hash,
 		path:       path,
 		size:       written,
-		accessTime: time.Now(),
+		accessTime: now,
+		lastTouch:  now,
 	}
 	ent.element = dc.lruList.PushFront(ent)
 	dc.entries[hash] = ent
@@ -337,7 +361,9 @@ func (dc *DiskCache) PutBytes(key CacheKey, data []byte) (string, error) {
 
 	// Check if already cached
 	if ent, ok := dc.entries[hash]; ok {
-		ent.accessTime = time.Now()
+		now := time.Now()
+		ent.accessTime = now
+		ent.lastTouch = now
 		dc.lruList.MoveToFront(ent.element)
 		return ent.path, nil
 	}
@@ -354,12 +380,14 @@ func (dc *DiskCache) PutBytes(key CacheKey, data []byte) (string, error) {
 	}
 
 	// Add to cache
+	now := time.Now()
 	ent := &entry{
 		key:        key,
 		hash:       hash,
 		path:       path,
 		size:       size,
-		accessTime: time.Now(),
+		accessTime: now,
+		lastTouch:  now,
 	}
 	ent.element = dc.lruList.PushFront(ent)
 	dc.entries[hash] = ent

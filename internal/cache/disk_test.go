@@ -42,8 +42,9 @@ func TestDiskCache_PutGet(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	dc, err := NewDiskCache(DiskCacheConfig{
-		RootPath: tmpDir,
-		MaxBytes: 1024 * 1024,
+		RootPath:      tmpDir,
+		MaxBytes:      1024 * 1024,
+		TouchInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewDiskCache failed: %v", err)
@@ -95,8 +96,9 @@ func TestDiskCache_ContentAddressable(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	dc, err := NewDiskCache(DiskCacheConfig{
-		RootPath: tmpDir,
-		MaxBytes: 1024 * 1024,
+		RootPath:      tmpDir,
+		MaxBytes:      1024 * 1024,
+		TouchInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewDiskCache failed: %v", err)
@@ -144,8 +146,9 @@ func TestDiskCache_Miss(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	dc, err := NewDiskCache(DiskCacheConfig{
-		RootPath: tmpDir,
-		MaxBytes: 1024 * 1024,
+		RootPath:      tmpDir,
+		MaxBytes:      1024 * 1024,
+		TouchInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewDiskCache failed: %v", err)
@@ -164,8 +167,9 @@ func TestDiskCache_MetricsNamespaceLabels(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	dc, err := NewDiskCache(DiskCacheConfig{
-		RootPath: tmpDir,
-		MaxBytes: 1024 * 1024,
+		RootPath:      tmpDir,
+		MaxBytes:      1024 * 1024,
+		TouchInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewDiskCache failed: %v", err)
@@ -666,8 +670,9 @@ func TestDiskCache_AccessTimeTracking(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	dc, err := NewDiskCache(DiskCacheConfig{
-		RootPath: tmpDir,
-		MaxBytes: 1024 * 1024,
+		RootPath:      tmpDir,
+		MaxBytes:      1024 * 1024,
+		TouchInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewDiskCache failed: %v", err)
@@ -682,8 +687,8 @@ func TestDiskCache_AccessTimeTracking(t *testing.T) {
 	info1, _ := os.Stat(path)
 	mtime1 := info1.ModTime()
 
-	// Wait a bit and access
-	time.Sleep(10 * time.Millisecond)
+	// Wait enough to exceed filesystem timestamp resolution and touch interval
+	time.Sleep(1200 * time.Millisecond)
 	dc.Get(key)
 
 	// Check mtime was updated
