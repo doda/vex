@@ -23,6 +23,9 @@ func TestCompactorConfig_Defaults(t *testing.T) {
 	if config.NClusters != 0 {
 		t.Errorf("expected NClusters to be 0 (auto), got %d", config.NClusters)
 	}
+	if config.MaxAutoNClusters != 256 {
+		t.Errorf("expected MaxAutoNClusters to be 256, got %d", config.MaxAutoNClusters)
+	}
 	if config.Metric != vector.MetricCosineDistance {
 		t.Errorf("expected MetricCosineDistance, got %s", config.Metric)
 	}
@@ -31,6 +34,9 @@ func TestCompactorConfig_Defaults(t *testing.T) {
 	}
 	if config.RetentionTime <= 0 {
 		t.Errorf("expected RetentionTime to be set, got %v", config.RetentionTime)
+	}
+	if config.DebugVerify {
+		t.Error("expected DebugVerify to be false by default")
 	}
 }
 

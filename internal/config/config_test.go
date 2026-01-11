@@ -20,8 +20,8 @@ func TestDefault(t *testing.T) {
 	if cfg.Cache.BudgetPct != 95 {
 		t.Errorf("expected cache budget 95, got %d", cfg.Cache.BudgetPct)
 	}
-	if cfg.Cache.RAMNamespaceCapPct != 25 {
-		t.Errorf("expected ram namespace cap pct 25, got %d", cfg.Cache.RAMNamespaceCapPct)
+	if cfg.Cache.RAMNamespaceCapPct != 50 {
+		t.Errorf("expected ram namespace cap pct 50, got %d", cfg.Cache.RAMNamespaceCapPct)
 	}
 }
 
@@ -480,7 +480,7 @@ func TestPartialConfigMerge(t *testing.T) {
 	if cfg.Cache.BudgetPct != 95 {
 		t.Errorf("expected default budget pct to be preserved, got %d", cfg.Cache.BudgetPct)
 	}
-	if cfg.Cache.RAMNamespaceCapPct != 25 {
+	if cfg.Cache.RAMNamespaceCapPct != 50 {
 		t.Errorf("expected default ram namespace cap pct to be preserved, got %d", cfg.Cache.RAMNamespaceCapPct)
 	}
 }
@@ -565,8 +565,16 @@ func TestConfig_GetCompatMode(t *testing.T) {
 func TestCompactionConfigFromEnv(t *testing.T) {
 	os.Setenv("VEX_COMPACTION_MAX_SEGMENTS", "6")
 	os.Setenv("VEX_COMPACTION_MAX_BYTES_MB", "512")
+	os.Setenv("VEX_COMPACTION_MAX_L0_BYTES_MB", "128")
+	os.Setenv("VEX_COMPACTION_MAX_L1_BYTES_MB", "1024")
+	os.Setenv("VEX_COMPACTION_MAX_CLUSTERS", "48")
+	os.Setenv("VEX_COMPACTION_DEBUG_VERIFY", "true")
 	defer os.Unsetenv("VEX_COMPACTION_MAX_SEGMENTS")
 	defer os.Unsetenv("VEX_COMPACTION_MAX_BYTES_MB")
+	defer os.Unsetenv("VEX_COMPACTION_MAX_L0_BYTES_MB")
+	defer os.Unsetenv("VEX_COMPACTION_MAX_L1_BYTES_MB")
+	defer os.Unsetenv("VEX_COMPACTION_MAX_CLUSTERS")
+	defer os.Unsetenv("VEX_COMPACTION_DEBUG_VERIFY")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -578,6 +586,18 @@ func TestCompactionConfigFromEnv(t *testing.T) {
 	}
 	if cfg.Compaction.MaxBytesMB != 512 {
 		t.Errorf("expected max bytes MB 512, got %d", cfg.Compaction.MaxBytesMB)
+	}
+	if cfg.Compaction.MaxL0BytesMB != 128 {
+		t.Errorf("expected max L0 bytes MB 128, got %d", cfg.Compaction.MaxL0BytesMB)
+	}
+	if cfg.Compaction.MaxL1BytesMB != 1024 {
+		t.Errorf("expected max L1 bytes MB 1024, got %d", cfg.Compaction.MaxL1BytesMB)
+	}
+	if cfg.Compaction.MaxCompactionClusters != 48 {
+		t.Errorf("expected max compaction clusters 48, got %d", cfg.Compaction.MaxCompactionClusters)
+	}
+	if !cfg.Compaction.DebugVerify {
+		t.Errorf("expected debug verify true")
 	}
 }
 
@@ -674,7 +694,11 @@ func TestCompactionConfigFromFile(t *testing.T) {
 	content := `{
 		"compaction": {
 			"max_segments": 4,
-			"max_bytes_mb": 256
+			"max_bytes_mb": 256,
+			"max_l0_bytes_mb": 64,
+			"max_l1_bytes_mb": 512,
+			"max_compaction_clusters": 24,
+			"debug_verify": true
 		}
 	}`
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
@@ -691,5 +715,17 @@ func TestCompactionConfigFromFile(t *testing.T) {
 	}
 	if cfg.Compaction.MaxBytesMB != 256 {
 		t.Errorf("expected max bytes MB 256, got %d", cfg.Compaction.MaxBytesMB)
+	}
+	if cfg.Compaction.MaxL0BytesMB != 64 {
+		t.Errorf("expected max L0 bytes MB 64, got %d", cfg.Compaction.MaxL0BytesMB)
+	}
+	if cfg.Compaction.MaxL1BytesMB != 512 {
+		t.Errorf("expected max L1 bytes MB 512, got %d", cfg.Compaction.MaxL1BytesMB)
+	}
+	if cfg.Compaction.MaxCompactionClusters != 24 {
+		t.Errorf("expected max compaction clusters 24, got %d", cfg.Compaction.MaxCompactionClusters)
+	}
+	if !cfg.Compaction.DebugVerify {
+		t.Errorf("expected debug verify true")
 	}
 }

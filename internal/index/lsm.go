@@ -60,6 +60,12 @@ type LSMConfig struct {
 	// 0 means no limit.
 	MaxCompactionBytes int64
 
+	// MaxL0CompactionBytes caps logical bytes for L0->L1 runs. 0 falls back to MaxCompactionBytes.
+	MaxL0CompactionBytes int64
+
+	// MaxL1CompactionBytes caps logical bytes for L1->L2 runs. 0 falls back to MaxCompactionBytes.
+	MaxL1CompactionBytes int64
+
 	// L0TargetSizeBytes is the approximate target size for L0 segments.
 	L0TargetSizeBytes int64
 
@@ -297,20 +303,23 @@ func (t *LSMTree) PlanL0Compaction() (*CompactionPlan, error) {
 		return nil, ErrNoSegmentsToCompact
 	}
 
-	// Sort by start WAL seq to get contiguous segments
+	// Prefer compacting smaller segments first to keep individual runs fast when backlog is large.
 	sort.Slice(l0Segments, func(i, j int) bool {
-		return l0Segments[i].StartWALSeq < l0Segments[j].StartWALSeq
+		if l0Segments[i].Stats.LogicalBytes == l0Segments[j].Stats.LogicalBytes {
+			return l0Segments[i].StartWALSeq < l0Segments[j].StartWALSeq
+		}
+		return l0Segments[i].Stats.LogicalBytes < l0Segments[j].Stats.LogicalBytes
 	})
 
-	selected := t.selectCompactionSegments(l0Segments)
+	selected := t.selectCompactionSegments(l0Segments, t.maxCompactionBytesForLevel(L0))
 
 	var minSeq, maxSeq uint64
 	var totalBytes, totalRows int64
 	for i, seg := range selected {
-		if i == 0 {
+		if i == 0 || seg.StartWALSeq < minSeq {
 			minSeq = seg.StartWALSeq
 		}
-		if seg.EndWALSeq > maxSeq {
+		if i == 0 || seg.EndWALSeq > maxSeq {
 			maxSeq = seg.EndWALSeq
 		}
 		totalBytes += seg.Stats.LogicalBytes
@@ -346,7 +355,7 @@ func (t *LSMTree) PlanL1Compaction() (*CompactionPlan, error) {
 		return l1Segments[i].StartWALSeq < l1Segments[j].StartWALSeq
 	})
 
-	selected := t.selectCompactionSegments(l1Segments)
+	selected := t.selectCompactionSegments(l1Segments, t.maxCompactionBytesForLevel(L1))
 
 	var minSeq, maxSeq uint64
 	var totalBytes, totalRows int64
@@ -371,9 +380,25 @@ func (t *LSMTree) PlanL1Compaction() (*CompactionPlan, error) {
 	}, nil
 }
 
-func (t *LSMTree) selectCompactionSegments(segments []Segment) []Segment {
+func (t *LSMTree) maxCompactionBytesForLevel(level int) int64 {
+	switch level {
+	case L0:
+		if t.config.MaxL0CompactionBytes > 0 {
+			return t.config.MaxL0CompactionBytes
+		}
+	case L1:
+		if t.config.MaxL1CompactionBytes > 0 {
+			return t.config.MaxL1CompactionBytes
+		}
+	}
+	return t.config.MaxCompactionBytes
+}
+
+func (t *LSMTree) selectCompactionSegments(segments []Segment, maxBytes int64) []Segment {
 	maxSegments := t.config.MaxCompactionSegments
-	maxBytes := t.config.MaxCompactionBytes
+	if maxBytes <= 0 {
+		maxBytes = t.config.MaxCompactionBytes
+	}
 	if maxSegments <= 0 && maxBytes <= 0 {
 		return segments
 	}
@@ -384,8 +409,15 @@ func (t *LSMTree) selectCompactionSegments(segments []Segment) []Segment {
 		if maxSegments > 0 && len(selected) >= maxSegments {
 			break
 		}
-		if maxBytes > 0 && len(selected) > 0 && totalBytes+seg.Stats.LogicalBytes > maxBytes {
-			break
+		if maxBytes > 0 {
+			// If the leading segment is larger than the max, skip it so we can still compact
+			// smaller followers instead of repeatedly attempting a single massive compaction.
+			if len(selected) == 0 && seg.Stats.LogicalBytes > maxBytes {
+				continue
+			}
+			if len(selected) > 0 && totalBytes+seg.Stats.LogicalBytes > maxBytes {
+				break
+			}
 		}
 		selected = append(selected, seg)
 		totalBytes += seg.Stats.LogicalBytes

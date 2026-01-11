@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,8 +36,12 @@ type CompactorConfig struct {
 	Recluster bool
 
 	// NClusters is the target number of clusters for reclustering.
-	// If 0, auto-calculates based on vector count (sqrt(n), max 256).
+	// If 0, auto-calculates based on vector count (sqrt(n), capped by MaxAutoNClusters).
 	NClusters int
+
+	// MaxAutoNClusters caps the auto-calculated cluster count when NClusters is 0.
+	// This prevents extremely slow reclustering runs on very large inputs.
+	MaxAutoNClusters int
 
 	// Metric is the distance metric for IVF index.
 	Metric vector.DistanceMetric
@@ -50,6 +56,10 @@ type CompactorConfig struct {
 	// RetentionTime is the minimum age for obsolete segments before cleanup.
 	// A zero value falls back to the default retention window.
 	RetentionTime time.Duration
+
+	// DebugVerify enables extra verification during compaction (e.g. re-deduping,
+	// object size HEAD checks). This adds CPU and object store calls.
+	DebugVerify bool
 }
 
 // DefaultCompactorConfig returns sensible defaults.
@@ -57,6 +67,7 @@ func DefaultCompactorConfig() *CompactorConfig {
 	return &CompactorConfig{
 		Recluster:                false, // Preserve cluster assignments by default
 		NClusters:                0,     // Auto-calculate
+		MaxAutoNClusters:         256,   // Cap auto cluster count
 		Metric:                   vector.MetricCosineDistance,
 		MaxConcurrentCompactions: 1, // Single compaction at a time
 		RetentionTime:            24 * time.Hour,
@@ -69,6 +80,9 @@ func normalizeCompactorConfig(config *CompactorConfig) *CompactorConfig {
 	}
 	if config.MaxConcurrentCompactions <= 0 {
 		config.MaxConcurrentCompactions = 1
+	}
+	if config.MaxAutoNClusters <= 0 {
+		config.MaxAutoNClusters = DefaultCompactorConfig().MaxAutoNClusters
 	}
 	if config.Metric == "" {
 		config.Metric = vector.MetricCosineDistance
@@ -154,6 +168,14 @@ func (c *FullCompactor) Compact(ctx context.Context, plan *CompactionPlan) (*Com
 
 	// Step 2: Merge documents with deduplication (newest version wins)
 	mergedDocs := c.mergeDocuments(allDocs)
+	if c.config.DebugVerify {
+		// Run a second pass in debug mode to surface any unexpected duplicates.
+		verified := c.mergeDocuments(allDocs)
+		if len(verified) != len(mergedDocs) {
+			log.Printf("[compaction] ns=%s debug verify adjusted merged docs: %d -> %d", c.namespace, len(mergedDocs), len(verified))
+			mergedDocs = verified
+		}
+	}
 
 	// Step 3: Build new segment with merged data
 	result, err := c.buildMergedSegment(ctx, plan, mergedDocs)
@@ -369,6 +391,20 @@ func (m *multiReadCloser) Close() error {
 	return firstErr
 }
 
+func compactionDecoderConcurrency() int {
+	if raw := strings.TrimSpace(os.Getenv("VEX_COMPACTION_DECODER_CONCURRENCY")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+		log.Printf("[compaction] invalid VEX_COMPACTION_DECODER_CONCURRENCY=%q, defaulting to GOMAXPROCS", raw)
+	}
+	n := runtime.GOMAXPROCS(0)
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
 func (c *FullCompactor) openDocsColumnReader(ctx context.Context, seg Segment) (io.ReadCloser, bool, error) {
 	if seg.DocsKey == "" {
 		return nil, false, nil
@@ -393,7 +429,7 @@ func (c *FullCompactor) openDocsColumnReader(ctx context.Context, seg Segment) (
 		dec, err := zstd.NewReader(buf,
 			zstd.WithDecoderLowmem(true),
 			zstd.WithDecoderMaxWindow(32*1024*1024),
-			zstd.WithDecoderConcurrency(1),
+			zstd.WithDecoderConcurrency(compactionDecoderConcurrency()),
 		)
 		if err != nil {
 			reader.Close()
@@ -594,6 +630,7 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 	result := &CompactionResult{
 		MergedDocs: int64(len(docs)),
 	}
+	expectedSizes := make(map[string]int64)
 
 	// Collect vectors for IVF index
 	var vectors []vectorDoc
@@ -613,9 +650,10 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 
 	// Build IVF index if we have vectors
 	var ivfKeys *IVFKeys
+	var ivfSizes map[string]int64
 	if len(vectors) > 0 {
 		var err error
-		ivfKeys, result.Reclustered, err = c.buildIVFIndex(ctx, writer, vectors, dims)
+		ivfKeys, ivfSizes, result.Reclustered, err = c.buildIVFIndex(ctx, writer, vectors, dims)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build IVF index: %w", err)
 		}
@@ -623,6 +661,9 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 			ivfKeys.CentroidsKey,
 			ivfKeys.ClusterOffsetsKey,
 			ivfKeys.ClusterDataKey)
+		for key, size := range ivfSizes {
+			expectedSizes[key] = size
+		}
 	}
 
 	// Always write docs column to preserve WAL sequence and tombstone metadata
@@ -641,6 +682,7 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 			return nil, fmt.Errorf("failed to write docs: %w", err)
 		}
 		result.ObjectsWritten = append(result.ObjectsWritten, docsKey)
+		expectedSizes[docsKey] = int64(len(docsData))
 
 		idMapData, err := EncodeDocIDMapFromDocs(docs)
 		if err != nil {
@@ -651,17 +693,13 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 			return nil, fmt.Errorf("failed to write doc id map: %w", err)
 		}
 		result.ObjectsWritten = append(result.ObjectsWritten, idMapKey)
+		expectedSizes[idMapKey] = int64(len(idMapData))
 	}
 
 	writer.Seal()
 
 	// Calculate stats
-	logicalBytes := int64(0)
-	for _, key := range result.ObjectsWritten {
-		if info, err := c.store.Head(ctx, key); err == nil {
-			logicalBytes += info.Size
-		}
-	}
+	logicalBytes := c.calculateLogicalBytes(ctx, expectedSizes, result.ObjectsWritten)
 	result.BytesWritten = logicalBytes
 
 	// Create segment metadata
@@ -682,6 +720,34 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 	return result, nil
 }
 
+func (c *FullCompactor) calculateLogicalBytes(ctx context.Context, expected map[string]int64, keys []string) int64 {
+	if c.config.DebugVerify {
+		var total int64
+		for _, key := range keys {
+			info, err := c.store.Head(ctx, key)
+			if err != nil {
+				if size, ok := expected[key]; ok {
+					total += size
+				}
+				continue
+			}
+			total += info.Size
+			if size, ok := expected[key]; ok && size != info.Size {
+				log.Printf("[compaction] ns=%s object=%s size mismatch expected=%d actual=%d", c.namespace, key, size, info.Size)
+			}
+		}
+		return total
+	}
+
+	var total int64
+	for _, key := range keys {
+		if size, ok := expected[key]; ok {
+			total += size
+		}
+	}
+	return total
+}
+
 type vectorDoc struct {
 	id        string
 	numericID uint64
@@ -692,21 +758,25 @@ type vectorDoc struct {
 // When Recluster is true, k-means is run to optimize cluster assignments.
 // When Recluster is false, vectors are assigned to clusters using a single-pass
 // assignment (no k-means iteration), which is faster but may produce less optimal clusters.
-func (c *FullCompactor) buildIVFIndex(ctx context.Context, writer *SegmentWriter, vectors []vectorDoc, dims int) (*IVFKeys, bool, error) {
+func (c *FullCompactor) buildIVFIndex(ctx context.Context, writer *SegmentWriter, vectors []vectorDoc, dims int) (*IVFKeys, map[string]int64, bool, error) {
 	if len(vectors) == 0 {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 
 	// Determine number of clusters
 	nClusters := c.config.NClusters
+	maxClusters := c.config.MaxAutoNClusters
+	if maxClusters <= 0 {
+		maxClusters = DefaultCompactorConfig().MaxAutoNClusters
+	}
 	if nClusters <= 0 {
-		// Auto-calculate: sqrt(n), capped at 256
+		// Auto-calculate: sqrt(n), capped at configured max
 		nClusters = intSqrt(len(vectors))
 		if nClusters < 1 {
 			nClusters = 1
 		}
-		if nClusters > 256 {
-			nClusters = 256
+		if nClusters > maxClusters {
+			nClusters = maxClusters
 		}
 	}
 	if nClusters > len(vectors) {
@@ -717,7 +787,7 @@ func (c *FullCompactor) buildIVFIndex(ctx context.Context, writer *SegmentWriter
 	builder := vector.NewIVFBuilder(dims, c.config.Metric, nClusters)
 	for _, v := range vectors {
 		if err := builder.AddVector(v.numericID, v.vec); err != nil {
-			return nil, false, fmt.Errorf("failed to add vector %s (id=%d): %w", v.id, v.numericID, err)
+			return nil, nil, false, fmt.Errorf("failed to add vector %s (id=%d): %w", v.id, v.numericID, err)
 		}
 	}
 
@@ -730,41 +800,47 @@ func (c *FullCompactor) buildIVFIndex(ctx context.Context, writer *SegmentWriter
 		// Full k-means clustering for optimal cluster assignments
 		ivfIndex, clusterDataSize, writeClusterData, err = builder.BuildStreaming()
 		if err != nil {
-			return nil, false, fmt.Errorf("failed to build IVF with k-means: %w", err)
+			return nil, nil, false, fmt.Errorf("failed to build IVF with k-means: %w", err)
 		}
 	} else {
 		// Single-pass assignment without k-means iteration
 		// This is faster but produces less optimal clusters
 		ivfIndex, clusterDataSize, writeClusterData, err = builder.BuildWithSinglePassPlan()
 		if err != nil {
-			return nil, false, fmt.Errorf("failed to build IVF with single-pass: %w", err)
+			return nil, nil, false, fmt.Errorf("failed to build IVF with single-pass: %w", err)
 		}
 	}
 
 	// Write centroids
 	var centroidsBuf bytes.Buffer
 	if err := ivfIndex.WriteCentroidsFile(&centroidsBuf); err != nil {
-		return nil, false, fmt.Errorf("failed to serialize centroids: %w", err)
+		return nil, nil, false, fmt.Errorf("failed to serialize centroids: %w", err)
 	}
 	centroidsKey, err := writer.WriteIVFCentroids(ctx, centroidsBuf.Bytes())
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to write centroids: %w", err)
+		return nil, nil, false, fmt.Errorf("failed to write centroids: %w", err)
 	}
 
 	// Write cluster offsets
 	var offsetsBuf bytes.Buffer
 	if err := ivfIndex.WriteClusterOffsetsFile(&offsetsBuf); err != nil {
-		return nil, false, fmt.Errorf("failed to serialize offsets: %w", err)
+		return nil, nil, false, fmt.Errorf("failed to serialize offsets: %w", err)
 	}
 	offsetsKey, err := writer.WriteIVFClusterOffsets(ctx, offsetsBuf.Bytes())
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to write offsets: %w", err)
+		return nil, nil, false, fmt.Errorf("failed to write offsets: %w", err)
 	}
 
 	// Write cluster data (streamed)
 	clusterDataKey, err := writer.WriteIVFClusterDataStream(ctx, clusterDataSize, writeClusterData)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to write cluster data: %w", err)
+		return nil, nil, false, fmt.Errorf("failed to write cluster data: %w", err)
+	}
+
+	sizeByKey := map[string]int64{
+		centroidsKey:   int64(centroidsBuf.Len()),
+		offsetsKey:     int64(offsetsBuf.Len()),
+		clusterDataKey: clusterDataSize,
 	}
 
 	return &IVFKeys{
@@ -773,7 +849,7 @@ func (c *FullCompactor) buildIVFIndex(ctx context.Context, writer *SegmentWriter
 		ClusterDataKey:    clusterDataKey,
 		NClusters:         ivfIndex.NClusters,
 		VectorCount:       len(vectors),
-	}, c.config.Recluster, nil
+	}, sizeByKey, c.config.Recluster, nil
 }
 
 // intSqrt computes integer square root.
@@ -918,22 +994,72 @@ func (bc *BackgroundCompactor) checkAndCompact() {
 			continue
 		}
 
-		// Try L0->L1 compaction first
-		if tree.NeedsL0Compaction() {
-			if err := bc.compactL0(ns, tree); err != nil {
-				log.Printf("[compaction] ns=%s level=l0_l1 error=%v", ns, err)
-				continue
+		// Alternate starting level each time this namespace has work so L1 jobs
+		// aren't starved behind L0 backlogs.
+		preferL1 := true
+		for {
+			if tree.IsCompacting() {
+				break
 			}
-		}
 
-		// Then check L1->L2 compaction
-		if tree.NeedsL1Compaction() {
-			if err := bc.compactL1(ns, tree); err != nil {
-				log.Printf("[compaction] ns=%s level=l1_l2 error=%v", ns, err)
-				continue
+			attempted, err := bc.runCompactionWithPriority(ns, tree, preferL1)
+			if err != nil {
+				log.Printf("[compaction] ns=%s error=%v", ns, err)
+				break
 			}
+			if !attempted {
+				break
+			}
+			preferL1 = !preferL1
 		}
 	}
+}
+
+func (bc *BackgroundCompactor) runCompactionWithPriority(ns string, tree *LSMTree, preferL1 bool) (bool, error) {
+	choices := []func() (bool, error){
+		func() (bool, error) { return bc.tryCompactL1(ns, tree) },
+		func() (bool, error) { return bc.tryCompactL0(ns, tree) },
+	}
+	if !preferL1 {
+		choices[0], choices[1] = choices[1], choices[0]
+	}
+
+	for _, choice := range choices {
+		attempted, err := choice()
+		if err != nil {
+			return attempted, err
+		}
+		if attempted {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (bc *BackgroundCompactor) tryCompactL0(ns string, tree *LSMTree) (bool, error) {
+	if !tree.NeedsL0Compaction() {
+		return false, nil
+	}
+	if err := bc.compactL0(ns, tree); err != nil {
+		if errors.Is(err, ErrCompactionInProgress) {
+			return false, nil
+		}
+		return true, err
+	}
+	return true, nil
+}
+
+func (bc *BackgroundCompactor) tryCompactL1(ns string, tree *LSMTree) (bool, error) {
+	if !tree.NeedsL1Compaction() {
+		return false, nil
+	}
+	if err := bc.compactL1(ns, tree); err != nil {
+		if errors.Is(err, ErrCompactionInProgress) {
+			return false, nil
+		}
+		return true, err
+	}
+	return true, nil
 }
 
 func (bc *BackgroundCompactor) syncNamespaces() {
@@ -1136,9 +1262,17 @@ func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
 		return nil
 	}
 
-	// Enable reclustering for L1->L2 compaction
+	// Enable reclustering for L1->L2 compaction unless explicitly disabled.
 	config := *bc.compConfig
-	config.Recluster = true
+	recluster := true
+	if raw := strings.TrimSpace(os.Getenv("VEX_COMPACTION_RECLUSTER_L1")); raw != "" {
+		if val, err := strconv.ParseBool(raw); err != nil {
+			log.Printf("[compaction] ns=%s level=%s invalid VEX_COMPACTION_RECLUSTER_L1=%q, defaulting to %v", ns, level, raw, recluster)
+		} else {
+			recluster = val
+		}
+	}
+	config.Recluster = recluster
 
 	compactor := NewFullCompactor(bc.store, ns, &config)
 	result, err := compactor.Compact(context.Background(), plan)

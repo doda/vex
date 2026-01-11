@@ -149,6 +149,22 @@ type CompactionConfig struct {
 	// MaxBytesMB caps the total logical bytes per compaction run in MB.
 	// 0 means no limit.
 	MaxBytesMB int `json:"max_bytes_mb"`
+	// MaxL0BytesMB caps logical bytes for L0->L1 compaction runs. 0 falls back to MaxBytesMB.
+	MaxL0BytesMB int `json:"max_l0_bytes_mb,omitempty"`
+	// MaxL1BytesMB caps logical bytes for L1->L2 compaction runs. 0 falls back to MaxBytesMB.
+	MaxL1BytesMB int `json:"max_l1_bytes_mb,omitempty"`
+	// MaxConcurrent controls how many compactions can run at once.
+	// 0 means use the default (single compaction).
+	MaxConcurrent int `json:"max_concurrent,omitempty"`
+	// L0Threshold controls how many L0 segments trigger compaction. 0 uses the default.
+	L0Threshold int `json:"l0_threshold,omitempty"`
+	// L1Threshold controls how many L1 segments trigger L1->L2 compaction. 0 uses the default.
+	L1Threshold int `json:"l1_threshold,omitempty"`
+	// MaxCompactionClusters caps auto-chosen IVF clusters for compaction builds.
+	// 0 uses the compactor default.
+	MaxCompactionClusters int `json:"max_compaction_clusters,omitempty"`
+	// DebugVerify enables extra verification during compaction (dedupe + size checks).
+	DebugVerify bool `json:"debug_verify,omitempty"`
 }
 
 type ObjectStoreConfig struct {
@@ -248,7 +264,7 @@ func Default() *Config {
 			NVMePath:           "/tmp/vex-cache",
 			NVMESizeGB:         10,
 			RAMSizeMB:          512,
-			RAMNamespaceCapPct: 25,
+			RAMNamespaceCapPct: 50,
 			BudgetPct:          95,
 		},
 		Membership: MembershipConfig{
@@ -407,6 +423,24 @@ func Load(path string) (*Config, error) {
 		if n, err := parseIntEnv(env); err == nil {
 			cfg.Compaction.MaxBytesMB = n
 		}
+	}
+	if env := os.Getenv("VEX_COMPACTION_MAX_L0_BYTES_MB"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Compaction.MaxL0BytesMB = n
+		}
+	}
+	if env := os.Getenv("VEX_COMPACTION_MAX_L1_BYTES_MB"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Compaction.MaxL1BytesMB = n
+		}
+	}
+	if env := os.Getenv("VEX_COMPACTION_MAX_CLUSTERS"); env != "" {
+		if n, err := parseIntEnv(env); err == nil {
+			cfg.Compaction.MaxCompactionClusters = n
+		}
+	}
+	if env := os.Getenv("VEX_COMPACTION_DEBUG_VERIFY"); env != "" {
+		cfg.Compaction.DebugVerify = env == "true" || env == "1"
 	}
 
 	// Guardrails configuration

@@ -129,7 +129,7 @@ Notes:
   - `nvme_path`: `/tmp/vex-cache`
   - `nvme_size_gb`: `10`
   - `ram_size_mb`: `512`
-  - `ram_namespace_cap_pct`: `25`
+  - `ram_namespace_cap_pct`: `50`
   - `budget_pct`: `95`
   - `warm_namespaces`: empty (disabled)
   - `warm_on_start`: `false`

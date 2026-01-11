@@ -9,6 +9,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -136,8 +137,38 @@ func Run(args []string) {
 		if cfg.Compaction.MaxBytesMB > 0 {
 			lsmConfig.MaxCompactionBytes = int64(cfg.Compaction.MaxBytesMB) * 1024 * 1024
 		}
+		if cfg.Compaction.MaxL0BytesMB > 0 {
+			lsmConfig.MaxL0CompactionBytes = int64(cfg.Compaction.MaxL0BytesMB) * 1024 * 1024
+		}
+		if cfg.Compaction.MaxL1BytesMB > 0 {
+			lsmConfig.MaxL1CompactionBytes = int64(cfg.Compaction.MaxL1BytesMB) * 1024 * 1024
+		}
+		if cfg.Compaction.L0Threshold > 0 {
+			lsmConfig.L0CompactionThreshold = cfg.Compaction.L0Threshold
+		}
+		if cfg.Compaction.L1Threshold > 0 {
+			lsmConfig.L1CompactionThreshold = cfg.Compaction.L1Threshold
+		}
 
-		compactor := index.NewBackgroundCompactor(store, lsmConfig, nil)
+		compactorConfig := index.DefaultCompactorConfig()
+		if cfg.Compaction.MaxConcurrent > 0 {
+			compactorConfig.MaxConcurrentCompactions = cfg.Compaction.MaxConcurrent
+		}
+		if cfg.Compaction.MaxCompactionClusters > 0 {
+			compactorConfig.MaxAutoNClusters = cfg.Compaction.MaxCompactionClusters
+		}
+		if cfg.Compaction.DebugVerify {
+			compactorConfig.DebugVerify = true
+		}
+		if raw := strings.TrimSpace(os.Getenv("VEX_COMPACTION_MAX_CONCURRENT")); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				compactorConfig.MaxConcurrentCompactions = n
+			} else {
+				log.Printf("invalid VEX_COMPACTION_MAX_CONCURRENT=%q, keeping value %d", raw, compactorConfig.MaxConcurrentCompactions)
+			}
+		}
+
+		compactor := index.NewBackgroundCompactor(store, lsmConfig, compactorConfig)
 		compactor.SetStateManager(router.StateManager())
 		compactor.Start()
 		stopCompactorSync = startCompactorSync(compactor, router.StateManager(), store, indexerConfig.NamespacePollInterval, lsmConfig)
