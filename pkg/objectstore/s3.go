@@ -85,8 +85,15 @@ func (s *S3Store) Get(ctx context.Context, key string, opts *GetOptions) (io.Rea
 
 	stat, err := obj.Stat()
 	if err != nil {
+		mapped := s.mapError(err)
+		// Some gateways can return 412 on Stat even though the object is readable.
+		if errors.Is(mapped, ErrPrecondition) {
+			if headInfo, headErr := s.Head(ctx, key); headErr == nil {
+				return obj, headInfo, nil
+			}
+		}
 		obj.Close()
-		return nil, nil, s.mapError(err)
+		return nil, nil, mapped
 	}
 
 	info := &ObjectInfo{
