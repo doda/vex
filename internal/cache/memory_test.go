@@ -298,7 +298,7 @@ func TestMemoryCache_PerNamespaceBudgetCaps(t *testing.T) {
 		t.Fatalf("Put ns-a failed: %v", err)
 	}
 
-	// Try to add 100 more bytes to namespace A (would exceed 400 cap)
+	// Try to add 100 more bytes to namespace A (would exceed 400 cap, but single namespace can burst)
 	keyA2 := MemoryCacheKey{
 		Namespace: "ns-a",
 		ShardID:   "shard-2",
@@ -310,9 +310,8 @@ func TestMemoryCache_PerNamespaceBudgetCaps(t *testing.T) {
 		t.Fatalf("Put ns-a shard-2 failed: %v", err)
 	}
 
-	// Should have evicted shard-1 to make room within the namespace cap
-	if mc.Contains(keyA1) {
-		t.Error("shard-1 should have been evicted to stay under namespace cap")
+	if usage := mc.GetNamespaceUsage("ns-a"); usage != 450 {
+		t.Errorf("expected single namespace burst to 450 bytes, got %d", usage)
 	}
 
 	// Namespace B should be independent
@@ -325,6 +324,18 @@ func TestMemoryCache_PerNamespaceBudgetCaps(t *testing.T) {
 	err = mc.Put(keyB, make([]byte, 350))
 	if err != nil {
 		t.Fatalf("Put ns-b failed: %v", err)
+	}
+
+	// Once multiple namespaces exist, cap should apply to subsequent writes
+	keyA3 := MemoryCacheKey{
+		Namespace: "ns-a",
+		ShardID:   "shard-3",
+		ItemID:    "item-2",
+		ItemType:  TypeDocColumn,
+	}
+	err = mc.Put(keyA3, make([]byte, 50))
+	if err != nil {
+		t.Fatalf("Put ns-a shard-3 failed: %v", err)
 	}
 
 	// Verify usage

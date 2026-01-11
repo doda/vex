@@ -67,13 +67,13 @@ type memoryEntry struct {
 
 // shard groups all entries belonging to a single shard for shard-aware eviction.
 type shard struct {
-	id            string
-	namespace     string
-	entries       map[string]*memoryEntry // itemID -> entry
-	totalSize     int64
-	minPriority   int // minimum priority among entries (for eviction ordering)
-	lastAccess    time.Time
-	element       *list.Element
+	id          string
+	namespace   string
+	entries     map[string]*memoryEntry // itemID -> entry
+	totalSize   int64
+	minPriority int // minimum priority among entries (for eviction ordering)
+	lastAccess  time.Time
+	element     *list.Element
 }
 
 // MemoryCache implements an in-memory cache with shard-aware LRU eviction
@@ -315,6 +315,19 @@ func (mc *MemoryCache) checkNamespaceCapLockedExcluding(namespace string, size i
 func (mc *MemoryCache) getNamespaceCapLocked(namespace string) int64 {
 	if cap, ok := mc.namespaceCaps[namespace]; ok {
 		return cap
+	}
+	if mc.defaultCap <= 0 {
+		return 0
+	}
+	if len(mc.namespaceUsage) == 0 {
+		return mc.maxBytes
+	}
+	if len(mc.namespaceUsage) == 1 {
+		for ns := range mc.namespaceUsage {
+			if ns == namespace {
+				return mc.maxBytes
+			}
+		}
 	}
 	return mc.defaultCap
 }
@@ -585,17 +598,17 @@ func (mc *MemoryCache) Contains(key MemoryCacheKey) bool {
 
 // MemoryCacheStats contains cache statistics.
 type MemoryCacheStats struct {
-	UsedBytes       int64
-	MaxBytes        int64
-	EntryCount      int
-	ShardCount      int
-	NamespaceCount  int
-	Hits            int64
-	Misses          int64
-	HitRatio        float64
-	DefaultCapPct   int
-	NamespaceUsage  map[string]int64
-	NamespaceCaps   map[string]int64
+	UsedBytes      int64
+	MaxBytes       int64
+	EntryCount     int
+	ShardCount     int
+	NamespaceCount int
+	Hits           int64
+	Misses         int64
+	HitRatio       float64
+	DefaultCapPct  int
+	NamespaceUsage map[string]int64
+	NamespaceCaps  map[string]int64
 }
 
 // Stats returns cache statistics.
