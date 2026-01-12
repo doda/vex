@@ -149,8 +149,8 @@ func (p *L0SegmentProcessor) ProcessWAL(ctx context.Context, ns string, startSeq
 
 	// Build L0 segment with IVF index
 	fmt.Printf("[l0_builder] Building L0 segment for %s with %d docs...\n", ns, len(docs))
-	schemaDef := buildSchemaDefinition(state)
-	ftsConfigs, err := buildFTSConfigs(state)
+	schemaDef := index.SchemaDefinitionFromState(state)
+	ftsConfigs, err := index.FTSConfigsFromState(state)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build FTS configs: %w", err)
 	}
@@ -995,67 +995,6 @@ func documentIDKeyFromID(id document.ID) string {
 	default:
 		return ""
 	}
-}
-
-func buildSchemaDefinition(state *namespace.State) *schema.Definition {
-	if state == nil || state.Schema == nil || len(state.Schema.Attributes) == 0 {
-		return nil
-	}
-	def := schema.NewDefinition()
-	for name, attr := range state.Schema.Attributes {
-		attrType := schema.AttrType(attr.Type)
-		if !attrType.IsValid() {
-			continue
-		}
-		converted := schema.Attribute{
-			Type:       attrType,
-			Filterable: attr.Filterable,
-			Regex:      attr.Regex,
-		}
-		if len(attr.FullTextSearch) > 0 {
-			converted.FullTextSearch = schema.NewFullTextConfig()
-		}
-		if err := def.SetAttribute(name, converted); err != nil {
-			continue
-		}
-	}
-	if len(def.Attributes) == 0 {
-		return nil
-	}
-	return def
-}
-
-func buildFTSConfigs(state *namespace.State) (map[string]*fts.Config, error) {
-	if state == nil || state.Schema == nil || len(state.Schema.Attributes) == 0 {
-		return nil, nil
-	}
-
-	configs := make(map[string]*fts.Config)
-	for name, attr := range state.Schema.Attributes {
-		if len(attr.FullTextSearch) == 0 {
-			continue
-		}
-		if schema.AttrType(attr.Type) != schema.TypeString {
-			continue
-		}
-
-		var raw any
-		if err := json.Unmarshal(attr.FullTextSearch, &raw); err != nil {
-			return nil, fmt.Errorf("failed to parse full_text_search for %s: %w", name, err)
-		}
-		cfg, err := fts.Parse(raw)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse full_text_search for %s: %w", name, err)
-		}
-		if cfg == nil {
-			continue
-		}
-		configs[name] = cfg
-	}
-	if len(configs) == 0 {
-		return nil, nil
-	}
-	return configs, nil
 }
 
 // intSqrt computes integer square root.

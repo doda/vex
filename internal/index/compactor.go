@@ -21,8 +21,11 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/vexsearch/vex/internal/document"
+	"github.com/vexsearch/vex/internal/filter"
+	"github.com/vexsearch/vex/internal/fts"
 	"github.com/vexsearch/vex/internal/metrics"
 	"github.com/vexsearch/vex/internal/namespace"
+	"github.com/vexsearch/vex/internal/schema"
 	"github.com/vexsearch/vex/internal/vector"
 	"github.com/vexsearch/vex/pkg/objectstore"
 )
@@ -101,6 +104,9 @@ type FullCompactor struct {
 	mu        sync.Mutex
 	active    int // Currently running compactions
 	namespace string
+
+	schemaDef  *schema.Definition
+	ftsConfigs map[string]*fts.Config
 }
 
 // NewFullCompactor creates a compactor that performs real segment merging.
@@ -111,6 +117,12 @@ func NewFullCompactor(store objectstore.Store, namespace string, config *Compact
 		namespace: namespace,
 		config:    config,
 	}
+}
+
+// SetSchema configures filter and FTS settings used when rebuilding segments.
+func (c *FullCompactor) SetSchema(schemaDef *schema.Definition, ftsConfigs map[string]*fts.Config) {
+	c.schemaDef = schemaDef
+	c.ftsConfigs = ftsConfigs
 }
 
 // CompactionResult contains the output of a compaction operation.
@@ -696,6 +708,107 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 		expectedSizes[idMapKey] = int64(len(idMapData))
 	}
 
+	// Build filter indexes when schema is available.
+	var filterKeys []string
+	if c.schemaDef != nil && len(docs) > 0 {
+		filterBuilder := filter.NewIndexBuilder(c.namespace, c.schemaDef)
+		for _, doc := range docs {
+			if doc.Deleted {
+				continue
+			}
+			filterBuilder.AddDocument(uint32(doc.NumericID), doc.Attributes)
+		}
+		filterData, err := filterBuilder.SerializeAll()
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize filter indexes: %w", err)
+		}
+		if len(filterData) > 0 {
+			attrNames := make([]string, 0, len(filterData))
+			for name := range filterData {
+				attrNames = append(attrNames, name)
+			}
+			sort.Strings(attrNames)
+			filterKeys = make([]string, 0, len(attrNames))
+			for _, attrName := range attrNames {
+				data := filterData[attrName]
+				if len(data) == 0 {
+					continue
+				}
+				key, err := writer.WriteFilterData(ctx, attrName, data)
+				if err != nil {
+					return nil, fmt.Errorf("failed to write filter %s: %w", attrName, err)
+				}
+				filterKeys = append(filterKeys, key)
+				result.ObjectsWritten = append(result.ObjectsWritten, key)
+				expectedSizes[key] = int64(len(data))
+			}
+		}
+	}
+
+	// Build BM25 indexes when configured.
+	var ftsKeys []string
+	var ftsTermKeys []string
+	if len(c.ftsConfigs) > 0 && len(docs) > 0 {
+		ftsBuilder := fts.NewIndexBuilder()
+		for i, doc := range docs {
+			if doc.Deleted {
+				continue
+			}
+			if len(doc.Attributes) == 0 {
+				continue
+			}
+			ftsBuilder.AddDocument(uint32(i), doc.Attributes, c.ftsConfigs)
+		}
+		indexes := ftsBuilder.Build()
+		if len(indexes) > 0 {
+			attrNames := make([]string, 0, len(indexes))
+			for name, idx := range indexes {
+				if idx == nil || idx.TotalDocs == 0 {
+					continue
+				}
+				attrNames = append(attrNames, name)
+			}
+			sort.Strings(attrNames)
+			for _, attrName := range attrNames {
+				idx := indexes[attrName]
+				if idx == nil || idx.TotalDocs == 0 {
+					continue
+				}
+				terms := make([]string, 0, len(idx.TermPostings))
+				for term := range idx.TermPostings {
+					terms = append(terms, term)
+				}
+				sort.Strings(terms)
+
+				data, err := idx.Serialize()
+				if err != nil {
+					return nil, fmt.Errorf("failed to serialize FTS index %s: %w", attrName, err)
+				}
+				key, err := writer.WriteFTSData(ctx, attrName, data)
+				if err != nil {
+					return nil, fmt.Errorf("failed to write FTS %s: %w", attrName, err)
+				}
+				ftsKeys = append(ftsKeys, key)
+				result.ObjectsWritten = append(result.ObjectsWritten, key)
+				expectedSizes[key] = int64(len(data))
+
+				if len(terms) > 0 {
+					termsData, err := EncodeFTSTerms(terms)
+					if err != nil {
+						return nil, fmt.Errorf("failed to encode FTS terms %s: %w", attrName, err)
+					}
+					termsKey, err := writer.WriteFTSTermsData(ctx, attrName, termsData)
+					if err != nil {
+						return nil, fmt.Errorf("failed to write FTS terms %s: %w", attrName, err)
+					}
+					ftsTermKeys = append(ftsTermKeys, termsKey)
+					result.ObjectsWritten = append(result.ObjectsWritten, termsKey)
+					expectedSizes[termsKey] = int64(len(termsData))
+				}
+			}
+		}
+	}
+
 	writer.Seal()
 
 	// Calculate stats
@@ -711,6 +824,9 @@ func (c *FullCompactor) buildMergedSegment(ctx context.Context, plan *Compaction
 		CreatedAt:   time.Now().UTC(),
 		DocsKey:     docsKey,
 		IVFKeys:     ivfKeys,
+		FilterKeys:  filterKeys,
+		FTSKeys:     ftsKeys,
+		FTSTermKeys: ftsTermKeys,
 		Stats: SegmentStats{
 			RowCount:     int64(len(docs)),
 			LogicalBytes: logicalBytes,
@@ -1200,6 +1316,8 @@ func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
 		tree = refreshed
 	}
 
+	schemaDef, ftsConfigs := bc.loadSchemaConfigs(ns)
+
 	// Plan compaction
 	plan, err := tree.PlanL0Compaction()
 	if err != nil {
@@ -1240,6 +1358,7 @@ func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
 
 	// Execute compaction
 	compactor := NewFullCompactor(bc.store, ns, bc.compConfig)
+	compactor.SetSchema(schemaDef, ftsConfigs)
 	result, err := compactor.Compact(context.Background(), plan)
 	if err != nil {
 		resultErr = err
@@ -1286,6 +1405,8 @@ func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
 	if refreshed, err := bc.refreshTreeFromState(context.Background(), ns); err == nil && refreshed != nil {
 		tree = refreshed
 	}
+
+	schemaDef, ftsConfigs := bc.loadSchemaConfigs(ns)
 
 	plan, err := tree.PlanL1Compaction()
 	if err != nil {
@@ -1336,6 +1457,7 @@ func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
 	config.Recluster = recluster
 
 	compactor := NewFullCompactor(bc.store, ns, &config)
+	compactor.SetSchema(schemaDef, ftsConfigs)
 	result, err := compactor.Compact(context.Background(), plan)
 	if err != nil {
 		resultErr = err
@@ -1528,6 +1650,32 @@ func (bc *BackgroundCompactor) refreshTreeFromState(ctx context.Context, ns stri
 		log.Printf("[compaction] ns=%s refreshed tree from state manifest seq: %d -> %d", ns, previous, seq)
 	}
 	return existing, nil
+}
+
+func (bc *BackgroundCompactor) loadSchemaConfigs(ns string) (*schema.Definition, map[string]*fts.Config) {
+	bc.mu.RLock()
+	stateMan := bc.stateMan
+	bc.mu.RUnlock()
+	if stateMan == nil {
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil || loaded == nil {
+		if err != nil {
+			log.Printf("[compaction] ns=%s failed to load state for schema: %v", ns, err)
+		}
+		return nil, nil
+	}
+	schemaDef := SchemaDefinitionFromState(loaded.State)
+	ftsConfigs, err := FTSConfigsFromState(loaded.State)
+	if err != nil {
+		log.Printf("[compaction] ns=%s failed to build FTS configs: %v", ns, err)
+	}
+	return schemaDef, ftsConfigs
 }
 
 // planSegmentsExistInCurrentManifest returns true if all plan sources are present in the current manifest from state.
