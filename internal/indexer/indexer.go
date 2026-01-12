@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -507,17 +508,25 @@ func (w *namespaceWatcher) applyCompactionRequests(ctx context.Context) {
 	}
 
 	keys, err := index.ListCompactionRequestKeys(ctx, w.indexer.store, w.namespace, maxRequests)
-	if err != nil || len(keys) == 0 {
+	if err != nil {
+		log.Printf("[indexer] list compaction requests failed for %s: %v", w.namespace, err)
 		return
 	}
+	if len(keys) == 0 {
+		return
+	}
+
+	log.Printf("[indexer] found %d compaction request(s) for %s", len(keys), w.namespace)
 
 	for _, key := range keys {
 		req, err := index.LoadCompactionRequest(ctx, w.indexer.store, key)
 		if err != nil {
+			log.Printf("[indexer] failed to load compaction request %s: %v", key, err)
 			continue
 		}
 		if req == nil || req.ID == "" || req.Namespace == "" {
 			_ = w.indexer.store.Delete(ctx, key)
+			log.Printf("[indexer] deleted malformed compaction request %s", key)
 			continue
 		}
 		if req.Namespace != w.namespace {
@@ -529,8 +538,16 @@ func (w *namespaceWatcher) applyCompactionRequests(ctx context.Context) {
 			fmt.Printf("[indexer] Compaction apply failed for %s: %v\n", w.namespace, err)
 			continue
 		}
-		if result != nil && result.Applied {
-			fmt.Printf("[indexer] Applied compaction request for %s: manifest_seq=%d\n", w.namespace, result.ManifestSeq)
+		if result == nil {
+			log.Printf("[indexer] compaction apply returned nil result for %s key=%s", w.namespace, key)
+			continue
+		}
+		if result.Applied {
+			log.Printf("[indexer] applied compaction request for %s: manifest_seq=%d", w.namespace, result.ManifestSeq)
+		} else if result.Superseded {
+			log.Printf("[indexer] compaction request for %s superseded by manifest_seq=%d (key=%s)", w.namespace, result.ManifestSeq, key)
+		} else {
+			log.Printf("[indexer] compaction request for %s not applied (key=%s)", w.namespace, key)
 		}
 	}
 }

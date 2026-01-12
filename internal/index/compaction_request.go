@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -210,6 +211,7 @@ func ApplyCompactionRequest(ctx context.Context, store objectstore.Store, stateM
 	}
 
 	requestKey := CompactionRequestKey(req.Namespace, req.ID)
+	log.Printf("[compaction] apply request ns=%s id=%s base_manifest_seq=%d sources=%d target_level=%d", req.Namespace, req.ID, req.BaseManifestSeq, len(req.SourceSegmentIDs), req.NewSegment.Level)
 	result := &CompactionApplyResult{
 		RequestKey:   requestKey,
 		SourceCount:  len(req.SourceSegmentIDs),
@@ -239,10 +241,13 @@ func ApplyCompactionRequest(ctx context.Context, store objectstore.Store, stateM
 			result.ManifestSeq = loaded.State.Index.ManifestSeq
 			result.ManifestKey = loaded.State.Index.ManifestKey
 			_ = store.Delete(ctx, requestKey)
+			log.Printf("[compaction] request id=%s already applied in manifest seq=%d; removed request", req.ID, result.ManifestSeq)
 			return result, nil
 		}
 
 		if !manifestHasSegmentIDs(manifest, req.SourceSegmentIDs) {
+			log.Printf("[compaction] request id=%s base_seq=%d missing source segments in manifest seq=%d (sources=%d first=%s)",
+				req.ID, req.BaseManifestSeq, loaded.State.Index.ManifestSeq, len(req.SourceSegmentIDs), firstSegmentID(req.SourceSegmentIDs))
 			result.Superseded = true
 			result.ManifestSeq = loaded.State.Index.ManifestSeq
 			result.ManifestKey = loaded.State.Index.ManifestKey
@@ -250,6 +255,7 @@ func ApplyCompactionRequest(ctx context.Context, store objectstore.Store, stateM
 			if manifest.GetSegment(req.NewSegment.ID) == nil {
 				_ = deleteSegmentObjects(ctx, store, req.NewSegment)
 			}
+			log.Printf("[compaction] request id=%s superseded by manifest seq=%d; cleaned up", req.ID, result.ManifestSeq)
 			return result, nil
 		}
 
@@ -303,6 +309,7 @@ func ApplyCompactionRequest(ctx context.Context, store objectstore.Store, stateM
 						result.ManifestKey = newManifestKey
 						_ = store.Delete(ctx, requestKey)
 						_ = cleanupSegmentsAfterApply(ctx, store, req.SourceSegmentIDs, manifest, opts.RetentionTime)
+						log.Printf("[compaction] applied request id=%s at manifest seq=%d", req.ID, newManifestSeq)
 						return result, nil
 					}
 					lastErr = err
@@ -326,6 +333,7 @@ func ApplyCompactionRequest(ctx context.Context, store objectstore.Store, stateM
 			result.ManifestKey = newManifestKey
 			_ = store.Delete(ctx, requestKey)
 			_ = cleanupSegmentsAfterApply(ctx, store, req.SourceSegmentIDs, manifest, opts.RetentionTime)
+			log.Printf("[compaction] applied request id=%s at manifest seq=%d", req.ID, newManifestSeq)
 			return result, nil
 		}
 	}
@@ -346,6 +354,15 @@ func manifestHasSegmentIDs(manifest *Manifest, segmentIDs []string) bool {
 		}
 	}
 	return true
+}
+
+func firstSegmentID(ids []string) string {
+	for _, id := range ids {
+		if id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 func manifestMatchesCompactionRequest(manifest *Manifest, req *CompactionRequest) bool {
