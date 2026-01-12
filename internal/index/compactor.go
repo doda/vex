@@ -876,6 +876,7 @@ type BackgroundCompactor struct {
 
 	mu        sync.RWMutex
 	trees     map[string]*LSMTree
+	manifests map[string]uint64
 	running   bool
 	stopCh    chan struct{}
 	stoppedCh chan struct{}
@@ -896,16 +897,20 @@ func NewBackgroundCompactor(store objectstore.Store, lsmConfig *LSMConfig, compC
 		lsmConfig:    lsmConfig,
 		compConfig:   compConfig,
 		trees:        make(map[string]*LSMTree),
+		manifests:    make(map[string]uint64),
 		pollInterval: 5 * time.Second, // Check for compaction work every 5 seconds
 		syncInterval: 30 * time.Second,
 	}
 }
 
 // RegisterNamespace registers a namespace's LSM tree for compaction monitoring.
-func (bc *BackgroundCompactor) RegisterNamespace(ns string, tree *LSMTree) {
+func (bc *BackgroundCompactor) RegisterNamespace(ns string, tree *LSMTree, manifestSeq uint64) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	bc.trees[ns] = tree
+	if manifestSeq > 0 {
+		bc.manifests[ns] = manifestSeq
+	}
 }
 
 // SetStateManager configures the state manager used to publish compaction manifests.
@@ -920,6 +925,7 @@ func (bc *BackgroundCompactor) UnregisterNamespace(ns string) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	delete(bc.trees, ns)
+	delete(bc.manifests, ns)
 }
 
 // Start begins the background compaction loop.
@@ -1104,7 +1110,7 @@ func (bc *BackgroundCompactor) syncNamespaces() {
 			continue
 		}
 		tree := LoadLSMTree(ns, store, manifest, lsmConfig)
-		bc.RegisterNamespace(ns, tree)
+		bc.RegisterNamespace(ns, tree, seq)
 	}
 
 	bc.mu.Lock()
@@ -1189,18 +1195,46 @@ func (bc *BackgroundCompactor) compactL0(ns string, tree *LSMTree) error {
 	}
 	defer tree.SetCompacting(false)
 
+	// Refresh tree from the latest manifest/state before planning.
+	if refreshed, err := bc.refreshTreeFromState(context.Background(), ns); err == nil && refreshed != nil {
+		tree = refreshed
+	}
+
 	// Plan compaction
 	plan, err := tree.PlanL0Compaction()
 	if err != nil {
 		resultErr = err
 		return err
 	}
+
+	if ok := bc.planSegmentsExistInCurrentManifest(context.Background(), ns, plan); !ok {
+		// Try to refresh tree and re-plan once to avoid churn on stale manifests.
+		if refreshed, err := bc.refreshTreeFromState(context.Background(), ns); err == nil && refreshed != nil {
+			tree = refreshed
+			if replanned, pErr := tree.PlanL0Compaction(); pErr == nil {
+				plan = replanned
+			}
+		}
+		if ok2 := bc.planSegmentsExistInCurrentManifest(context.Background(), ns, plan); !ok2 {
+			resultErr = fmt.Errorf("plan source segments missing from current manifest")
+			return resultErr
+		}
+	}
 	log.Printf("[compaction] ns=%s level=%s segments=%d bytes=%d rows=%d", ns, level, len(plan.SourceSegments), plan.TotalBytes, plan.TotalRows)
 	if exists, err := bc.compactionRequestExists(context.Background(), ns, plan); err != nil {
 		resultErr = err
 		return err
 	} else if exists {
-		log.Printf("[compaction] ns=%s level=%s request already exists", ns, level)
+		applied, applyErr := bc.applyExistingCompactionRequest(context.Background(), ns, plan)
+		if applyErr != nil {
+			resultErr = applyErr
+			return applyErr
+		}
+		if applied {
+			log.Printf("[compaction] ns=%s level=%s applied existing request", ns, level)
+			return nil
+		}
+		log.Printf("[compaction] ns=%s level=%s request already exists and not applied", ns, level)
 		return nil
 	}
 
@@ -1248,17 +1282,44 @@ func (bc *BackgroundCompactor) compactL1(ns string, tree *LSMTree) error {
 	}
 	defer tree.SetCompacting(false)
 
+	// Refresh tree from the latest manifest/state before planning.
+	if refreshed, err := bc.refreshTreeFromState(context.Background(), ns); err == nil && refreshed != nil {
+		tree = refreshed
+	}
+
 	plan, err := tree.PlanL1Compaction()
 	if err != nil {
 		resultErr = err
 		return err
+	}
+
+	if ok := bc.planSegmentsExistInCurrentManifest(context.Background(), ns, plan); !ok {
+		if refreshed, err := bc.refreshTreeFromState(context.Background(), ns); err == nil && refreshed != nil {
+			tree = refreshed
+			if replanned, pErr := tree.PlanL1Compaction(); pErr == nil {
+				plan = replanned
+			}
+		}
+		if ok2 := bc.planSegmentsExistInCurrentManifest(context.Background(), ns, plan); !ok2 {
+			resultErr = fmt.Errorf("plan source segments missing from current manifest")
+			return resultErr
+		}
 	}
 	log.Printf("[compaction] ns=%s level=%s segments=%d bytes=%d rows=%d", ns, level, len(plan.SourceSegments), plan.TotalBytes, plan.TotalRows)
 	if exists, err := bc.compactionRequestExists(context.Background(), ns, plan); err != nil {
 		resultErr = err
 		return err
 	} else if exists {
-		log.Printf("[compaction] ns=%s level=%s request already exists", ns, level)
+		applied, applyErr := bc.applyExistingCompactionRequest(context.Background(), ns, plan)
+		if applyErr != nil {
+			resultErr = applyErr
+			return applyErr
+		}
+		if applied {
+			log.Printf("[compaction] ns=%s level=%s applied existing request", ns, level)
+			return nil
+		}
+		log.Printf("[compaction] ns=%s level=%s request already exists and not applied", ns, level)
 		return nil
 	}
 
@@ -1326,6 +1387,178 @@ func (bc *BackgroundCompactor) enqueueCompactionRequest(ctx context.Context, ns 
 		return false, err
 	}
 	return created, nil
+}
+
+// applyExistingCompactionRequest attempts to apply a previously written compaction request.
+// Returns true if the request was applied or superseded.
+func (bc *BackgroundCompactor) applyExistingCompactionRequest(ctx context.Context, ns string, plan *CompactionPlan) (bool, error) {
+	bc.mu.RLock()
+	stateMan := bc.stateMan
+	bc.mu.RUnlock()
+	if stateMan == nil {
+		log.Printf("[compaction] ns=%s state manager not configured; cannot apply existing request", ns)
+		return false, nil
+	}
+
+	requestID := CompactionRequestID(ns, plan.TargetLevel, plan.SourceSegments)
+	requestKey := CompactionRequestKey(ns, requestID)
+	req, err := LoadCompactionRequest(ctx, bc.store, requestKey)
+	if err != nil {
+		if objectstore.IsNotFoundError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to load compaction request %s: %w", requestKey, err)
+	}
+
+	age := time.Since(req.CreatedAt)
+	log.Printf("[compaction] ns=%s level=%d applying existing request id=%s age=%s base_manifest=%d sources=%d",
+		ns, req.NewSegment.Level, req.ID, age.Truncate(time.Second), req.BaseManifestSeq, len(req.SourceSegmentIDs))
+
+	result, err := ApplyCompactionRequest(ctx, bc.store, stateMan, req, CompactionApplyOptions{
+		RetentionTime: bc.compConfig.RetentionTime,
+	})
+	if err != nil {
+		return false, fmt.Errorf("apply compaction request %s failed: %w", requestKey, err)
+	}
+
+	if result == nil {
+		log.Printf("[compaction] ns=%s level=%d apply result nil for request id=%s", ns, req.NewSegment.Level, req.ID)
+		return false, nil
+	}
+	if result.Applied {
+		log.Printf("[compaction] ns=%s level=%d applied request id=%s new_manifest_seq=%d", ns, req.NewSegment.Level, req.ID, result.ManifestSeq)
+		bc.refreshTreeForManifest(ns, result.ManifestSeq)
+		return true, nil
+	}
+	if result.Superseded {
+		log.Printf("[compaction] ns=%s level=%d request id=%s superseded by manifest_seq=%d", ns, req.NewSegment.Level, req.ID, result.ManifestSeq)
+		bc.refreshTreeForManifest(ns, result.ManifestSeq)
+		return true, nil
+	}
+
+	log.Printf("[compaction] ns=%s level=%d request id=%s not applied (no changes)", ns, req.NewSegment.Level, req.ID)
+	return false, nil
+}
+
+// refreshTreeForManifest reloads the compaction tree for a namespace when the manifest advances.
+func (bc *BackgroundCompactor) refreshTreeForManifest(ns string, manifestSeq uint64) {
+	if manifestSeq == 0 {
+		return
+	}
+
+	bc.mu.RLock()
+	lastSeq := bc.manifests[ns]
+	store := bc.store
+	lsmConfig := bc.lsmConfig
+	bc.mu.RUnlock()
+
+	if store == nil || manifestSeq == lastSeq {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	manifest, err := LoadManifest(ctx, store, ns, manifestSeq)
+	if err != nil || manifest == nil {
+		log.Printf("[compaction] ns=%s failed to refresh manifest seq=%d: %v", ns, manifestSeq, err)
+		return
+	}
+
+	bc.mu.Lock()
+	tree := bc.trees[ns]
+	if tree == nil {
+		tree = LoadLSMTree(ns, store, manifest, lsmConfig)
+		bc.trees[ns] = tree
+	} else if err := tree.ReplaceManifest(manifest); err != nil {
+		bc.mu.Unlock()
+		log.Printf("[compaction] ns=%s failed to swap manifest for seq=%d: %v", ns, manifestSeq, err)
+		return
+	}
+	previousSeq := lastSeq
+	bc.manifests[ns] = manifestSeq
+	bc.mu.Unlock()
+
+	if previousSeq != manifestSeq {
+		log.Printf("[compaction] ns=%s refreshed compaction manifest seq: %d -> %d", ns, previousSeq, manifestSeq)
+	}
+}
+
+// refreshTreeFromState reloads the LSM tree for a namespace if the manifest seq in state has advanced.
+func (bc *BackgroundCompactor) refreshTreeFromState(ctx context.Context, ns string) (*LSMTree, error) {
+	bc.mu.RLock()
+	store := bc.store
+	stateMan := bc.stateMan
+	lsmConfig := bc.lsmConfig
+	currentSeq := bc.manifests[ns]
+	tree := bc.trees[ns]
+	bc.mu.RUnlock()
+
+	if store == nil || stateMan == nil {
+		return tree, nil
+	}
+
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil || loaded == nil {
+		return tree, err
+	}
+	seq := loaded.State.Index.ManifestSeq
+	if seq == 0 || (seq == currentSeq && tree != nil) {
+		return tree, nil
+	}
+
+	manifest, err := LoadManifest(ctx, store, ns, seq)
+	if err != nil || manifest == nil {
+		return tree, err
+	}
+
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	existing := bc.trees[ns]
+	if existing == nil {
+		existing = LoadLSMTree(ns, store, manifest, lsmConfig)
+		bc.trees[ns] = existing
+	} else if err := existing.ReplaceManifest(manifest); err != nil {
+		return existing, err
+	}
+	previous := bc.manifests[ns]
+	bc.manifests[ns] = seq
+	if previous != seq {
+		log.Printf("[compaction] ns=%s refreshed tree from state manifest seq: %d -> %d", ns, previous, seq)
+	}
+	return existing, nil
+}
+
+// planSegmentsExistInCurrentManifest returns true if all plan sources are present in the current manifest from state.
+func (bc *BackgroundCompactor) planSegmentsExistInCurrentManifest(ctx context.Context, ns string, plan *CompactionPlan) bool {
+	if plan == nil || len(plan.SourceSegments) == 0 {
+		return false
+	}
+
+	bc.mu.RLock()
+	stateMan := bc.stateMan
+	store := bc.store
+	bc.mu.RUnlock()
+	if stateMan == nil || store == nil {
+		return true // cannot verify; assume ok
+	}
+
+	loaded, err := stateMan.Load(ctx, ns)
+	if err != nil || loaded == nil || loaded.State.Index.ManifestSeq == 0 {
+		return true
+	}
+	manifest, err := LoadManifest(ctx, store, ns, loaded.State.Index.ManifestSeq)
+	if err != nil || manifest == nil {
+		return true
+	}
+	ids := make([]string, 0, len(plan.SourceSegments))
+	for _, seg := range plan.SourceSegments {
+		if seg.ID != "" {
+			ids = append(ids, seg.ID)
+		}
+	}
+	return manifestHasSegmentIDs(manifest, ids)
 }
 
 func (bc *BackgroundCompactor) compactionRequestExists(ctx context.Context, ns string, plan *CompactionPlan) (bool, error) {

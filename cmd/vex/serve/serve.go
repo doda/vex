@@ -409,7 +409,7 @@ func syncCompactorNamespaces(ctx context.Context, compactor *index.BackgroundCom
 		}
 		metrics.SetSegmentCounts(ns, totalSegments, l0Segments, l1Segments, l2Segments)
 		tree := index.LoadLSMTree(ns, store, manifest, lsmConfig)
-		compactor.RegisterNamespace(ns, tree)
+		compactor.RegisterNamespace(ns, tree, seq)
 	}
 
 	return nil

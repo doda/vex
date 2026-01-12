@@ -57,6 +57,7 @@ func TestBackgroundCompactorCompactsL0Segments(t *testing.T) {
 	if manifestKey == "" {
 		t.Fatalf("expected manifest key after indexing")
 	}
+	manifestSeq := state.Index.ManifestSeq
 
 	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	manifest, err := readManifest(ctx, fixture.store, manifestKey)
@@ -82,7 +83,7 @@ func TestBackgroundCompactorCompactsL0Segments(t *testing.T) {
 	}
 	compactor := index.NewBackgroundCompactor(fixture.store, lsmConfig, &index.CompactorConfig{RetentionTime: 0})
 	compactor.SetStateManager(stateMan)
-	compactor.RegisterNamespace(ns, index.LoadLSMTree(ns, fixture.store, manifest, lsmConfig))
+	compactor.RegisterNamespace(ns, index.LoadLSMTree(ns, fixture.store, manifest, lsmConfig), manifestSeq)
 
 	if err := compactor.TriggerCompaction(ns); err != nil {
 		t.Fatalf("trigger compaction failed: %v", err)

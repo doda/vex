@@ -236,7 +236,7 @@ func TestBackgroundCompactor_RegisterUnregister(t *testing.T) {
 
 	tree := NewLSMTree("test-ns", store, nil)
 
-	bc.RegisterNamespace("test-ns", tree)
+	bc.RegisterNamespace("test-ns", tree, 0)
 
 	bc.mu.RLock()
 	_, exists := bc.trees["test-ns"]
@@ -262,7 +262,7 @@ func TestBackgroundCompactor_TriggerCompaction_NoWork(t *testing.T) {
 	bc := NewBackgroundCompactor(store, nil, nil)
 
 	tree := NewLSMTree("test-ns", store, nil)
-	bc.RegisterNamespace("test-ns", tree)
+	bc.RegisterNamespace("test-ns", tree, 0)
 
 	// No segments, so no compaction needed
 	err := bc.TriggerCompaction("test-ns")
@@ -295,7 +295,7 @@ func TestBackgroundCompactor_L0Compaction(t *testing.T) {
 	bc := NewBackgroundCompactor(store, config, nil)
 
 	tree := NewLSMTree("test-ns", store, config)
-	bc.RegisterNamespace("test-ns", tree)
+	bc.RegisterNamespace("test-ns", tree, 0)
 
 	// Add L0 segments to trigger compaction
 	seg1 := Segment{ID: "seg_1", Level: L0, StartWALSeq: 1, EndWALSeq: 10, Stats: SegmentStats{RowCount: 100, LogicalBytes: 1024}}
@@ -348,7 +348,7 @@ func TestBackgroundCompactor_L1ToL2Compaction(t *testing.T) {
 	bc := NewBackgroundCompactor(store, config, nil)
 
 	tree := NewLSMTree("test-ns", store, config)
-	bc.RegisterNamespace("test-ns", tree)
+	bc.RegisterNamespace("test-ns", tree, 0)
 
 	// Add L1 segments directly
 	tree.mu.Lock()
@@ -401,7 +401,7 @@ func TestBackgroundCompactor_AutomaticPolling(t *testing.T) {
 	bc.pollInterval = 50 * time.Millisecond // Fast polling for test
 
 	tree := NewLSMTree("test-ns", store, config)
-	bc.RegisterNamespace("test-ns", tree)
+	bc.RegisterNamespace("test-ns", tree, 0)
 
 	// Add segments to trigger compaction
 	seg1 := Segment{ID: "seg_1", Level: L0, StartWALSeq: 1, EndWALSeq: 10, Stats: SegmentStats{RowCount: 100, LogicalBytes: 1024}}
@@ -415,22 +415,44 @@ func TestBackgroundCompactor_AutomaticPolling(t *testing.T) {
 	bc.Start()
 	defer bc.Stop()
 
-	// Wait for background compaction
-	time.Sleep(200 * time.Millisecond)
+	deadline := time.Now().Add(1 * time.Second)
+	var keys []string
+	var listErr error
+	for time.Now().Before(deadline) {
+		keys, listErr = ListCompactionRequestKeys(ctx, store, "test-ns", 10)
+		if listErr != nil {
+			t.Fatalf("failed to list compaction requests: %v", listErr)
+		}
+		if len(keys) > 0 || len(tree.GetL1Segments()) > 0 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 
-	keys, err := ListCompactionRequestKeys(ctx, store, "test-ns", 10)
-	if err != nil {
-		t.Fatalf("failed to list compaction requests: %v", err)
+	bc.mu.RLock()
+	currentTree := bc.trees["test-ns"]
+	bc.mu.RUnlock()
+	if currentTree == nil {
+		t.Fatalf("expected tree for namespace")
 	}
-	if len(keys) != 1 {
-		t.Fatalf("expected 1 compaction request, got %d", len(keys))
+	tree = currentTree
+
+	if len(keys) > 1 {
+		t.Fatalf("expected at most 1 compaction request, got %d", len(keys))
+	}
+	if len(keys) == 1 {
+		if got := len(tree.GetL0Segments()); got != 2 {
+			t.Errorf("expected 2 L0 segments to remain, got %d", got)
+		}
+		if got := len(tree.GetL1Segments()); got != 0 {
+			t.Errorf("expected 0 L1 segments before apply, got %d", got)
+		}
+		return
 	}
 
-	if got := len(tree.GetL0Segments()); got != 2 {
-		t.Errorf("expected 2 L0 segments to remain, got %d", got)
-	}
-	if got := len(tree.GetL1Segments()); got != 0 {
-		t.Errorf("expected 0 L1 segments before apply, got %d", got)
+	// No request left behind; compaction should have produced at least one L1 segment.
+	if got := len(tree.GetL1Segments()); got == 0 {
+		t.Fatalf("compaction request missing and no L1 segments present")
 	}
 }
 
@@ -506,7 +528,7 @@ func TestBackgroundCompactor_EnqueuesCompactionRequest(t *testing.T) {
 	bc.SetStateManager(stateMan)
 
 	tree := LoadLSMTree(ns, store, manifest, config)
-	bc.RegisterNamespace(ns, tree)
+	bc.RegisterNamespace(ns, tree, 0)
 
 	if err := bc.TriggerCompaction(ns); err != nil {
 		t.Fatalf("TriggerCompaction failed: %v", err)
