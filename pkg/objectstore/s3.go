@@ -194,6 +194,12 @@ func (s *S3Store) Delete(ctx context.Context, key string) error {
 }
 
 func (s *S3Store) List(ctx context.Context, opts *ListOptions) (*ListResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	listCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	listOpts := minio.ListObjectsOptions{}
 
 	if opts != nil {
@@ -205,7 +211,7 @@ func (s *S3Store) List(ctx context.Context, opts *ListOptions) (*ListResult, err
 	}
 
 	result := &ListResult{}
-	objCh := s.client.ListObjects(ctx, s.bucket, listOpts)
+	objCh := s.client.ListObjects(listCtx, s.bucket, listOpts)
 
 	maxKeys := 1000
 	if opts != nil && opts.MaxKeys > 0 {
@@ -228,6 +234,7 @@ func (s *S3Store) List(ctx context.Context, opts *ListOptions) (*ListResult, err
 		if len(result.Objects) >= maxKeys {
 			result.IsTruncated = true
 			result.NextMarker = obj.Key
+			cancel()
 			break
 		}
 	}

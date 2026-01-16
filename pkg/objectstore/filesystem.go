@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -266,7 +266,7 @@ func (s *FSStore) List(ctx context.Context, opts *ListOptions) (*ListResult, err
 		return &ListResult{}, nil
 	}
 
-	var keys []string
+	walkRoot := metaDir
 	prefix := ""
 	marker := ""
 	maxKeys := 1000
@@ -279,11 +279,26 @@ func (s *FSStore) List(ctx context.Context, opts *ListOptions) (*ListResult, err
 		}
 	}
 
-	err := filepath.Walk(metaDir, func(path string, info os.FileInfo, err error) error {
+	if prefix != "" {
+		// Narrow the walk to the prefix subtree when possible to avoid scanning the whole store.
+		walkRoot = filepath.Join(metaDir, filepath.FromSlash(prefix))
+		if _, err := os.Stat(walkRoot); os.IsNotExist(err) {
+			return &ListResult{}, nil
+		} else if err != nil {
+			return nil, err
+		}
+	}
+
+	result := &ListResult{}
+
+	err := filepath.WalkDir(walkRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if entry.IsDir() {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".json") {
@@ -294,7 +309,7 @@ func (s *FSStore) List(ctx context.Context, opts *ListOptions) (*ListResult, err
 		if err != nil {
 			return err
 		}
-		key := strings.TrimSuffix(rel, ".json")
+		key := strings.TrimSuffix(filepath.ToSlash(rel), ".json")
 
 		// Apply prefix filter
 		if prefix != "" && !strings.HasPrefix(key, prefix) {
@@ -306,27 +321,9 @@ func (s *FSStore) List(ctx context.Context, opts *ListOptions) (*ListResult, err
 			return nil
 		}
 
-		keys = append(keys, key)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Sort keys
-	sort.Strings(keys)
-
-	result := &ListResult{}
-	for i, key := range keys {
-		if i >= maxKeys {
-			result.IsTruncated = true
-			result.NextMarker = keys[i-1]
-			break
-		}
-
 		meta, err := s.readMeta(key)
 		if err != nil {
-			continue
+			return nil
 		}
 
 		result.Objects = append(result.Objects, ObjectInfo{
@@ -336,6 +333,17 @@ func (s *FSStore) List(ctx context.Context, opts *ListOptions) (*ListResult, err
 			LastModified: meta.LastModified,
 			ContentType:  meta.ContentType,
 		})
+
+		if len(result.Objects) >= maxKeys {
+			result.IsTruncated = true
+			result.NextMarker = key
+			return fs.SkipAll
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return result, nil
