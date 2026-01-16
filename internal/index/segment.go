@@ -538,7 +538,8 @@ func (w *SegmentWriter) WriteIVFClusterData(ctx context.Context, data []byte) (s
 }
 
 // WriteIVFClusterDataStream writes the IVF packed cluster data by streaming to the object store.
-// Checksums are skipped to avoid buffering the full payload in memory.
+// Checksums are skipped to avoid buffering the full payload in memory, but post-upload
+// size verification is performed to detect truncated uploads.
 func (w *SegmentWriter) WriteIVFClusterDataStream(ctx context.Context, size int64, writeFn func(io.Writer) error) (string, error) {
 	w.mu.Lock()
 	if w.sealed {
@@ -575,6 +576,20 @@ func (w *SegmentWriter) WriteIVFClusterDataStream(ctx context.Context, size int6
 	}
 	if err != nil {
 		return "", err
+	}
+
+	// Post-upload verification: ensure the object size matches expected size.
+	// This catches truncated uploads caused by network failures or pipe errors.
+	headInfo, headErr := w.store.Head(ctx, key)
+	if headErr != nil {
+		// If we can't verify, try to delete the potentially corrupted object
+		_ = w.store.Delete(ctx, key)
+		return "", fmt.Errorf("failed to verify uploaded object %s: %w", key, headErr)
+	}
+	if headInfo.Size != size {
+		// Size mismatch - delete the corrupted object
+		_ = w.store.Delete(ctx, key)
+		return "", fmt.Errorf("upload verification failed for %s: expected %d bytes, got %d", key, size, headInfo.Size)
 	}
 
 	w.mu.Lock()

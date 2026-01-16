@@ -32,6 +32,25 @@ import (
 
 var ErrCompactionStale = errors.New("compaction is stale")
 
+// ErrSegmentCorrupted indicates a segment cannot be read due to data corruption.
+var ErrSegmentCorrupted = errors.New("segment is corrupted")
+
+// skipCorruptedSegmentsEnabled controls whether compaction should skip corrupted
+// segments instead of failing. When enabled, corrupted segments are logged and
+// excluded from compaction (data loss for those segments). Defaults to true.
+var skipCorruptedSegmentsEnabled = func() bool {
+	env := strings.TrimSpace(os.Getenv("VEX_SKIP_CORRUPTED_SEGMENTS"))
+	if env == "" {
+		return true // Default: skip corrupted segments to allow compaction to proceed
+	}
+	switch strings.ToLower(env) {
+	case "0", "false", "no":
+		return false
+	default:
+		return true
+	}
+}()
+
 // CompactorConfig holds configuration for segment compaction.
 type CompactorConfig struct {
 	// Recluster controls whether to rebuild IVF centroids during compaction.
@@ -172,8 +191,21 @@ func (c *FullCompactor) Compact(ctx context.Context, plan *CompactionPlan) (*Com
 
 	start := time.Now()
 
+	// Step 0: Filter out corrupted segments if enabled
+	sourceSegments := plan.SourceSegments
+	if skipCorruptedSegmentsEnabled {
+		healthy, corrupted := c.filterCorruptedSegments(ctx, plan.SourceSegments)
+		if len(corrupted) > 0 {
+			log.Printf("[compaction] ns=%s skipping %d corrupted segments: %v", c.namespace, len(corrupted), corrupted)
+			sourceSegments = healthy
+			if len(healthy) == 0 {
+				return nil, fmt.Errorf("%w: all %d source segments are corrupted", ErrSegmentCorrupted, len(corrupted))
+			}
+		}
+	}
+
 	// Step 1: Read all documents from source segments
-	allDocs, err := c.readSegmentDocuments(ctx, plan.SourceSegments)
+	allDocs, err := c.readSegmentDocuments(ctx, sourceSegments)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read segment documents: %w", err)
 	}
@@ -247,6 +279,11 @@ func (c *FullCompactor) readSegmentDocuments(ctx context.Context, segments []Seg
 		seg := segments[segIndex]
 		docs, err := c.readDocsForRowIDs(ctx, seg, rowIDs)
 		if err != nil {
+			if skipCorruptedSegmentsEnabled {
+				log.Printf("[compaction] ns=%s skipping corrupted segment %s (readDocsForRowIDs failed): %v", c.namespace, seg.ID, err)
+				metrics.IncCorruptedSegmentsSkipped(c.namespace)
+				continue
+			}
 			return nil, fmt.Errorf("failed to read segment %s: %w", seg.ID, err)
 		}
 		allDocs = append(allDocs, docs...)
@@ -273,12 +310,22 @@ func (c *FullCompactor) collectCompactionWinners(ctx context.Context, segments [
 	for segIndex, seg := range segments {
 		reader, ok, err := c.openDocsColumnReader(ctx, seg)
 		if err != nil {
+			if skipCorruptedSegmentsEnabled {
+				log.Printf("[compaction] ns=%s skipping corrupted segment %s (open failed): %v", c.namespace, seg.ID, err)
+				metrics.IncCorruptedSegmentsSkipped(c.namespace)
+				continue
+			}
 			return nil, nil, fmt.Errorf("failed to open segment %s docs: %w", seg.ID, err)
 		}
 		if ok {
 			err := c.scanDocsColumnWinners(reader, segIndex, winners)
 			reader.Close()
 			if err != nil {
+				if skipCorruptedSegmentsEnabled {
+					log.Printf("[compaction] ns=%s skipping corrupted segment %s (scan failed): %v", c.namespace, seg.ID, err)
+					metrics.IncCorruptedSegmentsSkipped(c.namespace)
+					continue
+				}
 				return nil, nil, fmt.Errorf("failed to scan segment %s docs: %w", seg.ID, err)
 			}
 			continue
@@ -286,6 +333,11 @@ func (c *FullCompactor) collectCompactionWinners(ctx context.Context, segments [
 
 		docs, err := c.readSegmentDocs(ctx, seg)
 		if err != nil {
+			if skipCorruptedSegmentsEnabled {
+				log.Printf("[compaction] ns=%s skipping corrupted segment %s (read failed): %v", c.namespace, seg.ID, err)
+				metrics.IncCorruptedSegmentsSkipped(c.namespace)
+				continue
+			}
 			return nil, nil, fmt.Errorf("failed to read segment %s: %w", seg.ID, err)
 		}
 		for _, doc := range docs {
@@ -307,6 +359,66 @@ func (c *FullCompactor) applyWinner(winners map[string]docWinner, id string, can
 	if !ok || candidate.walSeq > existing.walSeq {
 		winners[id] = candidate
 	}
+}
+
+// verifySegmentReadable checks if a segment's docs column can be opened and read.
+// Returns nil if the segment is readable, or an error describing the corruption.
+func (c *FullCompactor) verifySegmentReadable(ctx context.Context, seg Segment) error {
+	if seg.DocsKey == "" {
+		// Segments without docs are valid (might only have IVF data)
+		return nil
+	}
+
+	reader, isColumnar, err := c.openDocsColumnReader(ctx, seg)
+	if err != nil {
+		return fmt.Errorf("failed to open docs: %w", err)
+	}
+	defer reader.Close()
+
+	if !isColumnar {
+		// Legacy format - try reading the first few bytes to verify zstd decompression
+		buf := make([]byte, 1024)
+		_, err := reader.Read(buf)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("failed to read legacy docs: %w", err)
+		}
+		return nil
+	}
+
+	// Columnar format - verify we can read the header
+	docCount, _, err := readDocsColumnHeader(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read docs header: %w", err)
+	}
+
+	if docCount > 0 {
+		// Try reading the first array of numeric IDs to verify file integrity
+		numericIDs := make([]uint64, docCount)
+		if err := binary.Read(reader, binary.LittleEndian, numericIDs); err != nil {
+			return fmt.Errorf("failed to read numeric IDs: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// filterCorruptedSegments filters out corrupted segments from the input list.
+// Returns the healthy segments and a list of corrupted segment IDs.
+func (c *FullCompactor) filterCorruptedSegments(ctx context.Context, segments []Segment) ([]Segment, []string) {
+	var healthy []Segment
+	var corrupted []string
+
+	for _, seg := range segments {
+		if err := c.verifySegmentReadable(ctx, seg); err != nil {
+			log.Printf("[compaction] ns=%s segment=%s is corrupted: %v", c.namespace, seg.ID, err)
+			metrics.IncCorruptedSegmentsSkipped(c.namespace)
+			corrupted = append(corrupted, seg.ID)
+			continue
+		}
+		healthy = append(healthy, seg)
+	}
+
+	return healthy, corrupted
 }
 
 func (c *FullCompactor) scanDocsColumnWinners(r io.Reader, segIndex int, winners map[string]docWinner) error {

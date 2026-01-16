@@ -221,6 +221,16 @@ var (
 		[]string{"namespace", "level"},
 	)
 
+	// CorruptedSegmentsSkipped tracks corrupted segments skipped during compaction.
+	CorruptedSegmentsSkipped = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "corrupted_segments_skipped_total",
+			Help:      "Total corrupted segments skipped during compaction",
+		},
+		[]string{"namespace"},
+	)
+
 	// CacheTemperature tracks cache temperature classification per cache type.
 	// Temperature is encoded as: 0 = cold, 1 = warm, 2 = hot.
 	CacheTemperature = promauto.NewGaugeVec(
@@ -401,4 +411,9 @@ func SetCacheHitRatio(cacheType string, ratio float64) {
 // SetNamespaceCacheTemperature sets the cache temperature metric for a namespace.
 func SetNamespaceCacheTemperature(ns, cacheType, temp string) {
 	NamespaceCacheTemperature.WithLabelValues(ns, cacheType).Set(TemperatureToValue(temp))
+}
+
+// IncCorruptedSegmentsSkipped increments the corrupted segments skipped counter.
+func IncCorruptedSegmentsSkipped(ns string) {
+	CorruptedSegmentsSkipped.WithLabelValues(ns).Inc()
 }
